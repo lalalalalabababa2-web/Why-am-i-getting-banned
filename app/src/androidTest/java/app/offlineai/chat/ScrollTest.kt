@@ -257,6 +257,9 @@ class ScrollTest {
             if (label.startsWith("code")) {
                 val fold = onMainGet { findTextWith(rv, "Fold") }
                 assertTrue("$label: a long finished code block has no Fold button", fold != null)
+                // a finger drag first (that is what stops following the reply), then the long way
+                // up to the header in one go, as a fling would
+                drag(rv, 600)
                 onMain {
                     val f = IntArray(2).also { fold!!.getLocationOnScreen(it) }[1]
                     val l = IntArray(2).also { rv.getLocationOnScreen(it) }[1]
