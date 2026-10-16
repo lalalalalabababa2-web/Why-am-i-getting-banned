@@ -8,6 +8,10 @@ val llamaCppVersion: String = providers.gradleProperty("llamaCppVersion").get()
 // your downloaded models and chats.
 val buildNumber: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 
+// -PtestAbi=x86_64 builds for the emulator that runs the on-device tests. The APK people install
+// is always arm64-v8a.
+val testAbi: String? = providers.gradleProperty("testAbi").orNull
+
 android {
     namespace = "app.offlineai.chat"
 
@@ -24,9 +28,11 @@ android {
         versionName = "0.1.$buildNumber"
         buildConfigField("String", "LLAMA_CPP_VERSION", "\"$llamaCppVersion\"")
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         ndk {
             // Phones only. Every phone that can run these models is 64-bit ARM.
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf(testAbi ?: "arm64-v8a")
         }
         externalNativeBuild {
             cmake {
@@ -96,4 +102,10 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.8.0")
     implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
+
+    // On-device tests (app/src/androidTest): the real app and engine on an emulator.
+    androidTestImplementation("androidx.test:core:1.7.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("junit:junit:4.13.2")
 }

@@ -7,3 +7,5 @@ local.properties
 .idea/
 .kotlin/
 captures/
+app/src/androidTest/assets/
+ci-results/

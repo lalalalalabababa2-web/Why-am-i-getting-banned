@@ -31,6 +31,102 @@ jobs:
       - name: Run
         run: tools/host-test/run.sh
 
+      # The same tiny models go into the on-device tests.
+      - name: Keep the test models
+        run: |
+          mkdir -p test-models
+          cp build/host-test/models/qwen35-dense.gguf test-models/test-qwen35.gguf
+          cp build/host-test/models/llama-dense.gguf test-models/test-llama.gguf
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-models
+          path: test-models
+          retention-days: 7
+
+  emulator:
+    name: On-device tests (Android 14 emulator)
+    needs: engine-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Android NDK and CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;29.0.13113456" "cmake;3.31.6" > /dev/null
+          sudo apt-get update -q && sudo apt-get install -y -q ccache
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-x86-${{ hashFiles('.gitmodules', 'app/src/main/cpp/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-x86-${{ hashFiles('.gitmodules', 'app/src/main/cpp/CMakeLists.txt') }}-
+            ccache-x86-
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-models
+          path: app/src/androidTest/assets
+
+      # The emulator runs x86_64, so this build is x86_64; the APK people install is not.
+      - name: Build for the emulator
+        env:
+          USE_CCACHE: '1'
+        run: ci/gradle.sh :app:assembleDebug :app:assembleDebugAndroidTest -PtestAbi=x86_64
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run on the emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          ram-size: 4096M
+          cores: 3
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: |
+            adb logcat -c
+            ./gradlew --no-daemon --console=plain :app:connectedDebugAndroidTest -PtestAbi=x86_64 || touch tests-failed
+            adb logcat -d > logcat.txt
+
+      - name: Report
+        if: always()
+        run: python3 ci/device_report.py
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: device-test-results
+          path: |
+            logcat.txt
+            app/build/outputs/androidTest-results
+            app/build/reports/androidTests
+          if-no-files-found: ignore
+          retention-days: 14
+
   apk:
     name: Build the APK
     runs-on: ubuntu-latest

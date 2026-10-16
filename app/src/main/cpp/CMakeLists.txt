@@ -10,7 +10,11 @@ set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/llama.cpp)
 # (armv8.0 up to armv9.2); at start-up ggml picks the best one this phone's CPU supports.
 # On an S24 FE that is a variant with dot products and int8 matrix multiply.
 set(BUILD_SHARED_LIBS ON)
-set(GGML_SYSTEM_ARCH "ARM")
+if(ANDROID_ABI STREQUAL "x86_64")
+    set(GGML_SYSTEM_ARCH "x86")  # emulator builds for the on-device tests only
+else()
+    set(GGML_SYSTEM_ARCH "ARM")
+endif()
 set(GGML_NATIVE OFF)
 set(GGML_BACKEND_DL ON)
 set(GGML_CPU_ALL_VARIANTS ON)
