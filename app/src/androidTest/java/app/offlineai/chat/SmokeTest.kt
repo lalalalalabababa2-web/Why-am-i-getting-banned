@@ -6,9 +6,11 @@ import android.widget.LinearLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.ui.ChatsActivity
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.Markdown
+import app.offlineai.chat.ui.RenderOptions
 import app.offlineai.chat.ui.ModelsActivity
 import app.offlineai.chat.ui.SettingsActivity
 import org.junit.Assert.assertEquals
@@ -151,7 +153,7 @@ class SmokeTest {
     @Test
     fun lowMemoryAndCompactCacheLoad() {
         app.settings.contextSize = 2048
-        app.settings.memoryMode = app.offlineai.chat.data.MemoryMode.LOW
+        app.settings.memoryMode = MemoryMode.LOW
         app.settings.kvQ8 = true
         try {
             val file = installModel("test-llama.gguf")
@@ -160,7 +162,7 @@ class SmokeTest {
             onMain { app.chat.newChat() }
             turn("Hello in low-memory mode")
         } finally {
-            app.settings.memoryMode = app.offlineai.chat.data.MemoryMode.AUTO
+            app.settings.memoryMode = MemoryMode.AUTO
             app.settings.kvQ8 = false
         }
     }
@@ -172,7 +174,7 @@ class SmokeTest {
             override fun toggleCollapsed(blockIndex: Int, anchor: android.view.View) {}
             override fun copy(label: String, text: String) {}
         }
-        val opts = app.offlineai.chat.ui.RenderOptions(true, false, true, 1f)
+        val opts = RenderOptions(true, false, true, 1f)
         val samples = listOf(
             "# Title\n\nSome **bold**, *italic*, `code` and a [link](https://example.com).\n\n- one\n- two\n  - nested\n1. first\n2. second\n\n> quoted",
             "Here:\n```kotlin\nfun main() {\n    println(\"hi\")\n}\n```\nand after.",

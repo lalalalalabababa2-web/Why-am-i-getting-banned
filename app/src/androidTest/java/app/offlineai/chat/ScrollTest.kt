@@ -13,6 +13,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.Markdown
+import app.offlineai.chat.ui.RenderOptions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -306,7 +307,7 @@ class ScrollTest {
                 override fun toggleCollapsed(blockIndex: Int, anchor: View) {}
                 override fun copy(label: String, text: String) {}
             }
-            val opts = app.offlineai.chat.ui.RenderOptions(true, false, true, 1f)
+            val opts = RenderOptions(true, false, true, 1f)
             var k = 0
             while (k < full.length) {
                 k = minOf(full.length, k + 37)
