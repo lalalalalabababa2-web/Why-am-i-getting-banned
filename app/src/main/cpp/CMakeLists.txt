@@ -1,0 +1,47 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(offlineai LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(LLAMA_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/llama.cpp)
+
+# llama.cpp is built as shared libraries with every ARM CPU variant as its own module
+# (armv8.0 up to armv9.2); at start-up ggml picks the best one this phone's CPU supports.
+# On an S24 FE that is a variant with dot products and int8 matrix multiply.
+set(BUILD_SHARED_LIBS ON)
+set(GGML_SYSTEM_ARCH "ARM")
+set(GGML_NATIVE OFF)
+set(GGML_BACKEND_DL ON)
+set(GGML_CPU_ALL_VARIANTS ON)
+set(GGML_OPENMP OFF)        # ggml's own thread pool; nothing extra to package
+set(GGML_CPU_KLEIDIAI OFF)  # helps Q4_0 models only, and would download at configure time
+set(GGML_LLAMAFILE OFF)
+set(LLAMA_BUILD_COMMON ON)
+set(LLAMA_BUILD_TESTS OFF)
+set(LLAMA_BUILD_EXAMPLES OFF)
+set(LLAMA_BUILD_TOOLS OFF)
+set(LLAMA_BUILD_SERVER OFF)
+set(LLAMA_BUILD_APP OFF)
+set(LLAMA_OPENSSL OFF)
+set(LLAMA_SUBPROCESS OFF)
+set(LLAMA_BUILD_UI OFF)
+
+add_subdirectory(${LLAMA_SRC} llama-build)
+
+add_library(offlineai SHARED
+        jni_bridge.cpp
+        engine.cpp)
+
+target_include_directories(offlineai PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${LLAMA_SRC}/include
+        ${LLAMA_SRC}/common
+        ${LLAMA_SRC}/ggml/include
+        ${LLAMA_SRC}/vendor)
+
+target_link_libraries(offlineai
+        llama
+        llama-common
+        android
+        log)

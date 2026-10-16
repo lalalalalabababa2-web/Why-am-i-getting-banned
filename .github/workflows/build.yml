@@ -1,0 +1,119 @@
+name: Offline AI
+
+on:
+  push:
+    branches: [offline-ai]
+  workflow_dispatch:
+
+# The same pinned actions as the Umbra browser's workflows.
+permissions:
+  contents: write
+
+concurrency:
+  group: offline-ai-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine-tests:
+    name: Engine tests (desktop, tiny random models)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      # llama.cpp built for the runner, tiny random models made by llama.cpp's own tool, and the
+      # prompt-cache checks against them (see tools/host-test/test_engine.cpp).
+      - name: Run
+        run: tools/host-test/run.sh
+
+  apk:
+    name: Build the APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Android NDK and CMake
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;29.0.13113456" "cmake;3.31.6" > /dev/null
+          ls "$ANDROID_HOME/ndk" "$ANDROID_HOME/cmake"
+          sudo apt-get update -q && sudo apt-get install -y -q ccache
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ hashFiles('.gitmodules', 'app/src/main/cpp/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ hashFiles('.gitmodules', 'app/src/main/cpp/CMakeLists.txt') }}-
+            ccache-
+
+      # Kotlin first: a mistake there shows up in a few minutes instead of after the native build.
+      - name: Compile the Kotlin code
+        run: ci/gradle.sh :app:compileReleaseKotlin
+
+      - name: Build the APK (llama.cpp for ARM included)
+        env:
+          USE_CCACHE: '1'
+        run: |
+          ci/gradle.sh :app:assembleRelease
+          ccache --show-stats || true
+
+      - name: Check the APK
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          cp "$APK" OfflineAI.apk
+          ls -la OfflineAI.apk
+          echo "--- native libraries"
+          unzip -l OfflineAI.apk 'lib/*' | awk '{print $1, $4}'
+          for lib in libofflineai.so libllama.so libllama-common.so libggml.so libggml-base.so libc++_shared.so; do
+            unzip -l OfflineAI.apk "lib/arm64-v8a/$lib" > /dev/null || { echo "::error::$lib is missing from the APK"; exit 1; }
+          done
+          n=$(unzip -l OfflineAI.apk 'lib/arm64-v8a/libggml-cpu-*' | grep -c 'libggml-cpu-')
+          echo "CPU variants: $n"
+          [ "$n" -ge 1 ] || { echo "::error::no ggml CPU backend in the APK"; exit 1; }
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs OfflineAI.apk
+          "$ANDROID_HOME/build-tools/$BT/aapt2" dump badging OfflineAI.apk | head -5
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OfflineAI-apk
+          path: OfflineAI.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # A release with a fixed name, so the download link never changes:
+      # https://github.com/<owner>/<repo>/releases/download/offline-ai-latest/OfflineAI.apk
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$("$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt2" dump badging OfflineAI.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          cat > notes.md <<EOF
+          Offline AI $VERSION, built from ${GITHUB_SHA::7} on the \`offline-ai\` branch.
+
+          Install: open OfflineAI.apk on the phone and allow installs from your browser when Android asks. Each new build installs over the last one and keeps your models and chats.
+
+          Runs GGUF models on the phone's CPU with llama.cpp $(grep llamaCppVersion gradle.properties | cut -d= -f2). Built for 64-bit ARM phones (Android 11 or newer).
+          EOF
+          gh release delete offline-ai-latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create offline-ai-latest OfflineAI.apk --target "$GITHUB_SHA" --title "Offline AI $VERSION" --notes-file notes.md --latest=false
