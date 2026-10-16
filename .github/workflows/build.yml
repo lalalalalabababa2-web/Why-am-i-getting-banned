@@ -108,6 +108,11 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           script: |
+            adb shell settings put system screen_off_timeout 1800000 || true
+            adb shell svc power stayon true || true
+            adb shell input keyevent KEYCODE_WAKEUP || true
+            adb shell wm dismiss-keyguard || true
+            adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS > /dev/null || true
             adb logcat -c
             ./gradlew --no-daemon --console=plain :app:connectedDebugAndroidTest -PtestAbi=x86_64 || touch tests-failed
             adb logcat -d > logcat.txt

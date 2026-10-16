@@ -17,6 +17,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -35,6 +36,16 @@ class SmokeTest {
     private val app = inst.targetContext.applicationContext as App
 
     private fun onMain(block: () -> Unit) = inst.runOnMainSync { block() }
+
+    /** No reply left over from an earlier test (it would make the app refuse to send). */
+    @Before
+    fun setUp() {
+        TestDevice.wake()
+        onMain { app.chat.stop() }
+        val end = SystemClock.uptimeMillis() + 60_000
+        while (SystemClock.uptimeMillis() < end && app.chat.generating && app.engine.isBusy) Thread.sleep(100)
+        onMain { app.chat.testFinish() }
+    }
 
     private fun waitFor(what: String, timeoutMs: Long, cond: () -> Boolean) {
         val end = SystemClock.uptimeMillis() + timeoutMs

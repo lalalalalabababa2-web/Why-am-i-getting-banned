@@ -17,6 +17,7 @@ import app.offlineai.chat.ui.RenderOptions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -49,7 +50,14 @@ class ScrollTest {
         app.settings.codeWrap = false
         app.settings.markdown = true
         app.settings.syntaxHighlight = true
+        TestDevice.wake()
         onMain { app.chat.newChat() }
+    }
+
+    /** A test that failed part way must not leave a half-written reply for the next one. */
+    @After
+    fun tearDown() {
+        onMain { app.chat.testFinish() }
     }
 
     private fun codeReply(lines: Int) = buildString {
@@ -105,6 +113,28 @@ class ScrollTest {
         }
     }
 
+    /**
+     * Puts the finger down on the chat. If something that is not the app is in front there (the
+     * lock screen, a system dialog on a slow emulator), says what it was, clears it, and tries
+     * once more; a second miss fails the test with the window list.
+     */
+    private fun touchDown(e: MotionEvent) {
+        try {
+            inst.sendPointerSync(e)
+            return
+        } catch (x: IllegalArgumentException) {
+            Log.i(TAG, "touch went to another window, clearing the screen: ${TestDevice.windows()}")
+        }
+        TestDevice.wake()
+        Thread.sleep(1000)
+        inst.waitForIdleSync()
+        try {
+            inst.sendPointerSync(e)
+        } catch (x: IllegalArgumentException) {
+            throw AssertionError("the touch landed on a window that is not the app's: ${TestDevice.windows()}", x)
+        }
+    }
+
     /** A real finger drag on the list: [dy] > 0 moves the finger down (shows earlier text). */
     private fun drag(list: RecyclerView, dy: Int, slow: Boolean = true) {
         val loc = IntArray(2)
@@ -114,7 +144,7 @@ class ScrollTest {
         val y0 = loc[1] + if (dy > 0) h * 0.25f else h * 0.8f
         val t0 = SystemClock.uptimeMillis()
         val steps = if (slow) 20 else 6
-        inst.sendPointerSync(MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, x, y0, 0))
+        touchDown(MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, x, y0, 0))
         for (k in 1..steps) {
             val t = t0 + k * 20L
             inst.sendPointerSync(MotionEvent.obtain(t0, t, MotionEvent.ACTION_MOVE, x, y0 + dy * k / steps.toFloat(), 0))
