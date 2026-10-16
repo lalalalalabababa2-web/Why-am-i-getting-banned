@@ -65,7 +65,8 @@ class ScrollTest {
         for (i in 1..lines) {
             append("    val value$i = compute($i, \"text $i\") // a long comment so the line is wider than the screen, $i\n")
         }
-        append("```\n\nThat is all of it.")
+        append("```\n\nThat is all of it. A few notes on it follow.\n\n")
+        for (i in 1..25) append("Note $i: what this part of the program does, in a sentence or two.\n\n")
     }
 
     private fun markdownReply(sections: Int) = buildString {
@@ -212,7 +213,10 @@ class ScrollTest {
             val jump = onMainGet { findJump(rv) }
             assertTrue("$label: the jump-to-bottom button should show while reading up", jump?.visibility == View.VISIBLE)
             val samples = mutableListOf<Int?>()
+            val readStart = SystemClock.uptimeMillis()
+            var updates = 0
             while (n < full.length) {
+                updates++
                 n = minOf(full.length, n + step)
                 val part = full.substring(0, n)
                 onMain { app.chat.testUpdate(part) }
@@ -225,6 +229,8 @@ class ScrollTest {
             inst.waitForIdleSync()
             Thread.sleep(100)
             samples += onMainGet { replyTop(rv) }
+            val perUpdate = (SystemClock.uptimeMillis() - readStart) / maxOf(1, updates)
+            Log.i(TAG, "$label: $updates updates while reading, ${perUpdate}ms each (16ms of it is the test's own pause)")
             val moved = samples.filter { it != anchorBefore }
             Log.i(TAG, "$label: reading position $anchorBefore; samples ${samples.size}; moved ${moved.size} ($moved)")
             assertTrue("$label: the reply moved while you were reading: $anchorBefore -> $moved", moved.isEmpty())
@@ -246,23 +252,32 @@ class ScrollTest {
             inst.waitForIdleSync()
             assertTrue("$label: not at the bottom after the reply finished", onMainGet { atBottom(rv) })
 
-            // 5. reading up after it finished, then folding the code block: the fold button stays put
+            // 5. scrolling back to the code block's header after it finished and folding it there:
+            //    the header stays where it was, under your finger
             if (label.startsWith("code")) {
-                drag(rv, 600)
-                Thread.sleep(200)
                 val fold = onMainGet { findTextWith(rv, "Fold") }
-                if (fold != null && onMainGet { fold.isShown }) {
-                    val before = IntArray(2).also { a -> onMain { fold.getLocationOnScreen(a) } }[1]
-                    onMain { fold.performClick() }
-                    Thread.sleep(200)
-                    inst.waitForIdleSync()
-                    val expand = onMainGet { findTextWith(rv, "Expand") }
-                    if (expand != null) {
-                        val after = IntArray(2).also { a -> onMain { expand.getLocationOnScreen(a) } }[1]
-                        Log.i(TAG, "$label: fold button $before -> $after")
-                        assertTrue("$label: folding moved the code block header ($before -> $after)", abs(after - before) <= 2)
-                    }
+                assertTrue("$label: a long finished code block has no Fold button", fold != null)
+                onMain {
+                    val f = IntArray(2).also { fold!!.getLocationOnScreen(it) }[1]
+                    val l = IntArray(2).also { rv.getLocationOnScreen(it) }[1]
+                    rv.scrollBy(0, f - (l + rv.height / 5))
                 }
+                waitIdle(rv)
+                Thread.sleep(200)
+                inst.waitForIdleSync()
+                val before = onMainGet { IntArray(2).also { fold!!.getLocationOnScreen(it) }[1] }
+                onMain { fold!!.performClick() }
+                Thread.sleep(300)
+                inst.waitForIdleSync()
+                assertEquals("$label: the code block did not fold", "Expand", onMainGet { fold!!.text.toString() })
+                val after = onMainGet { IntArray(2).also { fold!!.getLocationOnScreen(it) }[1] }
+                val atEnd = onMainGet { !rv.canScrollVertically(1) }
+                val l = onMainGet { IntArray(2).also { rv.getLocationOnScreen(it) }[1] }
+                val h = onMainGet { rv.height }
+                Log.i(TAG, "$label: fold button $before -> $after (list ${if (atEnd) "at its end" else "not at its end"})")
+                assertTrue("$label: folding moved the header off screen ($after)", after in l until l + h)
+                // only when too little is left below to fill the screen may the list move, and only to fill it
+                if (!atEnd) assertTrue("$label: folding moved the code block header ($before -> $after)", abs(after - before) <= 2)
             }
 
             watch.running = false

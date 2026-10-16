@@ -344,20 +344,29 @@ object Markdown {
     // ------------------------------------------------------------------ code blocks
 
     /**
-     * A code block: header (language, line count, fold, copy) and the code. The code's text is an
-     * Editable, so text added while the model writes is appended, and only the new lines are
-     * laid out and coloured.
+     * A code block: header (language, line count, fold, copy) and the code. The code is held in
+     * pieces of [PIECE_LINES] lines, each an Editable: text the model adds is appended to the
+     * last piece, so only that piece is measured, laid out and coloured again. One view holding
+     * all the code would be measured whole on every update, which gets slower with every line
+     * of a long program.
      */
     class CodeBlockView(ctx: Context, private val options: RenderOptions) : LinearLayout(ctx) {
         private val lang = ctx.text("", 12f, Palette.text3, mono = true)
         private val fold = ctx.text("", 12f, Palette.accent, bold = true)
         private val copy = ctx.text("Copy", 12f, Palette.accent, bold = true)
-        private val body = ctx.text("", 13f, Palette.text, mono = true)
+        private val pieces = LinearLayout(ctx).apply { orientation = VERTICAL }
         private val more = ctx.text("", 12f, Palette.accent, bold = true)
         private var code = ""
-        private var highlighter: CodeHighlighter? = null
-        private var coloredTo = 0
+        private var newlines = 0
         private var lines = 0
+        private var language = ""
+
+        /** Newlines in the last piece; the next one after [PIECE_LINES] lines starts a new piece. */
+        private var lastNewlines = 0
+        private var highlighter: CodeHighlighter? = null
+        private var colourPiece = 0
+        private var colourAt = 0
+        private var collapsedNow = false
 
         init {
             orientation = VERTICAL
@@ -374,17 +383,13 @@ object Markdown {
                 header.addView(b)
             }
             addView(header)
-            body.setTextIsSelectable(false)
-            body.isFocusable = false
-            body.setText("", TextView.BufferType.EDITABLE)
-            body.setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(12), ctx.dp(12))
+            pieces.setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(12), ctx.dp(12))
             if (options.wrapCode) {
-                addView(body, lp(MATCH, WRAP))
+                addView(pieces, lp(MATCH, WRAP))
             } else {
-                body.setHorizontallyScrolling(true)
                 val scroll = CodeScroll(ctx)
                 scroll.isHorizontalScrollBarEnabled = false
-                scroll.addView(body)
+                scroll.addView(pieces, android.view.ViewGroup.LayoutParams(WRAP, WRAP))
                 addView(scroll, lp(MATCH, WRAP))
             }
             more.setPadding(ctx.dp(12), 0, ctx.dp(12), ctx.dp(10))
@@ -392,56 +397,147 @@ object Markdown {
             addView(more)
         }
 
+        private fun piece(i: Int) = pieces.getChildAt(i) as TextView
+
+        private fun newPiece(): Editable {
+            val t = context.text("", 13f, Palette.text, mono = true)
+            t.setTextIsSelectable(false)
+            t.isFocusable = false
+            // no font padding: lines meet across pieces exactly as they do inside one
+            t.includeFontPadding = false
+            t.setText("", TextView.BufferType.EDITABLE)
+            if (!options.wrapCode) t.setHorizontallyScrolling(true)
+            if (collapsedNow && pieces.childCount > 0) t.visibility = GONE
+            pieces.addView(t, LayoutParams(if (options.wrapCode) MATCH else WRAP, WRAP))
+            lastNewlines = 0
+            return t.editableText
+        }
+
+        /** Adds code[from, to) at the end, starting new pieces as they fill up. */
+        private fun append(text: String, from: Int, to: Int) {
+            var ed = if (pieces.childCount == 0) newPiece() else piece(pieces.childCount - 1).editableText ?: return
+            var p = from
+            while (p < to) {
+                var e = p
+                var n = lastNewlines
+                var boundary = -1
+                while (e < to) {
+                    if (text[e] == '\n') {
+                        newlines++
+                        if (n == PIECE_LINES - 1) {
+                            boundary = e
+                            break
+                        }
+                        n++
+                    }
+                    e++
+                }
+                if (boundary < 0) {
+                    ed.append(text, p, to)
+                    lastNewlines = n
+                    return
+                }
+                // the newline between two pieces is the gap between the views, not text in either
+                ed.append(text, p, boundary)
+                ed = newPiece()
+                p = boundary + 1
+            }
+        }
+
+        private fun rebuild(text: String) {
+            pieces.removeAllViews()
+            // new pieces start unfolded; bind() folds them again if it should
+            collapsedNow = false
+            newlines = 0
+            lastNewlines = 0
+            highlighter = null
+            colourPiece = 0
+            colourAt = 0
+            append(text, 0, text.length)
+        }
+
+        /** The code as shown, pieces joined back together (for tests). */
+        internal fun shownCode(): String =
+            (0 until pieces.childCount).joinToString("\n") { piece(it).text.toString() }
+
         fun bind(index: Int, language: String, newCode: String, closed: Boolean, host: Host) {
-            lang.text = if (lines > 0) "$language · $lines lines" else language
-            val editable = body.editableText ?: return
-            if (newCode != code) {
-                if (newCode.startsWith(code) && code.isNotEmpty()) {
-                    editable.append(newCode, code.length, newCode.length)
+            if (newCode != code || language != this.language) {
+                if (language != this.language) {
+                    this.language = language
+                    rebuild(newCode)
+                } else if (newCode.startsWith(code) && code.isNotEmpty()) {
+                    append(newCode, code.length, newCode.length)
                 } else {
-                    editable.clear()
-                    editable.append(newCode)
-                    highlighter = null
-                    coloredTo = 0
+                    rebuild(newCode)
                 }
                 code = newCode
-                lines = if (newCode.isEmpty()) 0 else newCode.count { it == '\n' } + 1
-                lang.text = "$language · $lines lines"
+                lines = if (newCode.isEmpty()) 0 else newlines + 1
+                val label = if (lines > 0) "$language · $lines lines" else language
+                setIfChanged(lang, label)
             }
-            if (options.highlight) colour(editable, language, closed)
+            if (options.highlight) colour(language, closed)
 
             val foldable = closed && lines > FOLD_LINES
             val collapsed = foldable && host.isCollapsed(index)
             fold.visibility = if (foldable) VISIBLE else GONE
-            fold.text = if (collapsed) "Expand" else "Fold"
+            setIfChanged(fold, if (collapsed) "Expand" else "Fold")
             fold.setOnClickListener { host.toggleCollapsed(index, this) }
-            body.maxLines = if (collapsed) FOLD_LINES else Int.MAX_VALUE
+            if (collapsed != collapsedNow) {
+                collapsedNow = collapsed
+                for (i in 0 until pieces.childCount) {
+                    val t = piece(i)
+                    if (i == 0) t.maxLines = if (collapsed) FOLD_LINES else Int.MAX_VALUE
+                    else t.visibility = if (collapsed) GONE else VISIBLE
+                }
+            }
             more.visibility = if (collapsed) VISIBLE else GONE
-            more.text = "Show all $lines lines"
+            if (collapsed) setIfChanged(more, "Show all $lines lines")
             more.setOnClickListener { host.toggleCollapsed(index, this) }
             copy.setOnClickListener { host.copy(language, code) }
         }
 
+        /** Setting a TextView's text always lays it out again, even when nothing changed. */
+        private fun setIfChanged(t: TextView, s: String) {
+            if (t.text.toString() != s) t.text = s
+        }
+
         /** Colours each complete line once; the last line waits until it is finished. */
-        private fun colour(editable: Editable, language: String, closed: Boolean) {
-            val h = highlighter ?: CodeHighlighter(language).also { highlighter = it; coloredTo = 0 }
-            val limit = if (closed) editable.length else editable.lastIndexOf('\n') + 1
-            var p = coloredTo
-            while (p < limit) {
-                var e = editable.indexOf('\n', p)
-                if (e < 0 || e > limit) e = limit
-                try {
-                    h.line(editable, p, e)
-                } catch (ex: Exception) {
-                    // colouring is decoration; never let it break the reply
-                }
-                p = e + 1
+        private fun colour(language: String, closed: Boolean) {
+            val h = highlighter ?: CodeHighlighter(language).also {
+                highlighter = it
+                colourPiece = 0
+                colourAt = 0
             }
-            coloredTo = maxOf(coloredTo, minOf(limit, editable.length))
+            while (colourPiece < pieces.childCount) {
+                val ed = piece(colourPiece).editableText ?: return
+                val isLast = colourPiece == pieces.childCount - 1
+                // a piece with another after it is complete: its last line has ended
+                val limit = if (!isLast || closed) ed.length else ed.lastIndexOf('\n') + 1
+                var p = colourAt
+                while (p < limit) {
+                    var e = ed.indexOf('\n', p)
+                    if (e < 0 || e > limit) e = limit
+                    try {
+                        h.line(ed, p, e)
+                    } catch (ex: Exception) {
+                        // colouring is decoration; never let it break the reply
+                    }
+                    p = e + 1
+                }
+                if (isLast) {
+                    colourAt = maxOf(colourAt, minOf(limit, ed.length))
+                    return
+                }
+                colourPiece++
+                colourAt = 0
+            }
         }
 
         companion object {
             const val FOLD_LINES = 24
+
+            /** Lines per piece; at least [FOLD_LINES], so a folded block shows part of the first piece only. */
+            const val PIECE_LINES = 64
         }
     }
 

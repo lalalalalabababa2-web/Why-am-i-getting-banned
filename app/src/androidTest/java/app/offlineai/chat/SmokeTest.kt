@@ -202,6 +202,26 @@ class SmokeTest {
                 for (n in 0..s.length step 3) Markdown.render(box, s.substring(0, n), opts, host)
             }
         }
+        // a long code block is shown in pieces; streamed in, the pieces add up to exactly the code
+        for (wrap in listOf(false, true)) {
+            val code = (1..300).joinToString("\n") { "line $it of the program, with some words" }
+            val src = "Before.\n```text\n$code\n```\nAfter."
+            var shown = listOf<String>()
+            onMain {
+                val box = LinearLayout(inst.targetContext).apply { orientation = LinearLayout.VERTICAL }
+                val o = RenderOptions(true, wrap, true, 1f)
+                var k = 0
+                while (k < src.length) {
+                    k = minOf(src.length, k + 41)
+                    Markdown.render(box, src.substring(0, k), o, host)
+                }
+                shown = (0 until box.childCount).map { box.getChildAt(it) }
+                    .filterIsInstance<Markdown.CodeBlockView>().map { it.shownCode() }
+            }
+            // checked here, not on the main thread, where a failed check would take the app down
+            assertEquals("code blocks", 1, shown.size)
+            assertEquals("code shown (wrap=$wrap)", code, shown[0])
+        }
     }
 
     @Test
