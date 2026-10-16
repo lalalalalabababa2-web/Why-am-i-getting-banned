@@ -1,9 +1,6 @@
 package app.offlineai.chat.ui
 
-import android.app.ActivityManager
 import android.app.DownloadManager
-import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -19,8 +16,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import app.offlineai.chat.App
-import app.offlineai.chat.data.CatalogModel
 import app.offlineai.chat.data.Catalog
+import app.offlineai.chat.data.CatalogModel
 import app.offlineai.chat.data.DownloadState
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.ModelStore
@@ -51,6 +48,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         app = App.of(this)
+        Palette.apply(this, app.settings)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Palette.bg)
@@ -72,6 +70,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
 
     override fun onDestroy() {
         app.engine.removeListener(this)
+        main.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -87,13 +86,6 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
 
     override fun onEngineState() = refresh()
 
-    private fun totalRam(): Long {
-        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val mi = ActivityManager.MemoryInfo()
-        am.getMemoryInfo(mi)
-        return mi.totalMem
-    }
-
     /** Lays the screen out again; used when the set of files changes. */
     private fun build() {
         content.removeAllViews()
@@ -102,7 +94,14 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         content.addView(info)
 
         content.addView(sectionTitle("Recommended for this phone"))
-        Catalog.models.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
+        Catalog.models.filter { !it.large }.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
+        content.addView(sectionTitle("Bigger models"))
+        content.addView(text(
+            "9B models are smarter on hard questions, but they need almost all of an 8 GB phone's free memory and write at " +
+                "about half the speed. Close other apps before loading one.",
+            13f, Palette.text2,
+        ).apply { setPadding(dp(20), 0, dp(20), dp(6)) })
+        Catalog.models.filter { it.large }.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
 
         val local = app.models.local()
         knownLocal = local.map { it.file.name }.toSet()
@@ -138,7 +137,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     }
 
     private fun refresh() {
-        val downloads = app.models.poll().associateBy { it.fileName }
+        val downloads = try {
+            app.models.poll().associateBy { it.fileName }
+        } catch (e: Exception) {
+            emptyMap()
+        }
         val localNow = app.models.local().map { it.file.name }.toSet()
         if (localNow != knownLocal) {
             build()
@@ -146,8 +149,9 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         }
         val free = app.models.freeBytes()
         info.text = "Models are kept in this app's own folder and never leave the phone. " +
-            (if (free >= 0) "${ModelStore.formatBytes(free)} free. " else "") +
-            "This phone has ${ModelStore.formatBytes(totalRam())} of memory."
+            (if (free >= 0) "${ModelStore.formatBytes(free)} of storage free. " else "") +
+            "Memory: ${ModelStore.formatBytes(app.availableRam())} free of ${ModelStore.formatBytes(app.totalRam)}." +
+            (if (app.settings.offlineOnly) "\nOffline only is on (Settings), so downloads are off." else "")
         rows.forEach { it.update(downloads[it.fileName]) }
         importing?.let { (name, pct) -> importRow?.text = "Copying $name… $pct%" }
     }
@@ -187,33 +191,43 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         fun update(d: DownloadState?) {
             val e = app.engine
             val local = app.models.find(fileName)
-            val isLoaded = e.loaded?.key == fileName
-            val isLoading = e.phase == EngineController.Phase.LOADING && e.loadingName != null &&
-                app.settings.lastModelFile == fileName
+            val loadedNow = e.loaded
+            val isLoaded = loadedNow?.key == fileName
+            val isLoading = e.isLoading && e.loadingKey == fileName
             val failure = app.models.failures[fileName]
             bar.visibility = View.GONE
+            bar.isIndeterminate = false
             status.setTextColor(Palette.text2)
             val key: String
             when {
-                isLoaded -> {
+                isLoaded && loadedNow != null -> {
                     key = "loaded"
-                    val i = e.loaded!!.info
+                    val i = loadedNow.info
                     status.setTextColor(Palette.positive)
-                    status.text = "In use · ${i.desc.ifBlank { i.arch }} · ${i.nCtx} context · ${i.nThreads} threads"
+                    status.text = "In use · ${i.desc.ifBlank { i.arch }} · ${i.nCtx} context · " +
+                        (if (loadedNow.config.lowMemory) "low-memory mode" else "fast mode")
                 }
                 isLoading -> {
                     key = "loading"
                     bar.visibility = View.VISIBLE
-                    bar.progress = (e.loadProgress * 1000).toInt()
-                    status.text = "Loading… ${(e.loadProgress * 100).toInt()}%"
+                    if (e.phase == EngineController.Phase.WARMING) {
+                        bar.isIndeterminate = true
+                        status.text = "Getting ready…"
+                    } else {
+                        bar.progress = (e.loadProgress * 1000).toInt()
+                        status.text = "Loading… ${(e.loadProgress * 100).toInt()}%"
+                    }
                 }
                 local != null -> {
                     key = "local"
-                    status.text = if (local.sizeBytes > totalRam() * 0.7) {
+                    val need = app.estimatedRam(local)
+                    val low = app.lowMemoryFor(local)
+                    if (need > app.totalRam * 0.8 && !low) {
                         status.setTextColor(Palette.caution)
-                        "On this phone · may be too big for its memory"
+                        status.text = "On this phone · needs about ${ModelStore.formatBytes(need)} of memory, more than this phone has free"
                     } else {
-                        "On this phone"
+                        status.text = "On this phone · needs about ${ModelStore.formatBytes(need)} of memory" +
+                            (if (low) " · loads in low-memory mode" else "")
                     }
                 }
                 d != null -> {
@@ -251,8 +265,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     "loaded" -> add(pill("Unload") { app.engine.unload() })
                     "loading" -> add(pill("Cancel") { app.engine.cancelLoading() })
                     "local" -> {
-                        add(pill("Use", primary = true) { use(local!!) })
-                        add(pill("Delete", danger = true) { confirmDelete(local!!) })
+                        add(pill("Use", primary = true) { app.models.find(fileName)?.let { use(it) } })
+                        add(pill("Delete", danger = true) { app.models.find(fileName)?.let { confirmDelete(it) } })
                     }
                     "downloading" -> add(pill("Cancel") { app.models.cancel(fileName); refresh() })
                     "remote" -> if (catalog != null) add(pill("Download", primary = true) { download(catalog) })
@@ -262,16 +276,22 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     }
 
     private fun use(model: LocalModel) {
-        val ram = totalRam()
+        if (app.chat.generating) {
+            Toast.makeText(this, "Wait for the reply to finish, or stop it, first.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val need = app.estimatedRam(model)
+        val free = app.availableRam()
         val go = {
-            app.loadModel(model.file, model.displayName)
+            app.loadModel(model)
             finish()
         }
-        if (model.sizeBytes > ram * 0.7) {
+        if (need > free && !app.lowMemoryFor(model)) {
             AlertDialog.Builder(this)
-                .setTitle("This model may not fit")
-                .setMessage("It is ${ModelStore.formatBytes(model.sizeBytes)} and the phone has ${ModelStore.formatBytes(ram)} of memory, " +
-                    "shared with Android and your other apps. It may load slowly or the app may be closed by the system.")
+                .setTitle("This may not fit right now")
+                .setMessage("${model.displayName} needs about ${ModelStore.formatBytes(need)} of memory and " +
+                    "${ModelStore.formatBytes(free)} is free. Android may close the app while it loads. Close other apps first, " +
+                    "or switch Memory mode to Low memory in Settings.")
                 .setPositiveButton("Load anyway") { _, _ -> go() }
                 .setNegativeButton("Cancel", null)
                 .show()
@@ -296,7 +316,18 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             .show()
     }
 
+    private fun offlineBlocked(): Boolean {
+        if (!app.settings.offlineOnly) return false
+        AlertDialog.Builder(this)
+            .setTitle("Offline only is on")
+            .setMessage("Downloads are turned off. Turn off Offline only in Settings to download models.")
+            .setPositiveButton("OK", null)
+            .show()
+        return true
+    }
+
     private fun download(m: CatalogModel) {
+        if (offlineBlocked()) return
         val free = app.models.freeBytes()
         if (free in 0 until m.sizeBytes + 200_000_000L) {
             AlertDialog.Builder(this)
@@ -306,12 +337,13 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 .show()
             return
         }
-        app.models.download(m.url, m.file, m.name)
-        Toast.makeText(this, "Downloading ${m.name}. It carries on if you leave the app.", Toast.LENGTH_LONG).show()
+        val error = app.models.download(m.url, m.file, m.name)
+        Toast.makeText(this, error ?: "Downloading ${m.name}. It carries on if you leave the app.", Toast.LENGTH_LONG).show()
         refresh()
     }
 
     private fun askLink() {
+        if (offlineBlocked()) return
         val field = EditText(this).apply {
             hint = "https://huggingface.co/…/model-Q4_K_M.gguf"
             setTextColor(Palette.text)
@@ -339,8 +371,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     if (app.models.find(name) != null) {
                         Toast.makeText(this, "$name is already on this phone.", Toast.LENGTH_LONG).show()
                     } else {
-                        app.models.download(url, name, name)
-                        Toast.makeText(this, "Downloading $name.", Toast.LENGTH_LONG).show()
+                        val error = app.models.download(url, name, name)
+                        Toast.makeText(this, error ?: "Downloading $name.", Toast.LENGTH_LONG).show()
                         build()
                     }
                 }
@@ -359,20 +391,18 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             importRow?.text = "Copying… $pct%"
         }) { error ->
             importing = null
-            build()
-            if (error != null) {
-                AlertDialog.Builder(this)
-                    .setTitle("Could not import")
-                    .setMessage(error)
-                    .setPositiveButton("OK", null)
-                    .show()
-            } else {
-                Toast.makeText(this, "Added. Tap Use to load it.", Toast.LENGTH_LONG).show()
+            if (!isFinishing && !isDestroyed) {
+                build()
+                if (error != null) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Could not import")
+                        .setMessage(error)
+                        .setPositiveButton("OK", null)
+                        .show()
+                } else {
+                    Toast.makeText(this, "Added. Tap Use to load it.", Toast.LENGTH_LONG).show()
+                }
             }
         }
-    }
-
-    companion object {
-        fun open(ctx: Context) = ctx.startActivity(Intent(ctx, ModelsActivity::class.java))
     }
 }

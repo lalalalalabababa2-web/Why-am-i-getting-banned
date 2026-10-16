@@ -18,12 +18,14 @@ import java.util.Locale
  */
 class ChatController(private val app: App) {
     interface Listener {
-        /** Messages were added or removed. */
+        /** Messages were added, removed or finished. */
         fun onMessagesChanged()
         /** The reply being written changed. */
         fun onReplyUpdate()
         /** Reading progress, speed or the busy state changed. */
         fun onStatus()
+        /** A different conversation was opened. */
+        fun onConversationSwitched() = onMessagesChanged()
     }
 
     private val listeners = mutableListOf<Listener>()
@@ -45,7 +47,11 @@ class ChatController(private val app: App) {
     fun addListener(l: Listener) = listeners.add(l)
     fun removeListener(l: Listener) = listeners.remove(l)
     private fun changed() = listeners.toList().forEach { it.onMessagesChanged() }
+    private fun switched() = listeners.toList().forEach { it.onConversationSwitched() }
     private fun status() = listeners.toList().forEach { it.onStatus() }
+    private fun replyUpdated() = listeners.toList().forEach { it.onReplyUpdate() }
+
+    private fun save() = app.chats.saveAsync(conversation)
 
     fun restore() {
         val id = app.settings.lastChatId ?: return
@@ -57,7 +63,7 @@ class ChatController(private val app: App) {
         app.chats.load(id)?.let {
             conversation = it
             app.settings.lastChatId = it.id
-            changed()
+            switched()
         }
     }
 
@@ -65,17 +71,26 @@ class ChatController(private val app: App) {
         if (generating) stop()
         conversation = Conversation()
         app.settings.lastChatId = conversation.id
-        changed()
+        switched()
     }
 
-    /** The current conversation was deleted elsewhere. */
+    /** A conversation was deleted elsewhere. */
     fun forget(id: String) {
         if (conversation.id == id) newChat()
     }
 
+    /** The open conversation was renamed or changed elsewhere; reload it from disk. */
+    fun reloadIfOpen(id: String) {
+        if (conversation.id != id || generating) return
+        app.chats.load(id)?.let {
+            conversation = it
+            switched()
+        }
+    }
+
     fun tokensPerSecond(): Double {
         val ms = SystemClock.uptimeMillis() - genStartedAt
-        return if (generated > 0 && ms > 0) generated * 1000.0 / ms else 0.0
+        return if (generated > 1 && genStartedAt > 0 && ms > 0) (generated - 1) * 1000.0 / ms else 0.0
     }
 
     fun send(text: String): Boolean {
@@ -84,7 +99,7 @@ class ChatController(private val app: App) {
         conversation.messages.add(ChatMessage(role = "user", content = text.trim()))
         if (conversation.title.isBlank()) conversation.title = text.trim().lineSequence().first().take(60)
         app.settings.lastChatId = conversation.id
-        app.chats.save(conversation)
+        save()
         startReply(model)
         return true
     }
@@ -107,7 +122,7 @@ class ChatController(private val app: App) {
         if (i < 0) return null
         val text = msgs[i].content
         while (msgs.size > i) msgs.removeAt(msgs.size - 1)
-        app.chats.save(conversation)
+        save()
         changed()
         return text
     }
@@ -115,7 +130,7 @@ class ChatController(private val app: App) {
     fun delete(message: ChatMessage) {
         if (generating) return
         conversation.messages.remove(message)
-        app.chats.save(conversation)
+        save()
         changed()
     }
 
@@ -135,6 +150,9 @@ class ChatController(private val app: App) {
         changed()
         status()
 
+        app.engine.setThreads(app.threadsNow())
+        if (app.settings.backgroundWriting) GenerationService.start(app)
+
         app.engine.reply(request, object : ReplyListener {
             override fun onPromptProgress(done: Int, total: Int) {
                 promptDone = done
@@ -147,7 +165,7 @@ class ChatController(private val app: App) {
                 this@ChatController.generated = generated
                 reply.reasoning = reasoning
                 reply.content = content
-                listeners.toList().forEach { it.onReplyUpdate() }
+                replyUpdated()
             }
 
             override fun onDone(outcome: ChatOutcome) {
@@ -158,6 +176,7 @@ class ChatController(private val app: App) {
 
     private fun finish(reply: ChatMessage, o: ChatOutcome) {
         streaming = null
+        GenerationService.stop(app)
         if (!o.ok) {
             reply.error = true
             reply.reasoning = ""
@@ -171,17 +190,18 @@ class ChatController(private val app: App) {
                 reply.stats = describe(o)
             }
         }
-        app.chats.save(conversation)
+        save()
         changed()
         status()
     }
 
     private fun describe(o: ChatOutcome): String {
         val parts = mutableListOf<String>()
-        if (o.tGenMs > 0 && o.nGenerated > 0) {
-            parts += String.format(Locale.US, "%.1f tok/s", o.nGenerated * 1000.0 / o.tGenMs)
+        if (o.tGenMs > 0 && o.nGenerated > 1) {
+            parts += String.format(Locale.US, "%.1f tok/s", (o.nGenerated - 1) * 1000.0 / o.tGenMs)
         }
         parts += "${o.nGenerated} tokens"
+        if (o.tFirstMs > 0) parts += String.format(Locale.US, "first word %.1fs", o.tFirstMs / 1000.0)
         if (o.nEvaluated > 0 && o.tPromptMs > 500) {
             parts += String.format(Locale.US, "read %d in %.1fs", o.nEvaluated, o.tPromptMs / 1000.0)
         }
@@ -194,10 +214,7 @@ class ChatController(private val app: App) {
         return parts.joinToString(" · ")
     }
 
-    private fun familyOf(model: LoadedModel): Family {
-        val local = app.models.find(java.io.File(model.path).name)
-        return local?.family ?: Family.OTHER
-    }
+    private fun familyOf(model: LoadedModel): Family = app.models.find(model.key)?.family ?: Family.OTHER
 
     private fun buildRequest(model: LoadedModel): JSONObject {
         val s = app.settings
@@ -237,5 +254,36 @@ class ChatController(private val app: App) {
             .put("thinking", s.thinking)
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
+    }
+
+    // ---- for the on-device tests only: a reply streamed from text instead of from a model,
+    // so the chat screen can be checked with exact, very long content.
+
+    internal fun testStartReply(prompt: String): ChatMessage {
+        conversation.messages.add(ChatMessage(role = "user", content = prompt))
+        val reply = ChatMessage(role = "assistant", content = "", model = "test")
+        conversation.messages.add(reply)
+        streaming = reply
+        generated = 0
+        genStartedAt = SystemClock.uptimeMillis()
+        changed()
+        status()
+        return reply
+    }
+
+    internal fun testUpdate(content: String, reasoning: String = "") {
+        val reply = streaming ?: return
+        reply.content = content
+        reply.reasoning = reasoning
+        generated++
+        replyUpdated()
+    }
+
+    internal fun testFinish() {
+        val reply = streaming ?: return
+        streaming = null
+        reply.stats = "test"
+        changed()
+        status()
     }
 }

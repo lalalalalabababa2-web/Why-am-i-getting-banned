@@ -55,7 +55,8 @@ class SmokeTest {
         val latch = CountDownLatch(1)
         var error: String? = "not called"
         onMain {
-            app.loadModel(file, file.name) { e ->
+            val model = app.models.find(file.name)!!
+            app.loadModel(model) { e ->
                 error = e
                 latch.countDown()
             }
@@ -125,7 +126,53 @@ class SmokeTest {
     }
 
     @Test
+    fun speedTestAndLiveThreads() {
+        app.settings.contextSize = 2048
+        val file = installModel("test-qwen35.gguf")
+        load(file)
+        val latch = CountDownLatch(1)
+        var rows = 0
+        var err: String? = null
+        onMain {
+            app.engine.bench(intArrayOf(1, 2), 32, 8, onRow = { rows++ }) { r, e ->
+                err = e
+                rows = r.size
+                latch.countDown()
+            }
+        }
+        assertTrue("speed test did not finish", latch.await(120, TimeUnit.SECONDS))
+        assertEquals("speed test rows (error: $err)", 2, rows)
+        // and chatting still works afterwards, with the thread count changed mid-way
+        onMain { app.chat.newChat() }
+        app.engine.setThreads(1)
+        turn("Hello after the speed test")
+    }
+
+    @Test
+    fun lowMemoryAndCompactCacheLoad() {
+        app.settings.contextSize = 2048
+        app.settings.memoryMode = app.offlineai.chat.data.MemoryMode.LOW
+        app.settings.kvQ8 = true
+        try {
+            val file = installModel("test-llama.gguf")
+            load(file)
+            assertTrue(app.engine.loaded!!.config.lowMemory)
+            onMain { app.chat.newChat() }
+            turn("Hello in low-memory mode")
+        } finally {
+            app.settings.memoryMode = app.offlineai.chat.data.MemoryMode.AUTO
+            app.settings.kvQ8 = false
+        }
+    }
+
+    @Test
     fun markdownRenders() {
+        val host = object : Markdown.Host {
+            override fun isCollapsed(blockIndex: Int) = false
+            override fun toggleCollapsed(blockIndex: Int, anchor: android.view.View) {}
+            override fun copy(label: String, text: String) {}
+        }
+        val opts = app.offlineai.chat.ui.RenderOptions(true, false, true, 1f)
         val samples = listOf(
             "# Title\n\nSome **bold**, *italic*, `code` and a [link](https://example.com).\n\n- one\n- two\n  - nested\n1. first\n2. second\n\n> quoted",
             "Here:\n```kotlin\nfun main() {\n    println(\"hi\")\n}\n```\nand after.",
@@ -137,9 +184,9 @@ class SmokeTest {
         onMain {
             val box = LinearLayout(inst.targetContext).apply { orientation = LinearLayout.VERTICAL }
             for (s in samples) {
-                Markdown.render(box, s)
+                Markdown.render(box, s, opts, host)
                 // growing text, the way a reply streams in
-                for (n in 0..s.length step 3) Markdown.render(box, s.substring(0, n))
+                for (n in 0..s.length step 3) Markdown.render(box, s.substring(0, n), opts, host)
             }
         }
     }

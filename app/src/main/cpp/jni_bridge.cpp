@@ -81,19 +81,23 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeSystemInfo(JNIEnv * env, jclas
 // Returns null on success, or the reason it failed (UTF-8).
 JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jpath, jint n_ctx,
-                                                       jint n_threads, jint n_batch, jboolean use_mmap,
-                                                       jobject listener) {
+                                                       jint n_threads, jint n_batch, jint n_ubatch,
+                                                       jboolean low_memory, jboolean kv_q8, jobject listener) {
     oa::LoadParams p;
     p.n_ctx = n_ctx;
     p.n_threads = n_threads;
     p.n_batch = n_batch;
-    p.use_mmap = use_mmap;
+    p.n_ubatch = n_ubatch;
+    p.low_memory = low_memory;
+    p.kv_q8 = kv_q8;
 
-    jmethodID on_progress = nullptr;
+    jmethodID on_progress = nullptr, on_warmup_id = nullptr;
     if (listener) {
         jclass cls = env->GetObjectClass(listener);
         on_progress = env->GetMethodID(cls, "onProgress", "(F)Z");
+        on_warmup_id = env->GetMethodID(cls, "onWarmup", "()V");
         env->DeleteLocalRef(cls);
+        take_exception(env);
     }
     std::function<bool(float)> progress;
     if (on_progress) {
@@ -102,8 +106,15 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
             return !take_exception(env) && go == JNI_TRUE;
         };
     }
+    std::function<void()> warm;
+    if (on_warmup_id) {
+        warm = [&]() {
+            env->CallVoidMethod(listener, on_warmup_id);
+            take_exception(env);
+        };
+    }
     std::string err;
-    if (engine().load(from_bytes(env, jpath), p, err, progress)) return nullptr;
+    if (engine().load(from_bytes(env, jpath), p, err, progress, warm)) return nullptr;
     return to_bytes(env, err.empty() ? std::string("The model could not be loaded.") : err);
 }
 
@@ -140,6 +151,24 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeStop(JNIEnv *, jclass) {
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeResetCache(JNIEnv *, jclass) {
     engine().reset_cache();
+}
+
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeSetThreads(JNIEnv *, jclass, jint n) {
+    engine().set_threads(n);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeBench(JNIEnv * env, jclass, jintArray jthreads, jint n_prompt, jint n_gen) {
+    std::vector<int> threads;
+    const jsize n = env->GetArrayLength(jthreads);
+    threads.resize((size_t) n);
+    if (n > 0) env->GetIntArrayRegion(jthreads, 0, n, threads.data());
+    std::string err;
+    const auto results = engine().bench(threads, n_prompt, n_gen, err);
+    json arr = json::array();
+    for (const auto & r : results) arr.push_back({{"threads", r.threads}, {"pp", r.pp_tps}, {"tg", r.tg_tps}});
+    return to_bytes(env, dump(json{{"results", arr}, {"error", err}}));
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -212,6 +241,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"t_prompt_ms", res.stats.t_prompt_ms},
             {"t_gen_ms", res.stats.t_gen_ms},
             {"n_dropped", res.stats.n_dropped},
+            {"t_first_ms", res.stats.t_first_ms},
             {"used_snapshot", res.stats.used_snapshot},
             {"stop_reason", res.stats.stop_reason},
         }},

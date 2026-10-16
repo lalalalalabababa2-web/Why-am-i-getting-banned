@@ -25,10 +25,18 @@ namespace oa {
 using token = int32_t;
 
 struct LoadParams {
-    int  n_ctx     = 4096;
-    int  n_threads = 4;
-    int  n_batch   = 512;
-    bool use_mmap  = true;
+    int  n_ctx      = 4096;
+    int  n_threads  = 4;
+    int  n_batch    = 512;
+    int  n_ubatch   = 256;    // tokens evaluated per step while reading a prompt
+    bool use_mmap   = true;
+    // Leave the weights in the mapped file instead of copying them into RAM in a layout that is
+    // faster to compute with. Slower, but the system can page them, so bigger models fit.
+    bool low_memory = false;
+    // Store the conversation memory (KV cache) at 8 bits instead of 16: half the memory for long
+    // contexts, very slightly less exact.
+    bool kv_q8      = false;
+    bool warmup     = true;   // touch every weight once after loading, so the first reply starts fast
 };
 
 struct SamplingParams {
@@ -63,6 +71,7 @@ struct ChatStats {
     double      t_prompt_ms    = 0;
     double      t_gen_ms       = 0;
     int         n_dropped      = 0;  // oldest messages left out to fit the context
+    double      t_first_ms     = 0;  // from the request to the first word of the reply
     bool        used_snapshot  = false;
     std::string stop_reason;         // eos, length, context, stopped, error
 };
@@ -96,6 +105,12 @@ struct ModelInfo {
     std::string memory;  // "attention" (any tail can be dropped) or "snapshots"
 };
 
+struct BenchResult {
+    int    threads = 0;
+    double pp_tps  = 0;  // prompt reading, tokens per second
+    double tg_tps  = 0;  // writing, tokens per second
+};
+
 class Engine {
 public:
     // Once per process. lib_dir holds the CPU backend variants when they are built as separate
@@ -109,7 +124,8 @@ public:
     Engine & operator=(const Engine &) = delete;
 
     bool load(const std::string & path, const LoadParams & params, std::string & err,
-              const std::function<bool(float)> & progress = nullptr);
+              const std::function<bool(float)> & progress = nullptr,
+              const std::function<void()> & on_warmup = nullptr);
     void unload();
     bool loaded() const { return ctx_ != nullptr; }
     ModelInfo info() const;
@@ -122,6 +138,14 @@ public:
 
     // Forget everything in memory.
     void reset_cache();
+
+    // Threads for the next evaluation step. Safe from any thread; takes effect between tokens,
+    // so a reply can slow down (or speed up again) as the phone heats and cools.
+    void set_threads(int n) { want_threads_.store(n); }
+
+    // Measures reading and writing speed at each thread count, with this model and context.
+    // Clears the model's memory. Can be ended early with request_stop().
+    std::vector<BenchResult> bench(const std::vector<int> & threads, int n_prompt, int n_gen, std::string & err);
 
     // ---- token-level API (used by chat(), exposed for the host tests) ----
 
@@ -153,6 +177,7 @@ private:
     const Snapshot * best_snapshot(const std::vector<token> & prompt, size_t max_tokens) const;
     bool restore_snapshot(const Snapshot & s);
     void clear_memory();
+    void apply_threads();
     bool memory_truncate(size_t n_tokens);
 
     llama_model *          model_ = nullptr;
@@ -166,6 +191,8 @@ private:
     bool                  can_rm_part_ = true;
     bool                  is_swa_      = false;
     std::atomic<bool>     stop_{false};
+    std::atomic<int>      want_threads_{0};
+    int                   cur_threads_ = 0;
 
     static constexpr size_t kMaxSnapshots = 2;
 };

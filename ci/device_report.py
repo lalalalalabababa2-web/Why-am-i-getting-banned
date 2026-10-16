@@ -40,11 +40,12 @@ try:
     log = open("logcat.txt", errors="replace").read()
 except OSError:
     pass
-ours = [l for l in log.splitlines() if "OfflineAI" in l]
+ours = [l for l in log.splitlines() if "OfflineAI-Test" in l]
 crash = [l for l in log.splitlines()
-         if re.search(r"FATAL EXCEPTION|AndroidRuntime|libc  |DEBUG   :|backtrace|UnsatisfiedLink|SIGSEGV|SIGABRT|GGML_ASSERT", l)]
+         if re.search(r"FATAL EXCEPTION|E AndroidRuntime|F libc|F DEBUG|UnsatisfiedLink|SIGSEGV|SIGABRT|GGML_ASSERT|ANR in app\.offlineai", l)]
 
 print(f"passed: {passed}, failed: {len(failures)}")
+print(f"::notice title=on-device tests::passed {passed}, failed {len(failures)}")
 if ours:
     emit("notice", "app log", "\n".join(ours[-150:]))
 if failures:

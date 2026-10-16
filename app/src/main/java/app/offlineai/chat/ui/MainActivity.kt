@@ -1,7 +1,12 @@
 package app.offlineai.chat.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -17,40 +22,46 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import app.offlineai.chat.App
 import app.offlineai.chat.ChatController
 import app.offlineai.chat.R
+import app.offlineai.chat.data.Device
 import app.offlineai.chat.engine.EngineController
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), ChatController.Listener, EngineController.StateListener {
     private lateinit var app: App
     private lateinit var list: RecyclerView
+    private lateinit var lm: ChatLayoutManager
+    private lateinit var scroller: ChatScroller
     private lateinit var adapter: MessageAdapter
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
     private lateinit var input: EditText
     private lateinit var send: ImageButton
+    private lateinit var jump: ImageButton
     private lateinit var progress: ProgressBar
     private lateinit var empty: LinearLayout
     private lateinit var emptyText: TextView
     private lateinit var emptyButton: TextView
 
+    /** Theme, accent and text size this screen was built with; a change rebuilds it. */
+    private var look = ""
     private var renderPending = false
     private val renderReply = Runnable {
         renderPending = false
-        val last = app.chat.conversation.messages.size - 1
-        if (last < 0) return@Runnable
-        val atBottom = !list.canScrollVertically(1)
-        adapter.notifyItemChanged(last)
-        if (atBottom) list.post { list.scrollBy(0, 1_000_000) }
+        adapter.replyChanged()
     }
+
+    private fun lookOf() = "${app.settings.theme}|${app.settings.accent}|${app.settings.fontScale}|${Palette.dark}"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         app = App.of(this)
+        Palette.apply(this, app.settings)
+        look = lookOf()
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Palette.bg)
@@ -94,19 +105,43 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         root.addView(progress, lp(MATCH, dp(3)))
 
         val middle = FrameLayout(this)
-        adapter = MessageAdapter(app) { text ->
-            input.setText(text)
-            input.setSelection(text.length)
-            input.requestFocus()
-        }
+        adapter = MessageAdapter(app, object : MessageAdapter.Actions {
+            override fun editLast(text: String) {
+                input.setText(text)
+                input.setSelection(text.length)
+                input.requestFocus()
+            }
+
+            override fun selectText(text: String) = SelectTextActivity.open(this@MainActivity, text)
+            override fun keepInPlace(anchor: View, change: () -> Unit) = scroller.keepInPlace(anchor, change)
+            override fun isFollowing() = scroller.following
+        })
+        adapter.options = renderOptions()
+        lm = ChatLayoutManager(this)
         list = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@MainActivity).apply { stackFromEnd = true }
+            layoutManager = lm
             adapter = this@MainActivity.adapter
             itemAnimator = null
             clipToPadding = false
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(16))
+            descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            setItemViewCacheSize(6)
         }
         middle.addView(list, FrameLayout.LayoutParams(MATCH, MATCH))
+        scroller = ChatScroller(list, lm, enabled = { app.settings.autoFollow }, onChange = { updateJump() })
+
+        jump = ImageButton(this).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_arrow_down)?.mutate()?.apply { setTint(Palette.text) })
+            background = ripple(rounded(Palette.surface3, dp(20).toFloat(), dp(1), Palette.borderStrong), dp(20).toFloat())
+            contentDescription = "Jump to the newest text"
+            elevation = dp(2).toFloat()
+            isFocusable = false
+            visibility = View.GONE
+            setOnClickListener { scroller.jumpToBottom(smooth = true) }
+        }
+        middle.addView(jump, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(12)
+        })
 
         empty = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -135,7 +170,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             hint = "Message"
             setHintTextColor(Palette.text3)
             setTextColor(Palette.text)
-            textSize = 15f
+            textSize = 15f * Palette.fontScale
             background = rounded(Palette.surface2, dp(22).toFloat(), dp(1), Palette.border)
             setPadding(dp(16), dp(11), dp(16), dp(11))
             minHeight = dp(44)
@@ -161,7 +196,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
         app.chat.addListener(this)
         app.engine.addListener(this)
-        app.nativeError?.let { showNativeError(it) }
+        adapter.reset()
+        scroller.jumpToBottom(smooth = false)
+
+        app.nativeError?.let { showMessage("The engine did not start", it, null) }
+        app.lastExit?.let { exit ->
+            app.lastExit = null
+            showMessage(exit.title, exit.message, exit.details)
+        }
         app.loadLastModel()
         refreshAll()
     }
@@ -170,23 +212,44 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         app.chat.removeListener(this)
         app.engine.removeListener(this)
         list.removeCallbacks(renderReply)
+        scroller.detach()
         super.onDestroy()
     }
 
     override fun onResume() {
         super.onResume()
+        if (lookOf() != look) {
+            recreate()
+            return
+        }
+        val opts = renderOptions()
+        if (opts != adapter.options) {
+            adapter.options = opts
+            adapter.reset()
+        }
         app.models.poll()
         app.reloadIfNeeded()
-        adapter.notifyDataSetChanged()
         refreshAll()
     }
 
-    private fun showNativeError(message: String) {
-        AlertDialog.Builder(this)
-            .setTitle("The engine did not start")
-            .setMessage(message)
-            .setPositiveButton("OK", null)
-            .show()
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // only the theme can need a rebuild; rotation and keyboards are handled in place
+        Palette.apply(this, app.settings)
+        if (lookOf() != look) recreate()
+    }
+
+    private fun renderOptions() = RenderOptions(
+        markdown = app.settings.markdown,
+        wrapCode = app.settings.codeWrap,
+        highlight = app.settings.syntaxHighlight,
+        fontScale = app.settings.fontScale,
+    )
+
+    private fun showMessage(title: String, message: String, details: String?) {
+        val b = AlertDialog.Builder(this).setTitle(title).setMessage(message).setPositiveButton("OK", null)
+        if (details != null) b.setNeutralButton("Copy details") { _, _ -> copyText("details", details) }
+        b.show()
     }
 
     private fun onSendOrStop() {
@@ -200,7 +263,17 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         val text = input.text.toString()
         if (text.isBlank()) return
+        askForNotificationsOnce()
+        scroller.follow()
         if (app.chat.send(text)) input.setText("")
+    }
+
+    /** The "writing a reply" notification needs permission on Android 13 and later; asked once. */
+    private fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33 || !app.settings.backgroundWriting || app.settings.askedNotifications) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        app.settings.askedNotifications = true
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
     private fun updateSend() {
@@ -213,11 +286,30 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         send.isEnabled = enabled || app.engine.loaded == null
     }
 
+    private fun updateJump() {
+        val show = app.settings.jumpButton && adapter.itemCount > 0 && !scroller.isAtBottom()
+        val shown = jump.visibility == View.VISIBLE && jump.tag != "hiding"
+        if (show && !shown) {
+            jump.tag = null
+            jump.animate().cancel()
+            jump.alpha = 0f
+            jump.visibility = View.VISIBLE
+            jump.animate().alpha(1f).setDuration(150).start()
+        } else if (!show && shown) {
+            jump.tag = "hiding"
+            jump.animate().cancel()
+            jump.animate().alpha(0f).setDuration(120).withEndAction {
+                if (jump.tag == "hiding") jump.visibility = View.GONE
+            }.start()
+        }
+    }
+
     private fun refreshAll() {
         refreshHeader()
         refreshEmpty()
         updateSend()
-        val keepOn = app.settings.keepScreenOn && (app.chat.generating || app.engine.phase == EngineController.Phase.LOADING)
+        updateJump()
+        val keepOn = app.settings.keepScreenOn && (app.chat.generating || app.engine.isLoading)
         if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
@@ -231,7 +323,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 emptyText.text = "The AI engine could not start on this phone."
                 emptyButton.visibility = View.GONE
             }
-            app.engine.phase == EngineController.Phase.LOADING -> {
+            app.engine.isLoading -> {
                 emptyText.text = "Loading ${app.engine.loadingName ?: "the model"}…"
                 emptyButton.visibility = View.GONE
             }
@@ -252,40 +344,51 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val loaded = e.loaded
         title.text = loaded?.displayName ?: e.loadingName ?: "Offline AI"
         subtitle.setTextColor(Palette.text3)
+        val heat = app.currentThermal()
+        val hot = if (heat >= PowerManager.THERMAL_STATUS_MODERATE) " · phone ${Device.thermalLabel(heat)}, slowed down" else ""
         subtitle.text = when {
             app.nativeError != null -> "Engine unavailable"
             e.phase == EngineController.Phase.LOADING -> "Loading… ${(e.loadProgress * 100).toInt()}%"
-            c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens"
-            c.generating && c.generated > 0 -> String.format(Locale.US, "Writing · %.1f tok/s", c.tokensPerSecond())
-            c.generating -> "Starting…"
+            e.phase == EngineController.Phase.WARMING -> "Getting ready…"
+            c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens$hot"
+            c.generating && c.generated > 1 -> String.format(Locale.US, "Writing · %.1f tok/s", c.tokensPerSecond()) + hot
+            c.generating -> "Starting…$hot"
             loaded == null && e.lastError != null -> {
                 subtitle.setTextColor(Palette.danger)
                 e.lastError
             }
             loaded == null -> "No model loaded · tap to choose"
-            else -> "Ready · ${loaded.nCtx} context · tap to change"
+            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") + " · tap to change"
         }
-        val showProgress = (e.phase == EngineController.Phase.LOADING) ||
-            (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)
+        val showProgress = e.isLoading || (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)
         progress.visibility = if (showProgress) View.VISIBLE else View.INVISIBLE
-        progress.progress = when {
-            e.phase == EngineController.Phase.LOADING -> (e.loadProgress * 1000).toInt()
-            c.promptTotal > 0 -> c.promptDone * 1000 / c.promptTotal
-            else -> 0
+        progress.isIndeterminate = e.phase == EngineController.Phase.WARMING
+        if (!progress.isIndeterminate) {
+            progress.progress = when {
+                e.phase == EngineController.Phase.LOADING -> (e.loadProgress * 1000).toInt()
+                c.promptTotal > 0 -> c.promptDone * 1000 / c.promptTotal
+                else -> 0
+            }
         }
     }
 
+    // ChatController.Listener
+
     override fun onMessagesChanged() {
-        adapter.notifyDataSetChanged()
-        val n = adapter.itemCount
-        if (n > 0) list.scrollToPosition(n - 1)
+        adapter.submit()
+        refreshAll()
+    }
+
+    override fun onConversationSwitched() {
+        adapter.reset()
+        scroller.jumpToBottom(smooth = false)
         refreshAll()
     }
 
     override fun onReplyUpdate() {
         if (!renderPending) {
             renderPending = true
-            list.postDelayed(renderReply, 60)
+            list.postDelayed(renderReply, app.settings.streamIntervalMs.toLong().coerceIn(0, 1000))
         }
         refreshHeader()
     }
@@ -296,9 +399,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         if (app.chat.generating) onReplyUpdate()
     }
 
+    // EngineController.StateListener
+
     override fun onEngineState() {
         refreshAll()
-        // the regenerate button depends on whether a model is loaded
+        // the write-again button depends on whether a model is loaded
         if (!app.chat.generating && adapter.itemCount > 0) adapter.notifyItemChanged(adapter.itemCount - 1)
     }
 }

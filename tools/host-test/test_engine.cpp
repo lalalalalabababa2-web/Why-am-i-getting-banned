@@ -93,12 +93,15 @@ static void generate(oa::Engine & e, int n) {
     }
 }
 
-static void test_cache(const std::string & path) {
-    std::printf("== cache: %s\n", path.c_str());
+static void test_cache(const std::string & path, bool kv_q8 = false, bool low_memory = false) {
+    std::printf("== cache: %s%s%s\n", path.c_str(), kv_q8 ? " (kv q8)" : "", low_memory ? " (low memory)" : "");
     oa::LoadParams lp;
     lp.n_ctx = 1024;
     lp.n_threads = 2;
     lp.n_batch = 64;  // several batches per prompt, like a long prompt on the phone
+    lp.n_ubatch = 32;
+    lp.kv_q8 = kv_q8;
+    lp.low_memory = low_memory;
 
     oa::Engine e;
     Ref ref;
@@ -122,6 +125,8 @@ static void test_cache(const std::string & path) {
     generate(e, 12);
 
     // Turn 2: the conversation continues; everything in memory is reused.
+    // a thread change between turns (what the heat guard does) must not change the result
+    e.set_threads(1);
     auto p2 = e.cached();
     auto more = random_tokens(rng, 40, V);
     const size_t a2 = p2.size() + 30;
@@ -184,6 +189,26 @@ static void test_cache(const std::string & path) {
     CHECK(e.sync_prompt(p6, 0, err, nullptr, &st), "after-stop sync: %s", err.c_str());
     std::printf("    after stop reused=%d evaluated=%d\n", st.n_reused, st.n_evaluated);
     compare("after a stopped prompt", e, ref, p6);
+}
+
+static void test_bench(const std::string & path) {
+    std::printf("== bench: %s\n", path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 1024;
+    lp.n_threads = 2;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(path, lp, err)) {
+        g_failures++;
+        return;
+    }
+    auto r = e.bench({1, 2}, 64, 16, err);
+    for (const auto & x : r) std::printf("    threads %d: read %.0f tok/s, write %.0f tok/s\n", x.threads, x.pp_tps, x.tg_tps);
+    CHECK(r.size() == 2 && err.empty(), "bench returned %zu results (%s)", r.size(), err.c_str());
+    CHECK(e.cached().empty(), "bench must leave the memory empty");
+    // and the engine still works afterwards
+    std::vector<token> p = {5, 6, 7, 8, 9};
+    CHECK(e.sync_prompt(p, 0, err, nullptr, nullptr), "sync after bench: %s", err.c_str());
 }
 
 // Templates: render with the real Qwen3.5 and Gemma 4 templates over their real vocabularies,
@@ -368,6 +393,9 @@ int main(int argc, char ** argv) {
         test_cache(dir + "/" + m);
     }
 
+    test_cache(dir + "/qwen35-dense.gguf", true, false);
+    test_cache(dir + "/llama-dense.gguf", true, true);
+    test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");
     test_chat_smoke(dir + "/gemma3-dense.gguf");

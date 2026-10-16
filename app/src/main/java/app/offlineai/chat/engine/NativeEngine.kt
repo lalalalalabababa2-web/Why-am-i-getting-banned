@@ -24,7 +24,9 @@ object NativeEngine {
         nCtx: Int,
         nThreads: Int,
         nBatch: Int,
-        useMmap: Boolean,
+        nUbatch: Int,
+        lowMemory: Boolean,
+        kvQ8: Boolean,
         listener: LoadListener?,
     ): ByteArray?
     @JvmStatic external fun nativeUnload()
@@ -32,11 +34,15 @@ object NativeEngine {
     @JvmStatic external fun nativeStop()
     @JvmStatic external fun nativeResetCache()
     @JvmStatic external fun nativeChat(request: ByteArray, listener: ChatListener?): ByteArray
+    @JvmStatic external fun nativeSetThreads(n: Int)
+    @JvmStatic external fun nativeBench(threads: IntArray, nPrompt: Int, nGen: Int): ByteArray
 }
 
 interface LoadListener {
     /** Return false to cancel loading. */
     fun onProgress(progress: Float): Boolean
+    /** Loading is done; the weights are being read once so the first reply starts quickly. */
+    fun onWarmup()
 }
 
 interface ChatListener {

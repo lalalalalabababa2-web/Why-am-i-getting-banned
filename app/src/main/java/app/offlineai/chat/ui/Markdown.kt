@@ -2,6 +2,7 @@ package app.offlineai.chat.ui
 
 import android.content.Context
 import android.graphics.Typeface
+import android.text.Editable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.BackgroundColorSpan
@@ -11,67 +12,119 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 
+/** How replies are drawn; from the chat display settings. */
+data class RenderOptions(
+    val markdown: Boolean,
+    val wrapCode: Boolean,
+    val highlight: Boolean,
+    val fontScale: Float,
+)
+
 /**
  * Just enough Markdown for chat replies: paragraphs, headings, lists, quotes, bold, italic,
- * inline code, and fenced code blocks with a copy button. Tables are shown as monospaced
- * blocks so their columns line up.
+ * inline code, links, tables, and fenced code blocks with a copy button.
+ *
+ * Built for text that grows while it is read. Each paragraph and each code block is its own
+ * view; when the reply grows, only the last one changes, and a growing code block has the new
+ * text appended (and coloured line by line) instead of being replaced. The earlier views are not
+ * touched, so nothing above the end of the reply moves.
  */
 object Markdown {
-    private sealed class Block {
-        class Text(val lines: List<String>) : Block()
-        class Code(val lang: String, val code: String) : Block()
-        class Table(val text: String) : Block()
+    sealed class Block(val start: Int, val src: String) {
+        class Text(start: Int, src: String) : Block(start, src)
+        class Code(start: Int, src: String, val lang: String, val code: String, val closed: Boolean) : Block(start, src)
+        class Table(start: Int, src: String, val text: String) : Block(start, src)
     }
 
-    private fun parse(src: String): List<Block> {
+    /** Keyed by message and block; whether a long code block is folded. */
+    interface Host {
+        fun isCollapsed(blockIndex: Int): Boolean
+        fun toggleCollapsed(blockIndex: Int, anchor: View)
+        fun copy(label: String, text: String)
+    }
+
+    private class State(val src: String, val blocks: List<Block>, val options: RenderOptions)
+
+    // ------------------------------------------------------------------ parsing
+
+    fun parse(src: String, markdown: Boolean = true): List<Block> = parseFrom(src, 0, markdown)
+
+    private fun parseFrom(src: String, from: Int, markdown: Boolean): List<Block> {
         val out = mutableListOf<Block>()
-        val lines = src.replace("\r\n", "\n").split('\n')
-        val text = mutableListOf<String>()
-        fun flushText() {
-            if (text.isNotEmpty()) {
-                out.add(Block.Text(text.toList()))
-                text.clear()
-            }
-        }
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i]
-            val trimmed = line.trimStart()
-            if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-                flushText()
-                val fence = trimmed.substring(0, 3)
-                val lang = trimmed.removePrefix(fence).trim()
-                val code = StringBuilder()
-                i++
-                while (i < lines.size && !lines[i].trimStart().startsWith(fence)) {
-                    if (code.isNotEmpty()) code.append('\n')
-                    code.append(lines[i])
-                    i++
-                }
-                out.add(Block.Code(lang, code.toString()))
-                i++  // the closing fence (absent while a reply is still being written)
+        var pos = from
+        val n = src.length
+        fun lineEnd(p: Int): Int = src.indexOf('\n', p).let { if (it < 0) n else it }
+        fun next(p: Int): Int = lineEnd(p).let { if (it < n) it + 1 else n }
+
+        while (pos < n) {
+            val le = lineEnd(pos)
+            val line = src.substring(pos, le)
+            val t = line.trimStart()
+            if (line.isBlank()) {
+                pos = next(pos)
                 continue
             }
-            if (trimmed.startsWith("|") && trimmed.count { it == '|' } >= 2) {
-                flushText()
+            if (markdown && (t.startsWith("```") || t.startsWith("~~~"))) {
+                val fence = t.substring(0, 3)
+                val lang = t.removePrefix(fence).trim().substringBefore(' ')
+                val start = pos
+                var p = next(pos)
+                val codeStart = p
+                var closed = false
+                var codeEnd = n
+                while (p < n) {
+                    val e = lineEnd(p)
+                    if (src.substring(p, e).trimStart().startsWith(fence)) {
+                        codeEnd = p
+                        closed = true
+                        p = next(p)
+                        break
+                    }
+                    p = next(p)
+                }
+                if (!closed) p = n
+                var code = src.substring(codeStart, minOf(codeEnd, n))
+                if (code.endsWith("\n")) code = code.dropLast(1)
+                out += Block.Code(start, src.substring(start, p), lang, code, closed)
+                pos = p
+                continue
+            }
+            if (markdown && t.startsWith("|") && t.count { it == '|' } >= 2) {
+                val start = pos
+                var p = pos
                 val rows = mutableListOf<String>()
-                while (i < lines.size && lines[i].trimStart().startsWith("|")) {
-                    rows.add(lines[i].trim())
-                    i++
+                while (p < n) {
+                    val e = lineEnd(p)
+                    val l = src.substring(p, e).trim()
+                    if (!l.startsWith("|")) break
+                    rows += l
+                    p = next(p)
                 }
-                out.add(Block.Table(formatTable(rows)))
+                out += Block.Table(start, src.substring(start, p), formatTable(rows))
+                pos = p
                 continue
             }
-            text.add(line)
-            i++
+            // a paragraph: up to the next blank line, fence or table
+            val start = pos
+            var p = pos
+            while (p < n) {
+                val e = lineEnd(p)
+                val l = src.substring(p, e)
+                val lt = l.trimStart()
+                if (p > start && (l.isBlank() || (markdown && (lt.startsWith("```") || lt.startsWith("~~~") ||
+                        (lt.startsWith("|") && lt.count { it == '|' } >= 2))))) break
+                p = next(p)
+            }
+            out += Block.Text(start, src.substring(start, p))
+            pos = p
         }
-        flushText()
         return out
     }
 
@@ -88,100 +141,90 @@ object Markdown {
         }
     }
 
-    fun render(container: LinearLayout, src: String, color: Int = Palette.text) {
-        val ctx = container.context
-        val blocks = parse(src)
-        // Reuse views when the shape of the reply has not changed (the usual case while
-        // streaming), so a long reply does not flicker as it grows.
-        val reuse = container.childCount == blocks.size && blocks.indices.all { k ->
-            val v = container.getChildAt(k)
-            when (blocks[k]) {
-                is Block.Text -> v is TextView
-                is Block.Code, is Block.Table -> v.tag == "code"
-            }
+    // ------------------------------------------------------------------ rendering
+
+    fun render(container: LinearLayout, src: String, options: RenderOptions, host: Host, textColor: Int = Palette.text) {
+        val old = container.tag as? State
+        val blocks: List<Block> = if (old != null && old.options == options && old.blocks.isNotEmpty() &&
+            src.length >= old.src.length && src.startsWith(old.src)
+        ) {
+            // The reply only grew: everything before the last block is unchanged.
+            val last = old.blocks.last()
+            old.blocks.dropLast(1) + parseFrom(src, last.start, options.markdown)
+        } else {
+            parseFrom(src, 0, options.markdown)
         }
-        if (!reuse) container.removeAllViews()
-        blocks.forEachIndexed { k, b ->
+        if (old != null && old.options != options) container.removeAllViews()
+        container.tag = State(src, blocks, options)
+
+        val ctx = container.context
+        var k = 0
+        while (k < blocks.size) {
+            val b = blocks[k]
+            val existing = if (k < container.childCount) container.getChildAt(k) else null
+            val fits = when (b) {
+                is Block.Text -> existing is TextView
+                is Block.Code, is Block.Table -> existing is CodeBlockView
+            }
+            if (existing != null && !fits) {
+                // the shape changed from here on (rare while streaming): rebuild the rest
+                while (container.childCount > k) container.removeViewAt(container.childCount - 1)
+            }
+            val view = if (existing != null && fits) existing else {
+                val v = when (b) {
+                    is Block.Text -> paragraphView(ctx, textColor)
+                    else -> CodeBlockView(ctx, options)
+                }
+                container.addView(v, lp(MATCH, WRAP).apply { if (k > 0) topMargin = ctx.dp(if (b is Block.Text) 8 else 10) })
+                v
+            }
             when (b) {
                 is Block.Text -> {
-                    val tv = if (reuse) container.getChildAt(k) as TextView else ctx.text(color = color).apply {
-                        setTextIsSelectable(true)
-                        container.addView(this, lp(MATCH, WRAP).apply { if (k > 0) topMargin = dp(6) })
+                    val tv = view as TextView
+                    if (tv.getTag(TAG_SRC) != b.src) {
+                        tv.setTag(TAG_SRC, b.src)
+                        tv.text = if (options.markdown) safeParagraph(ctx, b.src) else b.src.trimEnd()
                     }
-                    tv.text = paragraphs(ctx, b.lines)
                 }
-                is Block.Code -> {
-                    val v = if (reuse) container.getChildAt(k) else codeView(ctx).also {
-                        container.addView(it, lp(MATCH, WRAP).apply { topMargin = ctx.dp(8); bottomMargin = ctx.dp(2) })
-                    }
-                    bindCode(v, b.lang.ifEmpty { "code" }, b.code)
-                }
-                is Block.Table -> {
-                    val v = if (reuse) container.getChildAt(k) else codeView(ctx).also {
-                        container.addView(it, lp(MATCH, WRAP).apply { topMargin = ctx.dp(8); bottomMargin = ctx.dp(2) })
-                    }
-                    bindCode(v, "table", b.text)
-                }
+                is Block.Code -> (view as CodeBlockView).bind(k, b.lang.ifEmpty { "code" }, b.code, b.closed, host)
+                is Block.Table -> (view as CodeBlockView).bind(k, "table", b.text, true, host)
             }
+            k++
         }
+        while (container.childCount > blocks.size) container.removeViewAt(container.childCount - 1)
     }
 
-    private fun codeView(ctx: Context): View = LinearLayout(ctx).apply {
-        tag = "code"
-        orientation = LinearLayout.VERTICAL
-        background = rounded(Palette.codeBg, ctx.dp(10).toFloat(), ctx.dp(1), Palette.border)
-        val header = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(ctx.dp(12), ctx.dp(4), ctx.dp(4), 0)
-        }
-        header.addView(ctx.text("", 12f, Palette.text3, mono = true).apply { id = View.generateViewId(); tag = "lang" }, lp(0, WRAP, 1f))
-        header.addView(ctx.text("Copy", 12f, Palette.accent, bold = true).apply {
-            tag = "copy"
-            setPadding(ctx.dp(10), ctx.dp(8), ctx.dp(10), ctx.dp(8))
-            background = ripple(null, ctx.dp(8).toFloat())
-        })
-        addView(header)
-        val scroll = HorizontalScrollView(ctx).apply { isHorizontalScrollBarEnabled = false }
-        scroll.addView(ctx.text("", 13f, Palette.text, mono = true).apply {
-            tag = "body"
-            setTextIsSelectable(true)
-            setHorizontallyScrolling(true)
-            setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(12), ctx.dp(12))
-        })
-        addView(scroll)
+    private val TAG_SRC = app.offlineai.chat.R.id.tag_src
+
+    private fun paragraphView(ctx: Context, color: Int): TextView = ctx.text(color = color).apply {
+        // Not selectable on purpose: a selectable text view scrolls the chat to its cursor
+        // whenever its text changes. "Select text" on a message opens it where it can be selected.
+        setTextIsSelectable(false)
+        isFocusable = false
     }
 
-    private fun bindCode(v: View, lang: String, code: String) {
-        (v.findViewWithTag<TextView>("lang")).text = lang
-        val body = v.findViewWithTag<TextView>("body")
-        if (body.text.toString() != code) body.text = code
-        v.findViewWithTag<TextView>("copy").setOnClickListener { v.context.copyText(lang, code) }
+    private fun safeParagraph(ctx: Context, src: String): CharSequence = try {
+        paragraph(ctx, src)
+    } catch (e: Exception) {
+        src.trimEnd()
     }
 
-    private fun paragraphs(ctx: Context, lines: List<String>): CharSequence {
+    private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
+    private val BULLET = Regex("^[-*+]\\s+(.*)$")
+    private val NUMBERED = Regex("^(\\d+[.)])\\s+(.*)$")
+    private val RULE = Regex("^([-*_])\\1{2,}$")
+
+    private fun paragraph(ctx: Context, src: String): CharSequence {
         val sb = SpannableStringBuilder()
-        // drop blank lines at the edges, keep single blank lines between paragraphs
-        var start = 0
-        var end = lines.size
-        while (start < end && lines[start].isBlank()) start++
-        while (end > start && lines[end - 1].isBlank()) end--
-        var lastBlank = false
-        for (idx in start until end) {
-            val raw = lines[idx]
-            if (raw.isBlank()) {
-                if (!lastBlank) sb.append('\n')
-                lastBlank = true
-                continue
-            }
-            lastBlank = false
-            if (sb.isNotEmpty()) sb.append('\n')
+        val lines = src.trimEnd().split('\n')
+        for ((idx, raw) in lines.withIndex()) {
+            if (idx > 0) sb.append('\n')
             val trimmed = raw.trimStart()
             val indent = raw.length - trimmed.length
             val lineStart = sb.length
-            val heading = Regex("^(#{1,6})\\s+(.*)$").find(trimmed)
-            val bullet = Regex("^[-*+]\\s+(.*)$").find(trimmed)
-            val numbered = Regex("^(\\d+[.)])\\s+(.*)$").find(trimmed)
+            val heading = HEADING.find(trimmed)
+            val bullet = if (heading == null) BULLET.find(trimmed) else null
+            val numbered = if (heading == null && bullet == null) NUMBERED.find(trimmed) else null
             when {
                 heading != null -> {
                     inline(sb, heading.groupValues[2])
@@ -190,7 +233,7 @@ object Markdown {
                     sb.setSpan(RelativeSizeSpan(if (level <= 1) 1.25f else if (level == 2) 1.15f else 1.05f),
                         lineStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
-                trimmed.matches(Regex("^([-*_])\\1{2,}$")) -> {
+                RULE.matches(trimmed) -> {
                     sb.append("──────────")
                     sb.setSpan(ForegroundColorSpan(Palette.borderStrong), lineStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
@@ -221,7 +264,7 @@ object Markdown {
     /** Wrapped lines of a list item line up under its text, not under the bullet. */
     private fun hang(ctx: Context, sb: SpannableStringBuilder, start: Int, indent: Int, label: String) {
         val paint = android.text.TextPaint().apply {
-            textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, 15f, ctx.resources.displayMetrics)
+            textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 15f * Palette.fontScale, ctx.resources.displayMetrics)
         }
         val lead = ctx.dp(minOf(indent, 8) * 4)
         val labelWidth = paint.measureText(label).toInt()
@@ -239,7 +282,7 @@ object Markdown {
                     sb.append(s, i + 1, end)
                     sb.setSpan(TypefaceSpan("monospace"), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     sb.setSpan(BackgroundColorSpan(Palette.surface3), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    sb.setSpan(ForegroundColorSpan(0xFFD9DCE0.toInt()), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    sb.setSpan(ForegroundColorSpan(Palette.inlineCode), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     i = end + 1
                     continue
                 }
@@ -296,5 +339,114 @@ object Markdown {
             sb.append(c)
             i++
         }
+    }
+
+    // ------------------------------------------------------------------ code blocks
+
+    /**
+     * A code block: header (language, line count, fold, copy) and the code. The code's text is an
+     * Editable, so text added while the model writes is appended, and only the new lines are
+     * laid out and coloured.
+     */
+    class CodeBlockView(ctx: Context, private val options: RenderOptions) : LinearLayout(ctx) {
+        private val lang = ctx.text("", 12f, Palette.text3, mono = true)
+        private val fold = ctx.text("", 12f, Palette.accent, bold = true)
+        private val copy = ctx.text("Copy", 12f, Palette.accent, bold = true)
+        private val body = ctx.text("", 13f, Palette.text, mono = true)
+        private val more = ctx.text("", 12f, Palette.accent, bold = true)
+        private var code = ""
+        private var highlighter: CodeHighlighter? = null
+        private var coloredTo = 0
+        private var lines = 0
+
+        init {
+            orientation = VERTICAL
+            background = rounded(Palette.codeBg, ctx.dp(10).toFloat(), ctx.dp(1), Palette.border)
+            val header = LinearLayout(ctx).apply {
+                orientation = HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(4), 0)
+            }
+            header.addView(lang, lp(0, WRAP, 1f))
+            for (b in listOf(fold, copy)) {
+                b.setPadding(ctx.dp(10), ctx.dp(10), ctx.dp(10), ctx.dp(10))
+                b.background = ripple(null, ctx.dp(8).toFloat())
+                header.addView(b)
+            }
+            addView(header)
+            body.setTextIsSelectable(false)
+            body.isFocusable = false
+            body.setText("", TextView.BufferType.EDITABLE)
+            body.setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(12), ctx.dp(12))
+            if (options.wrapCode) {
+                addView(body, lp(MATCH, WRAP))
+            } else {
+                body.setHorizontallyScrolling(true)
+                val scroll = CodeScroll(ctx)
+                scroll.isHorizontalScrollBarEnabled = false
+                scroll.addView(body)
+                addView(scroll, lp(MATCH, WRAP))
+            }
+            more.setPadding(ctx.dp(12), 0, ctx.dp(12), ctx.dp(10))
+            more.visibility = GONE
+            addView(more)
+        }
+
+        fun bind(index: Int, language: String, newCode: String, closed: Boolean, host: Host) {
+            lang.text = if (lines > 0) "$language · $lines lines" else language
+            val editable = body.editableText ?: return
+            if (newCode != code) {
+                if (newCode.startsWith(code) && code.isNotEmpty()) {
+                    editable.append(newCode, code.length, newCode.length)
+                } else {
+                    editable.clear()
+                    editable.append(newCode)
+                    highlighter = null
+                    coloredTo = 0
+                }
+                code = newCode
+                lines = if (newCode.isEmpty()) 0 else newCode.count { it == '\n' } + 1
+                lang.text = "$language · $lines lines"
+            }
+            if (options.highlight) colour(editable, language, closed)
+
+            val foldable = closed && lines > FOLD_LINES
+            val collapsed = foldable && host.isCollapsed(index)
+            fold.visibility = if (foldable) VISIBLE else GONE
+            fold.text = if (collapsed) "Expand" else "Fold"
+            fold.setOnClickListener { host.toggleCollapsed(index, this) }
+            body.maxLines = if (collapsed) FOLD_LINES else Int.MAX_VALUE
+            more.visibility = if (collapsed) VISIBLE else GONE
+            more.text = "Show all $lines lines"
+            more.setOnClickListener { host.toggleCollapsed(index, this) }
+            copy.setOnClickListener { host.copy(language, code) }
+        }
+
+        /** Colours each complete line once; the last line waits until it is finished. */
+        private fun colour(editable: Editable, language: String, closed: Boolean) {
+            val h = highlighter ?: CodeHighlighter(language).also { highlighter = it; coloredTo = 0 }
+            val limit = if (closed) editable.length else editable.lastIndexOf('\n') + 1
+            var p = coloredTo
+            while (p < limit) {
+                var e = editable.indexOf('\n', p)
+                if (e < 0 || e > limit) e = limit
+                try {
+                    h.line(editable, p, e)
+                } catch (ex: Exception) {
+                    // colouring is decoration; never let it break the reply
+                }
+                p = e + 1
+            }
+            coloredTo = maxOf(coloredTo, minOf(limit, editable.length))
+        }
+
+        companion object {
+            const val FOLD_LINES = 24
+        }
+    }
+
+    /** A horizontal scroller that never scrolls on its own to show a child's cursor or focus. */
+    class CodeScroll(ctx: Context) : HorizontalScrollView(ctx) {
+        override fun requestChildRectangleOnScreen(child: View, rectangle: android.graphics.Rect, immediate: Boolean) = false
     }
 }

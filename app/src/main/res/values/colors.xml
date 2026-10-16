@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#131415</color>
-    <color name="surface_1">#1B1C1E</color>
-    <color name="surface_2">#242629</color>
-    <color name="text_primary">#E6E7E9</color>
-    <color name="text_secondary">#A4A7AC</color>
-    <color name="text_tertiary">#70747A</color>
-    <color name="accent">#8FA9C7</color>
-    <color name="ripple">#1FFFFFFF</color>
+    <!-- Light palette; the dark one (the default look) is in values-night. -->
+    <color name="bg">#F1F2F4</color>
+    <color name="surface_1">#F9FAFB</color>
+    <color name="surface_2">#FFFFFF</color>
+    <color name="text_primary">#1A1B1D</color>
+    <color name="text_secondary">#51555B</color>
+    <color name="text_tertiary">#7D828A</color>
+    <color name="accent">#3C5F86</color>
+    <color name="ripple">#16000000</color>
     <color name="launcher_background">#1B1C1E</color>
 </resources>

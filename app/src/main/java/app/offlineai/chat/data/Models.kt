@@ -28,9 +28,13 @@ data class CatalogModel(
     val blurb: String,
     val repo: String,
     val file: String,
-    val sizeBytes: Long,
+    val sizeBytes: Long,     // as published (approximate for the large models)
     val family: Family,
     val official: Boolean,
+    // Gemma's "E" models keep most of their size in per-layer embeddings that are read a row at
+    // a time straight from the file, so they need far less memory than their file size.
+    val ple: Boolean = false,
+    val large: Boolean = false,
 ) {
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     val page: String get() = "https://huggingface.co/$repo"
@@ -42,12 +46,12 @@ object Catalog {
         CatalogModel(
             "gemma4-e4b", "Gemma 4 E4B", "Google",
             "The best all-round model for this phone: chat, writing, code. Thinks before answering when thinking is on.",
-            "unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q4_K_M.gguf", 4_977_171_584L, Family.GEMMA, true,
+            "unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q4_K_M.gguf", 4_977_171_584L, Family.GEMMA, true, ple = true,
         ),
         CatalogModel(
             "gemma4-e2b", "Gemma 4 E2B", "Google",
             "Smaller and faster Gemma 4. Pick this if E4B feels slow or the phone runs short of memory.",
-            "unsloth/gemma-4-E2B-it-GGUF", "gemma-4-E2B-it-Q4_K_M.gguf", 3_106_738_272L, Family.GEMMA, true,
+            "unsloth/gemma-4-E2B-it-GGUF", "gemma-4-E2B-it-Q4_K_M.gguf", 3_106_738_272L, Family.GEMMA, true, ple = true,
         ),
         CatalogModel(
             "qwen35-4b", "Qwen3.5 4B", "Alibaba Qwen",
@@ -81,6 +85,19 @@ object Catalog {
             "AdvancedDataIntelligence/adi-qwen3.5-4b-glm5.2-general-GGUF", "adi-qwen3.5-4b-glm5.2-general-q4_k_m.gguf",
             2_708_804_064L, Family.QWEN, false,
         ),
+        // Bigger than 4B: these only fit an 8 GB phone at 3 bits, with other apps closed.
+        CatalogModel(
+            "qwen35-9b-iq3", "Qwen3.5 9B (compact)", "Alibaba Qwen",
+            "More than twice the size of the 4B models, squeezed to about 3 bits. Smarter on hard questions, " +
+                "roughly half the speed. Close other apps first.",
+            "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-UD-IQ3_XXS.gguf", 4_020_000_000L, Family.QWEN, true, large = true,
+        ),
+        CatalogModel(
+            "qwen35-9b-q3km", "Qwen3.5 9B", "Alibaba Qwen",
+            "The same 9B model a little less squeezed: better answers, but it fills almost all of an 8 GB phone's " +
+                "free memory. Uses low-memory mode automatically.",
+            "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q3_K_M.gguf", 4_670_000_000L, Family.QWEN, true, large = true,
+        ),
     )
 
     fun byFile(file: String): CatalogModel? = models.firstOrNull { it.file == file }
@@ -88,6 +105,7 @@ object Catalog {
 
 /** A .gguf file in the app's model folder. */
 data class LocalModel(val file: File, val catalog: CatalogModel?) {
+    val ple: Boolean get() = catalog?.ple ?: Regex("gemma-?[34]n?-e[24]b", RegexOption.IGNORE_CASE).containsMatchIn(file.name)
     val displayName: String get() = catalog?.name ?: file.name.removeSuffix(".gguf")
     val sizeBytes: Long get() = file.length()
     val family: Family
@@ -142,7 +160,8 @@ class ModelStore(private val context: Context) {
 
     fun isDownloading(fileName: String): Boolean = prefs.contains(fileName)
 
-    fun download(url: String, fileName: String, title: String) {
+    /** Starts a download; returns why it could not start, or null. */
+    fun download(url: String, fileName: String, title: String): String? {
         failures.remove(fileName)
         File(dir, "$fileName.part").delete()
         val request = DownloadManager.Request(Uri.parse(url))
@@ -153,13 +172,18 @@ class ModelStore(private val context: Context) {
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
             .addRequestHeader("User-Agent", "OfflineAI/0.1 (Android)")
-        val id = dm.enqueue(request)
-        prefs.edit().putLong(fileName, id).apply()
+        return try {
+            val id = dm.enqueue(request)
+            prefs.edit().putLong(fileName, id).apply()
+            null
+        } catch (e: Exception) {
+            "Android's download manager refused the download: ${e.message ?: e}"
+        }
     }
 
     fun cancel(fileName: String) {
         val id = prefs.getLong(fileName, -1)
-        if (id >= 0) dm.remove(id)
+        if (id >= 0) runCatching { dm.remove(id) }
         prefs.edit().remove(fileName).apply()
         File(dir, "$fileName.part").delete()
     }
@@ -171,8 +195,11 @@ class ModelStore(private val context: Context) {
         val out = mutableListOf<DownloadState>()
         for ((fileName, value) in prefs.all) {
             val id = (value as? Long) ?: continue
-            val cursor = dm.query(DownloadManager.Query().setFilterById(id))
-            if (cursor == null) continue
+            val cursor = try {
+                dm.query(DownloadManager.Query().setFilterById(id))
+            } catch (e: Exception) {
+                null
+            } ?: continue
             cursor.use { c ->
                 if (!c.moveToFirst()) {
                     // removed outside the app (for example from the notification)
@@ -187,11 +214,11 @@ class ModelStore(private val context: Context) {
                 when (status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
                         prefs.edit().remove(fileName).apply()
-                        finish(fileName, localUri)
+                        finish(fileName, localUri, total)
                     }
                     DownloadManager.STATUS_FAILED -> {
                         prefs.edit().remove(fileName).apply()
-                        dm.remove(id)
+                        runCatching { dm.remove(id) }
                         failures[fileName] = describeFailure(reason)
                     }
                     else -> out.add(DownloadState(fileName, status, done, total, reason))
@@ -201,9 +228,10 @@ class ModelStore(private val context: Context) {
         return out
     }
 
-    private fun finish(fileName: String, localUri: String?) {
+    private fun finish(fileName: String, localUri: String?, serverSize: Long) {
         val part = localUri?.let { Uri.parse(it).path }?.let { File(it) } ?: File(dir, "$fileName.part")
-        val problem = checkGguf(part, Catalog.byFile(fileName)?.sizeBytes)
+        // The size the server announced is the reference; a file cut short is caught here.
+        val problem = checkGguf(part, if (serverSize > 0) serverSize else null)
         if (problem != null) {
             part.delete()
             failures[fileName] = problem

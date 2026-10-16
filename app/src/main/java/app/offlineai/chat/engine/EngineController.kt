@@ -41,14 +41,27 @@ data class ModelInfo(
     }
 }
 
+/** How a model is loaded. Changing any of these needs a reload; threads can change live. */
+data class LoadConfig(
+    val nCtx: Int,
+    val nThreads: Int,
+    val nUbatch: Int,
+    val lowMemory: Boolean,
+    val kvQ8: Boolean,
+) {
+    fun sameShape(o: LoadConfig) = nCtx == o.nCtx && nUbatch == o.nUbatch && lowMemory == o.lowMemory && kvQ8 == o.kvQ8
+}
+
 data class LoadedModel(
     val key: String,
     val displayName: String,
     val path: String,
-    val nCtx: Int,
-    val nThreads: Int,
+    val config: LoadConfig,
     val info: ModelInfo,
-)
+    val loadMs: Long,
+) {
+    val nCtx: Int get() = config.nCtx
+}
 
 /** The outcome of one reply. */
 data class ChatOutcome(
@@ -62,6 +75,7 @@ data class ChatOutcome(
     val nGenerated: Int,
     val tPromptMs: Double,
     val tGenMs: Double,
+    val tFirstMs: Double,
     val nDropped: Int,
     val stopReason: String,
 ) {
@@ -80,14 +94,17 @@ data class ChatOutcome(
                 nGenerated = s.optInt("n_generated"),
                 tPromptMs = s.optDouble("t_prompt_ms", 0.0),
                 tGenMs = s.optDouble("t_gen_ms", 0.0),
+                tFirstMs = s.optDouble("t_first_ms", 0.0),
                 nDropped = s.optInt("n_dropped"),
                 stopReason = s.optString("stop_reason"),
             )
         }
 
-        fun failure(message: String) = ChatOutcome(false, "", "", message, 0, 0, 0, 0, 0.0, 0.0, 0, "error")
+        fun failure(message: String) = ChatOutcome(false, "", "", message, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, "error")
     }
 }
+
+data class BenchRow(val threads: Int, val readTps: Double, val writeTps: Double)
 
 /** Callbacks for one reply, always delivered on the main thread. */
 interface ReplyListener {
@@ -102,11 +119,14 @@ interface ReplyListener {
  * State changes are announced on the main thread.
  */
 class EngineController {
-    enum class Phase { IDLE, LOADING, READY, BUSY }
+    enum class Phase { IDLE, LOADING, WARMING, READY, BUSY }
 
     fun interface StateListener {
         fun onEngineState()
     }
+
+    /** Told what the engine is about to do, so a crash during it can be explained afterwards. */
+    var activityLog: ((String?) -> Unit)? = null
 
     private val main = Handler(Looper.getMainLooper())
     private val queue = LinkedBlockingQueue<() -> Unit>()
@@ -118,6 +138,8 @@ class EngineController {
     @Volatile var loaded: LoadedModel? = null
         private set
     @Volatile var loadingName: String? = null
+        private set
+    @Volatile var loadingKey: String? = null
         private set
     @Volatile var loadProgress: Float = 0f
         private set
@@ -132,6 +154,8 @@ class EngineController {
             } catch (t: Throwable) {
                 lastError = t.message ?: t.toString()
                 phase = if (loaded != null) Phase.READY else Phase.IDLE
+                loadingName = null
+                loadingKey = null
                 announce()
             }
         }
@@ -152,13 +176,15 @@ class EngineController {
         main.post { listeners.toList().forEach { it.onEngineState() } }
     }
 
-    val isBusy: Boolean get() = phase == Phase.BUSY || phase == Phase.LOADING
+    val isBusy: Boolean get() = phase == Phase.BUSY || phase == Phase.LOADING || phase == Phase.WARMING
+    val isLoading: Boolean get() = phase == Phase.LOADING || phase == Phase.WARMING
 
-    /** Loads a model, replacing the current one. */
-    fun load(key: String, displayName: String, path: String, nCtx: Int, nThreads: Int, onDone: ((String?) -> Unit)? = null) {
+    /** Loads a model, replacing the current one. [onDone] gets null on success or the reason it failed. */
+    fun load(key: String, displayName: String, path: String, config: LoadConfig, onDone: ((String?) -> Unit)? = null) {
         if (phase == Phase.BUSY) NativeEngine.nativeStop()
         cancelLoad.set(false)
         loadingName = displayName
+        loadingKey = key
         loadProgress = 0f
         lastError = null
         phase = Phase.LOADING
@@ -167,9 +193,12 @@ class EngineController {
             phase = Phase.LOADING
             loaded = null
             NativeEngine.nativeUnload()
+            activityLog?.invoke("loading:$key")
+            val started = SystemClock.uptimeMillis()
             var lastPost = 0L
             val err = NativeEngine.nativeLoad(
-                path.toByteArray(Charsets.UTF_8), nCtx, nThreads, 512, true,
+                path.toByteArray(Charsets.UTF_8), config.nCtx, config.nThreads, 512, config.nUbatch,
+                config.lowMemory, config.kvQ8,
                 object : LoadListener {
                     override fun onProgress(progress: Float): Boolean {
                         loadProgress = progress
@@ -180,18 +209,26 @@ class EngineController {
                         }
                         return !cancelLoad.get()
                     }
+
+                    override fun onWarmup() {
+                        phase = Phase.WARMING
+                        announce()
+                    }
                 },
             )
             val message = err?.toString(Charsets.UTF_8)
             if (message == null) {
                 val info = ModelInfo.parse(NativeEngine.nativeInfo().toString(Charsets.UTF_8))
-                loaded = LoadedModel(key, displayName, path, nCtx, nThreads, info)
+                loaded = LoadedModel(key, displayName, path, config, info, SystemClock.uptimeMillis() - started)
                 phase = Phase.READY
+                activityLog?.invoke("ready:$key")
             } else {
                 lastError = if (cancelLoad.get()) null else message
                 phase = Phase.IDLE
+                activityLog?.invoke(null)
             }
             loadingName = null
+            loadingKey = null
             announce()
             if (onDone != null) main.post { onDone(message) }
         }
@@ -207,19 +244,55 @@ class EngineController {
             NativeEngine.nativeUnload()
             loaded = null
             phase = Phase.IDLE
+            activityLog?.invoke(null)
             announce()
         }
     }
 
-    /** Forgets the conversation held in the model's memory (for example when switching chats). */
+    /** Forgets the conversation held in the model's memory. */
     fun resetCache() {
         queue.put { if (loaded != null) NativeEngine.nativeResetCache() }
+    }
+
+    /** Threads for the next step; takes effect between tokens, even in the middle of a reply. */
+    fun setThreads(n: Int) {
+        if (n > 0) NativeEngine.nativeSetThreads(n)
     }
 
     fun systemInfo(callback: (String) -> Unit) {
         queue.put {
             val s = NativeEngine.nativeSystemInfo()
             main.post { callback(s) }
+        }
+    }
+
+    /** Measures reading and writing speed at each thread count. Clears the model's memory. */
+    fun bench(threads: IntArray, nPrompt: Int, nGen: Int, onRow: (BenchRow) -> Unit, onDone: (List<BenchRow>, String?) -> Unit) {
+        if (loaded == null) {
+            main.post { onDone(emptyList(), "No model is loaded.") }
+            return
+        }
+        phase = Phase.BUSY
+        announce()
+        queue.put {
+            val rows = mutableListOf<BenchRow>()
+            var error: String? = null
+            // one count at a time, so each result shows as soon as it is measured
+            for (t in threads) {
+                val j = JSONObject(NativeEngine.nativeBench(intArrayOf(t), nPrompt, nGen).toString(Charsets.UTF_8))
+                val arr = j.optJSONArray("results")
+                val e = j.optString("error")
+                if (e.isNotBlank()) error = e
+                if (arr == null || arr.length() == 0) break
+                val o = arr.getJSONObject(0)
+                val row = BenchRow(o.getInt("threads"), o.getDouble("pp"), o.getDouble("tg"))
+                rows += row
+                main.post { onRow(row) }
+            }
+            loaded?.let { NativeEngine.nativeSetThreads(it.config.nThreads) }
+            phase = if (loaded != null) Phase.READY else Phase.IDLE
+            announce()
+            main.post { onDone(rows, error) }
         }
     }
 
@@ -233,13 +306,15 @@ class EngineController {
         announce()
         val bytes = request.toString().toByteArray(Charsets.UTF_8)
         queue.put {
-            if (loaded == null) {
+            val model = loaded
+            if (model == null) {
                 phase = Phase.IDLE
                 announce()
                 main.post { listener.onDone(ChatOutcome.failure("No model is loaded.")) }
                 return@put
             }
             phase = Phase.BUSY
+            activityLog?.invoke("writing:${model.key}")
             val result = NativeEngine.nativeChat(bytes, object : ChatListener {
                 override fun onPromptProgress(done: Int, total: Int) {
                     main.post { listener.onPromptProgress(done, total) }
@@ -251,6 +326,7 @@ class EngineController {
                     main.post { listener.onUpdate(r, c, generated) }
                 }
             })
+            activityLog?.invoke("ready:${model.key}")
             val outcome = try {
                 ChatOutcome.parse(result.toString(Charsets.UTF_8))
             } catch (e: Exception) {

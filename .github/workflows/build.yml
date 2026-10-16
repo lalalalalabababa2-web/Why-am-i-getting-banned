@@ -197,19 +197,32 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Only a build whose on-device tests passed becomes the download.
+  publish:
+    name: Publish
+    needs: [apk, emulator, engine-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: OfflineAI-apk
+
       # A release with a fixed name, so the download link never changes:
       # https://github.com/<owner>/<repo>/releases/download/offline-ai-latest/OfflineAI.apk
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git archive --format=zip --prefix=OfflineAI/ -o OfflineAI-source.zip HEAD
           VERSION=$("$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt2" dump badging OfflineAI.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           cat > notes.md <<EOF
-          Offline AI $VERSION, built from ${GITHUB_SHA::7} on the \`offline-ai\` branch.
+          Offline AI $VERSION, built from ${GITHUB_SHA::7} on the \`offline-ai\` branch. Its engine tests and on-device tests passed before it was published.
 
           Install: open OfflineAI.apk on the phone and allow installs from your browser when Android asks. Each new build installs over the last one and keeps your models and chats.
 
-          Runs GGUF models on the phone's CPU with llama.cpp $(grep llamaCppVersion gradle.properties | cut -d= -f2). Built for 64-bit ARM phones (Android 11 or newer).
+          Runs GGUF models on the phone's CPU with llama.cpp $(grep llamaCppVersion gradle.properties | cut -d= -f2). Built for 64-bit ARM phones (Android 11 or newer). OfflineAI-source.zip is this version's source (llama.cpp itself is a submodule and not included).
           EOF
           gh release delete offline-ai-latest --cleanup-tag --yes 2>/dev/null || true
-          gh release create offline-ai-latest OfflineAI.apk --target "$GITHUB_SHA" --title "Offline AI $VERSION" --notes-file notes.md --latest=false
+          gh release create offline-ai-latest OfflineAI.apk OfflineAI-source.zip --target "$GITHUB_SHA" --title "Offline AI $VERSION" --notes-file notes.md --latest=false

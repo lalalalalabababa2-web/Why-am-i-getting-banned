@@ -4,6 +4,14 @@
     <!-- Only for downloading the models you pick. Chatting never goes online. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- While a reply is being written, and only then: a foreground service with a notification
+         and a partial wake lock, so the reply can finish with the app in the background or the
+         screen off. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!--
         extractNativeLibs: the engine loads its CPU variants (one library per ARM feature level)
         from the app's library folder, so the libraries are unpacked there at install.
@@ -40,6 +48,20 @@
         <activity
             android:name=".ui.ChatsActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".ui.SelectTextActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
             android:exported="false" />
+
+        <service
+            android:name=".GenerationService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs an AI model on the phone to finish a reply the user asked for, while the app is in the background." />
+        </service>
     </application>
 </manifest>

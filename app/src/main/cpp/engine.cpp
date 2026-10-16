@@ -98,7 +98,7 @@ static bool load_progress(float p, void * data) {
 }
 
 bool Engine::load(const std::string & path, const LoadParams & params, std::string & err,
-                  const std::function<bool(float)> & progress) {
+                  const std::function<bool(float)> & progress, const std::function<void()> & on_warmup) {
     unload();
     params_ = params;
     stop_.store(false);
@@ -106,6 +106,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
     mp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+    mp.use_extra_bufts = !params.low_memory;
     ProgressBridge bridge{&progress};
     mp.progress_callback = load_progress;
     mp.progress_callback_user_data = &bridge;
@@ -122,7 +123,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     auto cp = llama_context_default_params();
     cp.n_ctx = (uint32_t) std::max(512, params.n_ctx);
     cp.n_batch = (uint32_t) std::max(32, params.n_batch);
-    cp.n_ubatch = std::min<uint32_t>(cp.n_batch, 256);
+    cp.n_ubatch = std::min<uint32_t>(cp.n_batch, (uint32_t) std::max(16, params.n_ubatch));
     cp.n_seq_max = 1;
     cp.n_threads = std::max(1, params.n_threads);
     cp.n_threads_batch = std::max(1, params.n_threads);
@@ -132,6 +133,12 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.abort_callback = abort_cb;
     cp.abort_callback_data = &stop_;
     cp.no_perf = true;
+    if (params.kv_q8) {
+        // A quantized V cache needs flash attention, which the CPU backend has.
+        cp.type_k = GGML_TYPE_Q8_0;
+        cp.type_v = GGML_TYPE_Q8_0;
+        cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    }
 
     ctx_ = llama_init_from_model(model_, cp);
     if (!ctx_) {
@@ -139,8 +146,25 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         model_ = nullptr;
         vocab_ = nullptr;
         err = "There is not enough memory for this model at this context size. Try a smaller context "
-              "size in Settings, close other apps, or pick a smaller model.";
+              "size or low-memory mode in Settings, close other apps, or pick a smaller model.";
         return false;
+    }
+    cur_threads_ = cp.n_threads;
+    want_threads_.store(cp.n_threads);
+
+    if (params.warmup) {
+        // One evaluation step reads every weight, so it is paid for here, while the progress bar
+        // is showing, instead of on the first message.
+        if (on_warmup) on_warmup();
+        std::vector<token> tmp;
+        const token bos = llama_vocab_bos(vocab_);
+        const token eos = llama_vocab_eos(vocab_);
+        if (bos != LLAMA_TOKEN_NULL) tmp.push_back(bos);
+        if (eos != LLAMA_TOKEN_NULL) tmp.push_back(eos);
+        if (tmp.empty()) tmp.push_back(0);
+        llama_decode(ctx_, llama_batch_get_one(tmp.data(), (int32_t) tmp.size()));
+        llama_memory_clear(llama_get_memory(ctx_), true);
+        llama_synchronize(ctx_);
     }
 
     can_rm_part_ = common_context_can_seq_rm(ctx_) == COMMON_CONTEXT_SEQ_RM_TYPE_PART;
@@ -204,6 +228,14 @@ void Engine::clear_memory() {
     cache_.clear();
 }
 
+void Engine::apply_threads() {
+    const int want = want_threads_.load();
+    if (want > 0 && want != cur_threads_) {
+        llama_set_n_threads(ctx_, want, want);
+        cur_threads_ = want;
+    }
+}
+
 void Engine::save_snapshot() {
     const size_t n = cache_.size();
     if (n == 0) return;
@@ -251,6 +283,7 @@ bool Engine::restore_snapshot(const Snapshot & s) {
 bool Engine::decode_range(const std::vector<token> & tokens, size_t from, size_t to, bool logits_last,
                           std::string & err, const std::function<void(int, int)> & progress, int total) {
     if (from >= to) return true;
+    apply_threads();
     const int n_batch = (int) llama_n_batch(ctx_);
     llama_batch batch = llama_batch_init(n_batch, 0, 1);
     bool ok = true;
@@ -354,6 +387,7 @@ bool Engine::sync_prompt(const std::vector<token> & prompt, size_t snapshot_at, 
 }
 
 bool Engine::push_token(token t, std::string & err) {
+    apply_threads();
     llama_batch batch = llama_batch_init(1, 0, 1);
     batch.n_tokens = 1;
     batch.token[0] = t;
@@ -399,9 +433,66 @@ static double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+std::vector<BenchResult> Engine::bench(const std::vector<int> & threads, int n_prompt, int n_gen, std::string & err) {
+    std::vector<BenchResult> out;
+    stop_.store(false);
+    if (!ctx_) {
+        err = "No model is loaded.";
+        return out;
+    }
+    const int n_ctx = (int) llama_n_ctx(ctx_);
+    n_prompt = std::max(8, std::min(n_prompt, std::min((int) llama_n_batch(ctx_), n_ctx / 2)));
+    n_gen = std::max(4, std::min(n_gen, n_ctx / 4));
+    const int n_vocab = llama_vocab_n_tokens(vocab_);
+    std::vector<token> prompt(n_prompt);
+    for (int i = 0; i < n_prompt; i++) prompt[i] = (token) ((1009 + i * 7919) % n_vocab);
+
+    clear_memory();
+    snapshots_.clear();
+    const int restore = want_threads_.load();
+    bool first = true;
+    for (int t : threads) {
+        if (stop_.load()) break;
+        if (t < 1) continue;
+        llama_set_n_threads(ctx_, t, t);
+        cur_threads_ = t;
+        want_threads_.store(t);
+        // the first count also warms the caches; measure it after one unmeasured step
+        if (first) {
+            std::string e;
+            decode_range(prompt, 0, std::min<size_t>(8, prompt.size()), true, e, nullptr, 0);
+            clear_memory();
+            first = false;
+        }
+        BenchResult r;
+        r.threads = t;
+        std::string e;
+        auto t0 = std::chrono::steady_clock::now();
+        if (!decode_range(prompt, 0, prompt.size(), true, e, nullptr, 0)) {
+            if (e != "stopped") err = e;
+            clear_memory();
+            break;
+        }
+        r.pp_tps = n_prompt * 1000.0 / std::max(1.0, ms_since(t0));
+        t0 = std::chrono::steady_clock::now();
+        int done = 0;
+        for (; done < n_gen && !stop_.load(); done++) {
+            if (!push_token(prompt[done % n_prompt], e)) break;
+        }
+        r.tg_tps = done * 1000.0 / std::max(1.0, ms_since(t0));
+        clear_memory();
+        if (done < n_gen) break;
+        out.push_back(r);
+    }
+    want_threads_.store(restore > 0 ? restore : params_.n_threads);
+    clear_memory();
+    return out;
+}
+
 ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     ChatResult res;
     stop_.store(false);
+    const auto t_start = std::chrono::steady_clock::now();
     if (!ctx_ || !tmpls_) {
         res.error = "No model is loaded.";
         res.stats.stop_reason = "error";
@@ -540,6 +631,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
 
         const std::string piece = common_token_to_piece(ctx_, id, preserved.count(id) > 0);
         n_gen++;
+        if (n_gen == 1) res.stats.t_first_ms = ms_since(t_start);
         raw += piece;
         if (parser_ok) {
             try {

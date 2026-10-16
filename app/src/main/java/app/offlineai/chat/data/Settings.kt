@@ -1,103 +1,251 @@
 package app.offlineai.chat.data
 
 import android.content.Context
+import android.os.Build
+import android.os.PowerManager
 import java.io.File
+
+enum class PerfMode(val label: String, val help: String) {
+    ECO("Eco", "Half the fast cores. Cooler and lighter on the battery, slower."),
+    BALANCED("Balanced", "The fastest thread count for this phone, and fewer threads when it gets warm."),
+    PERFORMANCE("Performance", "The fastest thread count; only slows down when the phone gets hot."),
+    MAXIMUM("Maximum", "The fastest thread count, kept until Android reports critical heat."),
+}
+
+enum class MemoryMode(val label: String, val help: String) {
+    AUTO("Automatic", "Fast mode, or low-memory mode for models too big to copy into this phone's memory."),
+    FAST("Fast", "Copies the weights into memory in a layout the CPU computes with fastest."),
+    LOW("Low memory", "Leaves the weights in the file, so Android can page them. Slower, but bigger models fit."),
+}
+
+enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Same as the phone") }
+
+enum class Accent(val label: String, val dark: Int, val light: Int) {
+    SLATE("Slate", 0xFF8FA9C7.toInt(), 0xFF3C5F86.toInt()),
+    TEAL("Teal", 0xFF6CC4B8.toInt(), 0xFF1D766E.toInt()),
+    GREEN("Green", 0xFF86C792.toInt(), 0xFF2C7748.toInt()),
+    AMBER("Amber", 0xFFE0B25C.toInt(), 0xFF85600D.toInt()),
+    ROSE("Rose", 0xFFE59AA2.toInt(), 0xFFA54649.toInt()),
+    VIOLET("Violet", 0xFFB3A5EA.toInt(), 0xFF62509F.toInt()),
+}
 
 /** Everything the user can change, kept in one SharedPreferences file. */
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    private fun int(key: String, def: Int) = prefs.getInt(key, def)
+    private fun bool(key: String, def: Boolean) = prefs.getBoolean(key, def)
+    private fun float(key: String, def: Float) = prefs.getFloat(key, def)
+    private fun str(key: String, def: String) = prefs.getString(key, def) ?: def
+    private fun put(key: String, v: Any?) {
+        prefs.edit().apply {
+            when (v) {
+                is Int -> putInt(key, v)
+                is Boolean -> putBoolean(key, v)
+                is Float -> putFloat(key, v)
+                is String -> putString(key, v)
+                null -> remove(key)
+            }
+        }.apply()
+    }
+
+    // ---- model and memory
     var contextSize: Int
-        get() = prefs.getInt("context_size", 4096)
-        set(v) = prefs.edit().putInt("context_size", v).apply()
+        get() = int("context_size", 4096)
+        set(v) = put("context_size", v)
+    var memoryMode: MemoryMode
+        get() = runCatching { MemoryMode.valueOf(str("memory_mode", "AUTO")) }.getOrDefault(MemoryMode.AUTO)
+        set(v) = put("memory_mode", v.name)
+    var kvQ8: Boolean
+        get() = bool("kv_q8", false)
+        set(v) = put("kv_q8", v)
+    var promptBatch: Int
+        get() = int("prompt_batch", 256)
+        set(v) = put("prompt_batch", v)
 
-    /** 0 means "choose for this phone". */
+    // ---- performance
+    var perfMode: PerfMode
+        get() = runCatching { PerfMode.valueOf(str("perf_mode", "BALANCED")) }.getOrDefault(PerfMode.BALANCED)
+        set(v) = put("perf_mode", v.name)
+    /** 0 means "decided by the performance mode". */
     var threads: Int
-        get() = prefs.getInt("threads", 0)
-        set(v) = prefs.edit().putInt("threads", v).apply()
+        get() = int("threads", 0)
+        set(v) = put("threads", v)
+    /** The thread count the speed test found fastest for writing; 0 until it has run. */
+    var measuredThreads: Int
+        get() = int("measured_threads", 0)
+        set(v) = put("measured_threads", v)
+    var measuredSummary: String
+        get() = str("measured_summary", "")
+        set(v) = put("measured_summary", v)
+    var backgroundWriting: Boolean
+        get() = bool("background_writing", true)
+        set(v) = put("background_writing", v)
+    var streamIntervalMs: Int
+        get() = int("stream_interval", 50)
+        set(v) = put("stream_interval", v)
 
+    // ---- replies
     var thinking: Boolean
-        get() = prefs.getBoolean("thinking", true)
-        set(v) = prefs.edit().putBoolean("thinking", v).apply()
-
+        get() = bool("thinking", true)
+        set(v) = put("thinking", v)
     var expandThinking: Boolean
-        get() = prefs.getBoolean("expand_thinking", false)
-        set(v) = prefs.edit().putBoolean("expand_thinking", v).apply()
-
+        get() = bool("expand_thinking", false)
+        set(v) = put("expand_thinking", v)
     var maxTokens: Int
-        get() = prefs.getInt("max_tokens", 4096)
-        set(v) = prefs.edit().putInt("max_tokens", v).apply()
-
+        get() = int("max_tokens", 4096)
+        set(v) = put("max_tokens", v)
     var systemPrompt: String
-        get() = prefs.getString("system_prompt", "") ?: ""
-        set(v) = prefs.edit().putString("system_prompt", v).apply()
+        get() = str("system_prompt", "")
+        set(v) = put("system_prompt", v)
 
+    // ---- sampling
     var useRecommendedSampling: Boolean
-        get() = prefs.getBoolean("recommended_sampling", true)
-        set(v) = prefs.edit().putBoolean("recommended_sampling", v).apply()
-
+        get() = bool("recommended_sampling", true)
+        set(v) = put("recommended_sampling", v)
     var temperature: Float
-        get() = prefs.getFloat("temperature", 0.7f)
-        set(v) = prefs.edit().putFloat("temperature", v).apply()
-
+        get() = float("temperature", 0.7f)
+        set(v) = put("temperature", v)
     var topP: Float
-        get() = prefs.getFloat("top_p", 0.95f)
-        set(v) = prefs.edit().putFloat("top_p", v).apply()
-
+        get() = float("top_p", 0.95f)
+        set(v) = put("top_p", v)
     var topK: Int
-        get() = prefs.getInt("top_k", 40)
-        set(v) = prefs.edit().putInt("top_k", v).apply()
-
+        get() = int("top_k", 40)
+        set(v) = put("top_k", v)
     var minP: Float
-        get() = prefs.getFloat("min_p", 0.05f)
-        set(v) = prefs.edit().putFloat("min_p", v).apply()
-
+        get() = float("min_p", 0.05f)
+        set(v) = put("min_p", v)
     var repeatPenalty: Float
-        get() = prefs.getFloat("repeat_penalty", 1.0f)
-        set(v) = prefs.edit().putFloat("repeat_penalty", v).apply()
+        get() = float("repeat_penalty", 1.0f)
+        set(v) = put("repeat_penalty", v)
 
+    // ---- chat display
+    var autoFollow: Boolean
+        get() = bool("auto_follow", true)
+        set(v) = put("auto_follow", v)
+    var jumpButton: Boolean
+        get() = bool("jump_button", true)
+        set(v) = put("jump_button", v)
+    var codeWrap: Boolean
+        get() = bool("code_wrap", false)
+        set(v) = put("code_wrap", v)
+    var syntaxHighlight: Boolean
+        get() = bool("syntax_highlight", true)
+        set(v) = put("syntax_highlight", v)
+    var markdown: Boolean
+        get() = bool("markdown", true)
+        set(v) = put("markdown", v)
+    var fontScale: Float
+        get() = float("font_scale", 1.0f)
+        set(v) = put("font_scale", v)
+
+    // ---- appearance
+    var theme: ThemeMode
+        get() = runCatching { ThemeMode.valueOf(str("theme", "DARK")) }.getOrDefault(ThemeMode.DARK)
+        set(v) = put("theme", v.name)
+    var accent: Accent
+        get() = runCatching { Accent.valueOf(str("accent", "SLATE")) }.getOrDefault(Accent.SLATE)
+        set(v) = put("accent", v.name)
+
+    // ---- privacy
+    var offlineOnly: Boolean
+        get() = bool("offline_only", false)
+        set(v) = put("offline_only", v)
+
+    // ---- other
     var keepScreenOn: Boolean
-        get() = prefs.getBoolean("keep_screen_on", true)
-        set(v) = prefs.edit().putBoolean("keep_screen_on", v).apply()
+        get() = bool("keep_screen_on", true)
+        set(v) = put("keep_screen_on", v)
+    var askedNotifications: Boolean
+        get() = bool("asked_notifications", false)
+        set(v) = put("asked_notifications", v)
 
     /** The file of the model to load on start. */
     var lastModelFile: String?
         get() = prefs.getString("last_model_file", null)
-        set(v) = prefs.edit().putString("last_model_file", v).apply()
+        set(v) = put("last_model_file", v)
 
     var lastChatId: String?
         get() = prefs.getString("last_chat_id", null)
-        set(v) = prefs.edit().putString("last_chat_id", v).apply()
+        set(v) = put("last_chat_id", v)
 
-    fun effectiveThreads(): Int = if (threads > 0) threads else Device.defaultThreads()
+    /** Threads for the next reply: an explicit choice, or the performance mode's, adjusted for heat. */
+    fun threadsNow(thermalStatus: Int): Int {
+        if (threads > 0) return threads
+        val best = if (measuredThreads > 0) measuredThreads else Device.fastCores()
+        val base = if (perfMode == PerfMode.ECO) (best / 2).coerceAtLeast(2) else best
+        return Device.adjustForHeat(base, perfMode, thermalStatus)
+    }
+
+    /** Threads to load with (heat is applied per reply). */
+    fun baseThreads(): Int = threadsNow(PowerManager.THERMAL_STATUS_NONE)
 
     companion object {
         val CONTEXT_SIZES = intArrayOf(2048, 4096, 8192, 16384, 32768)
-        val MAX_TOKENS = intArrayOf(512, 1024, 2048, 4096, 8192)
+        val MAX_TOKENS = intArrayOf(512, 1024, 2048, 4096, 8192, 16384)
+        val PROMPT_BATCHES = intArrayOf(64, 128, 256, 512)
+        val STREAM_INTERVALS = intArrayOf(16, 33, 50, 100, 250)
+        val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)
     }
 }
 
-/** What this phone's CPU and memory look like. */
+/** What this phone's CPU, memory and temperature look like. */
 object Device {
+    private fun maxFreqs(): List<Long> = (0 until 16).mapNotNull { cpu ->
+        try {
+            File("/sys/devices/system/cpu/cpu$cpu/cpufreq/cpuinfo_max_freq").readText().trim().toLong()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /**
-     * Threads for inference: the cores whose top clock is close to the fastest one. On a
-     * Galaxy S24 FE (one Cortex-X4, five Cortex-A720, four Cortex-A520) that is six. The slow
-     * efficiency cores would make every step wait for them.
+     * The cores whose top clock is close to the fastest one. On a Galaxy S24 FE (one Cortex-X4,
+     * five Cortex-A720, four Cortex-A520) that is six. The slow efficiency cores would make
+     * every step wait for them. The speed test checks this on the phone itself.
      */
-    fun defaultThreads(): Int {
-        val freqs = (0 until 16).mapNotNull { cpu ->
-            try {
-                File("/sys/devices/system/cpu/cpu$cpu/cpufreq/cpuinfo_max_freq").readText().trim().toLong()
-            } catch (e: Exception) {
-                null
-            }
-        }
-        if (freqs.isEmpty()) {
-            return (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 8)
-        }
+    fun fastCores(): Int {
+        val freqs = maxFreqs()
+        if (freqs.isEmpty()) return (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 8)
         val top = freqs.max()
         return freqs.count { it >= top * 0.7 }.coerceIn(2, 8)
     }
 
     fun cores(): Int = Runtime.getRuntime().availableProcessors()
+
+    /** Thread counts worth measuring on this phone. */
+    fun benchCandidates(): IntArray {
+        val fast = fastCores()
+        val all = cores()
+        return sortedSetOf(2, (fast / 2).coerceAtLeast(2), fast - 1, fast, fast + 1, (fast + all) / 2)
+            .filter { it in 1..all }.toIntArray()
+    }
+
+    fun adjustForHeat(base: Int, mode: PerfMode, status: Int): Int = when {
+        status >= PowerManager.THERMAL_STATUS_CRITICAL -> (base / 3).coerceAtLeast(1)
+        mode == PerfMode.MAXIMUM -> base
+        status >= PowerManager.THERMAL_STATUS_SEVERE -> (base / 2).coerceAtLeast(2)
+        mode == PerfMode.PERFORMANCE -> base
+        status >= PowerManager.THERMAL_STATUS_MODERATE -> (base - 2).coerceAtLeast(2)
+        mode == PerfMode.ECO && status >= PowerManager.THERMAL_STATUS_LIGHT -> (base - 1).coerceAtLeast(1)
+        else -> base
+    }
+
+    fun thermalStatus(context: Context): Int {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.currentThermalStatus
+    }
+
+    fun thermalLabel(status: Int): String = when (status) {
+        PowerManager.THERMAL_STATUS_NONE -> "normal"
+        PowerManager.THERMAL_STATUS_LIGHT -> "warm"
+        PowerManager.THERMAL_STATUS_MODERATE -> "hot"
+        PowerManager.THERMAL_STATUS_SEVERE -> "very hot"
+        PowerManager.THERMAL_STATUS_CRITICAL, PowerManager.THERMAL_STATUS_EMERGENCY,
+        PowerManager.THERMAL_STATUS_SHUTDOWN -> "critical"
+        else -> "unknown"
+    }
+
+    @Suppress("unused")
+    val sdk: Int get() = Build.VERSION.SDK_INT
 }

@@ -1,13 +1,27 @@
 package app.offlineai.chat
 
+import android.app.ActivityManager
 import android.app.Application
+import android.app.ApplicationExitInfo
 import android.content.Context
+import android.os.PowerManager
 import app.offlineai.chat.data.ChatStore
+import app.offlineai.chat.data.LocalModel
+import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Settings
 import app.offlineai.chat.engine.EngineController
+import app.offlineai.chat.engine.LoadConfig
 import app.offlineai.chat.engine.NativeEngine
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/** Why the app closed last time, when it was not the user's doing. */
+data class LastExit(val title: String, val message: String, val details: String)
 
 class App : Application() {
     lateinit var settings: Settings
@@ -25,44 +39,212 @@ class App : Application() {
     var nativeError: String? = null
         private set
 
+    /** Shown once on the next screen, then cleared. */
+    var lastExit: LastExit? = null
+
+    private val activityFile by lazy { File(filesDir, "engine_activity") }
+    private val crashFile by lazy { File(filesDir, "crash.txt") }
+
     override fun onCreate() {
         super.onCreate()
         settings = Settings(this)
+        installCrashHandler()
+        // the theme before any screen exists, so none has to be rebuilt for it
+        app.offlineai.chat.ui.Palette.apply(this, settings)
         models = ModelStore(this)
         chats = ChatStore(this)
         engine = EngineController()
         chat = ChatController(this)
+        lastExit = readLastExit()
+        engine.activityLog = { what -> writeActivity(what) }
         try {
             NativeEngine.init(applicationInfo.nativeLibraryDir)
         } catch (t: Throwable) {
             nativeError = "The AI engine could not start on this phone: ${t.message ?: t}"
         }
         chat.restore()
+        watchHeat()
     }
+
+    // ---------------------------------------------------------------- models
+
+    val totalRam: Long by lazy {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }.totalMem
+    }
+
+    fun availableRam(): Long {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }.availMem
+    }
+
+    /** Roughly what a model needs in memory: its weights (less for Gemma's "E" models), plus working space. */
+    fun estimatedRam(model: LocalModel): Long {
+        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        val ctxBytes = settings.contextSize.toLong() * (if (settings.kvQ8) 20_000L else 40_000L)
+        return weights + ctxBytes + 350_000_000L
+    }
+
+    fun lowMemoryFor(model: LocalModel): Boolean = when (settings.memoryMode) {
+        MemoryMode.FAST -> false
+        MemoryMode.LOW -> true
+        MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.55
+    }
+
+    fun configFor(model: LocalModel) = LoadConfig(
+        nCtx = settings.contextSize,
+        nThreads = settings.baseThreads(),
+        nUbatch = settings.promptBatch,
+        lowMemory = lowMemoryFor(model),
+        kvQ8 = settings.kvQ8,
+    )
 
     /** Loads the model used last time, if it is still here and nothing is loaded. */
     fun loadLastModel() {
         if (nativeError != null || engine.loaded != null || engine.phase != EngineController.Phase.IDLE) return
         val name = settings.lastModelFile ?: return
         val model = models.find(name) ?: return
-        loadModel(model.file, model.displayName)
+        loadModel(model)
     }
 
-    fun loadModel(file: File, displayName: String, onDone: ((String?) -> Unit)? = null) {
-        settings.lastModelFile = file.name
-        engine.load(file.name, displayName, file.absolutePath, settings.contextSize, settings.effectiveThreads(), onDone)
+    fun loadModel(model: LocalModel, onDone: ((String?) -> Unit)? = null) {
+        settings.lastModelFile = model.file.name
+        engine.load(model.file.name, model.displayName, model.file.absolutePath, configFor(model), onDone)
     }
 
-    /** The loaded model no longer matches the settings (context size or threads changed). */
+    /** The loaded model no longer matches the settings (context, memory mode, batch, cache precision). */
     fun needsReload(): Boolean {
         val m = engine.loaded ?: return false
-        return m.nCtx != settings.contextSize || m.nThreads != settings.effectiveThreads()
+        val local = models.find(m.key) ?: return false
+        return !m.config.sameShape(configFor(local))
     }
 
     fun reloadIfNeeded() {
-        val m = engine.loaded ?: return
         if (!needsReload() || engine.isBusy) return
-        engine.load(m.key, m.displayName, m.path, settings.contextSize, settings.effectiveThreads())
+        val local = models.find(engine.loaded?.key ?: return) ?: return
+        loadModel(local)
+    }
+
+    // ---------------------------------------------------------------- heat
+
+    private var thermalStatus = PowerManager.THERMAL_STATUS_NONE
+
+    fun currentThermal(): Int = thermalStatus
+
+    /** Threads for the reply about to start, given how warm the phone is now. */
+    fun threadsNow(): Int = settings.threadsNow(thermalStatus)
+
+    private fun watchHeat() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            thermalStatus = pm.currentThermalStatus
+            pm.addThermalStatusListener(mainExecutor) { status ->
+                thermalStatus = status
+                // takes effect at the next token, in the middle of a reply too
+                if (engine.loaded != null) engine.setThreads(threadsNow())
+            }
+        } catch (e: Exception) {
+            // no thermal service on this device: run at the chosen thread count
+        }
+    }
+
+    // ---------------------------------------------------------------- crashes
+
+    private fun writeActivity(what: String?) {
+        try {
+            if (what == null) activityFile.delete() else activityFile.writeText(what)
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun installCrashHandler() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val sw = StringWriter()
+                error.printStackTrace(PrintWriter(sw))
+                val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                crashFile.writeText("Offline AI ${BuildConfig.VERSION_NAME}, $stamp, thread ${thread.name}\n\n$sw")
+            } catch (e: Exception) {
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    /**
+     * Works out why the app last closed, from Android's own record (API 30+) and from what the
+     * engine said it was doing at the time. A model whose loading took the app down is not
+     * loaded again automatically, so it cannot close the app in a loop.
+     */
+    private fun readLastExit(): LastExit? {
+        val activity = try {
+            activityFile.takeIf { it.exists() }?.readText()
+        } catch (e: Exception) {
+            null
+        }
+        val javaCrash = try {
+            crashFile.takeIf { it.exists() }?.readText()
+        } catch (e: Exception) {
+            null
+        }
+        crashFile.delete()
+        activityFile.delete()
+
+        var info: ApplicationExitInfo? = null
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val prefs = getSharedPreferences("exits", Context.MODE_PRIVATE)
+            val seen = prefs.getLong("seen", 0)
+            info = am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()?.takeIf { it.timestamp > seen }
+            info?.let { prefs.edit().putLong("seen", it.timestamp).apply() }
+        } catch (e: Exception) {
+        }
+
+        val reason = info?.reason
+        val abnormal = javaCrash != null || reason in setOf(
+            ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE,
+            ApplicationExitInfo.REASON_LOW_MEMORY, ApplicationExitInfo.REASON_ANR,
+        ) || (reason == ApplicationExitInfo.REASON_SIGNALED && activity != null && !activity.startsWith("ready:"))
+        if (!abnormal) return null
+
+        val model = activity?.substringAfter(':')
+        val doing = when {
+            activity == null -> null
+            activity.startsWith("loading:") -> "loading $model"
+            activity.startsWith("writing:") -> "writing a reply with $model"
+            else -> null
+        }
+        if (activity?.startsWith("loading:") == true && settings.lastModelFile == model) {
+            settings.lastModelFile = null
+        }
+        val (title, message) = when {
+            javaCrash != null -> "Offline AI crashed" to
+                "Something in the app went wrong${doing?.let { " while $it" } ?: ""}. The details below say where; send them to whoever builds the app."
+            reason == ApplicationExitInfo.REASON_LOW_MEMORY || reason == ApplicationExitInfo.REASON_SIGNALED ->
+                "Android closed Offline AI to free memory" to
+                    "It happened while ${doing ?: "the app was open"}. Close other apps, use a smaller context size or low-memory mode " +
+                    "(Settings), or a smaller model." + (if (activity?.startsWith("loading:") == true) " That model won't load by itself next time." else "")
+            reason == ApplicationExitInfo.REASON_CRASH_NATIVE -> "The AI engine crashed" to
+                "It happened while ${doing ?: "the app was open"}." + (if (activity?.startsWith("loading:") == true) " That model won't load by itself next time." else "")
+            reason == ApplicationExitInfo.REASON_ANR -> "Offline AI stopped responding" to
+                "It happened while ${doing ?: "the app was open"}."
+            else -> "Offline AI closed unexpectedly" to "It happened while ${doing ?: "the app was open"}."
+        }
+        val details = buildString {
+            append("Offline AI ${BuildConfig.VERSION_NAME}\n")
+            info?.let {
+                append("Android's record: reason ${it.reason}, status ${it.status}, ${it.description ?: ""}\n")
+                append("memory at exit: ${it.pss / 1024} MB PSS, ${it.rss / 1024} MB RSS\n")
+            }
+            activity?.let { append("engine was: $it\n") }
+            javaCrash?.let { append("\n$it") }
+        }
+        try {
+            getSharedPreferences("exits", Context.MODE_PRIVATE).edit()
+                .putString("last_report", "$title\n$message\n\n$details").apply()
+        } catch (e: Exception) {
+        }
+        return LastExit(title, message, details)
     }
 
     companion object {

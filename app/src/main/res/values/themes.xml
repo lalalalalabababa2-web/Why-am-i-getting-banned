@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.OfflineAI" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.OfflineAI" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
         <item name="colorPrimary">@color/surface_1</item>
@@ -18,7 +18,7 @@
         <item name="android:alertDialogTheme">@style/Theme.OfflineAI.Dialog</item>
     </style>
 
-    <style name="Theme.OfflineAI.Dialog" parent="Theme.AppCompat.Dialog.Alert">
+    <style name="Theme.OfflineAI.Dialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
         <item name="android:windowBackground">@drawable/bg_dialog</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:textColorPrimary">@color/text_primary</item>

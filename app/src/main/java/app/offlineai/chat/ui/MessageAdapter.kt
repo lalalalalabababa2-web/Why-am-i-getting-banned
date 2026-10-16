@@ -9,23 +9,82 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import app.offlineai.chat.App
 import app.offlineai.chat.R
 import app.offlineai.chat.data.ChatMessage
 
-class MessageAdapter(private val app: App, private val onEditLast: (String) -> Unit) :
-    RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+/**
+ * The messages of the open conversation. Changes are applied precisely: a reply that grows is
+ * updated in place (only its own views), finished or added messages go through DiffUtil, and
+ * nothing is ever rebuilt wholesale while you read.
+ */
+class MessageAdapter(
+    private val app: App,
+    private val actions: Actions,
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+    interface Actions {
+        fun editLast(text: String)
+        fun selectText(text: String)
+        fun keepInPlace(anchor: View, change: () -> Unit)
+        /** Whether the list is following the reply (you are at the bottom). */
+        fun isFollowing(): Boolean
+    }
 
     private val messages get() = app.chat.conversation.messages
-    /** Replies whose thinking was opened or closed by hand. */
-    private val thinkingToggled = mutableMapOf<String, Boolean>()
+    private val ids = HashMap<String, Long>()
+    private var nextId = 1L
+
+    /** What the list last showed: message id and a fingerprint of its content. */
+    private var shown: List<Pair<String, String>> = emptyList()
+
+    /** Thinking opened or closed by hand, and folded code blocks, per message. */
+    private val thinkingOpen = HashMap<String, Boolean>()
+    private val folded = HashMap<String, MutableSet<Int>>()
+
+    var options = RenderOptions(markdown = true, wrapCode = false, highlight = true, fontScale = 1f)
+
+    init {
+        setHasStableIds(true)
+    }
 
     override fun getItemCount() = messages.size
-
     override fun getItemViewType(position: Int) = if (messages[position].role == "user") 0 else 1
+    override fun getItemId(position: Int): Long = ids.getOrPut(messages[position].id) { nextId++ }
 
-    override fun getItemId(position: Int) = messages[position].id.hashCode().toLong()
+    private fun fingerprint(m: ChatMessage) =
+        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}"
+
+    /** Shows the conversation as it is now, changing only what changed. */
+    fun submit() {
+        val now = messages.map { it.id to fingerprint(it) }
+        val old = shown
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize() = old.size
+            override fun getNewListSize() = now.size
+            override fun areItemsTheSame(o: Int, n: Int) = old[o].first == now[n].first
+            override fun areContentsTheSame(o: Int, n: Int) = old[o].second == now[n].second
+        }, false)
+        shown = now
+        diff.dispatchUpdatesTo(this)
+    }
+
+    /** A different conversation: everything is new. */
+    fun reset() {
+        shown = messages.map { it.id to fingerprint(it) }
+        notifyDataSetChanged()
+    }
+
+    /** The reply being written grew; redraw only it. */
+    fun replyChanged() {
+        val i = messages.indexOfFirst { it === app.chat.streaming }
+        if (i >= 0) {
+            notifyItemChanged(i, PAYLOAD_STREAM)
+            shown = messages.map { it.id to fingerprint(it) }
+        }
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
         if (viewType == 0) UserHolder(parent.context) else ReplyHolder(parent.context)
@@ -33,12 +92,15 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val m = messages[position]
         when (holder) {
-            is UserHolder -> holder.bind(m, position == lastUserIndex())
+            is UserHolder -> holder.bind(m, position == messages.indexOfLast { it.role == "user" })
             is ReplyHolder -> holder.bind(m, position == messages.size - 1)
         }
     }
 
-    private fun lastUserIndex() = messages.indexOfLast { it.role == "user" }
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+        // the same binding either way; the views it reuses make a growing reply cheap
+        onBindViewHolder(holder, position)
+    }
 
     inner class UserHolder(ctx: Context) : RecyclerView.ViewHolder(LinearLayout(ctx)) {
         private val row = itemView as LinearLayout
@@ -52,36 +114,40 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
             row.orientation = LinearLayout.HORIZONTAL
             row.gravity = Gravity.END
             row.layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
-            row.setPadding(ctx.dp(48), ctx.dp(10), ctx.dp(14), ctx.dp(4))
+            row.setPadding(ctx.dp(48), ctx.dp(12), ctx.dp(14), ctx.dp(4))
             row.addView(bubble, lp(WRAP, WRAP))
         }
 
         fun bind(m: ChatMessage, isLastUser: Boolean) {
             bubble.text = m.content
-            bubble.setOnClickListener { v ->
-                val menu = PopupMenu(v.context, v)
-                menu.menu.add(0, 1, 0, "Copy")
-                if (isLastUser && !app.chat.generating) menu.menu.add(0, 2, 1, "Edit and send again")
-                if (!app.chat.generating) menu.menu.add(0, 3, 2, "Delete")
-                menu.setOnMenuItemClickListener {
+            val menu = View.OnClickListener { v ->
+                val pm = PopupMenu(v.context, v)
+                pm.menu.add(0, 1, 0, "Copy")
+                pm.menu.add(0, 4, 1, "Select text")
+                if (isLastUser && !app.chat.generating) pm.menu.add(0, 2, 2, "Edit and send again")
+                if (!app.chat.generating) pm.menu.add(0, 3, 3, "Delete")
+                pm.setOnMenuItemClickListener {
                     when (it.itemId) {
                         1 -> v.context.copyText("message", m.content)
-                        2 -> app.chat.takeBackLast()?.let(onEditLast)
+                        2 -> app.chat.takeBackLast()?.let(actions::editLast)
                         3 -> app.chat.delete(m)
+                        4 -> actions.selectText(m.content)
                     }
                     true
                 }
-                menu.show()
+                pm.show()
             }
+            bubble.setOnClickListener(menu)
+            bubble.setOnLongClickListener { menu.onClick(it); true }
         }
     }
 
-    inner class ReplyHolder(ctx: Context) : RecyclerView.ViewHolder(LinearLayout(ctx)) {
+    inner class ReplyHolder(ctx: Context) : RecyclerView.ViewHolder(LinearLayout(ctx)), Markdown.Host {
         private val col = itemView as LinearLayout
         private val chevron = ImageView(ctx)
         private val thinkLabel = ctx.text("", 13f, Palette.text3, bold = true)
         private val thinkHeader = LinearLayout(ctx)
-        private val thinkBody = ctx.text("", 13.5f, Palette.text2).apply { setTextIsSelectable(true) }
+        private val thinkBody = ctx.text("", 13.5f, Palette.text2)
         private val thinkWrap = LinearLayout(ctx)
         private val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         private val waiting = ctx.text("", 14f, Palette.text3)
@@ -89,12 +155,15 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
         private val stats = ctx.text("", 12f, Palette.text3)
         private val copy = ctx.iconButton(R.drawable.ic_copy, "Copy reply", Palette.text3) {}
         private val again = ctx.iconButton(R.drawable.ic_refresh, "Write again", Palette.text3) {}
+        private val more = ctx.iconButton(R.drawable.ic_more, "More", Palette.text3) {}
         private val footer = LinearLayout(ctx)
+        private var message: ChatMessage? = null
+        private var thinkingShown = ""
 
         init {
             col.orientation = LinearLayout.VERTICAL
             col.layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
-            col.setPadding(ctx.dp(16), ctx.dp(10), ctx.dp(12), ctx.dp(2))
+            col.setPadding(ctx.dp(16), ctx.dp(12), ctx.dp(12), ctx.dp(2))
 
             thinkHeader.orientation = LinearLayout.HORIZONTAL
             thinkHeader.gravity = Gravity.CENTER_VERTICAL
@@ -105,6 +174,7 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
             thinkHeader.addView(thinkLabel, lp(WRAP, WRAP).apply { marginStart = ctx.dp(4) })
             col.addView(thinkHeader, lp(WRAP, WRAP))
 
+            thinkBody.setText("", TextView.BufferType.EDITABLE)
             thinkWrap.orientation = LinearLayout.HORIZONTAL
             thinkWrap.addView(View(ctx).apply { setBackgroundColor(Palette.borderStrong) }, lp(ctx.dp(2), MATCH))
             thinkWrap.addView(thinkBody, lp(0, WRAP, 1f).apply { marginStart = ctx.dp(10) })
@@ -119,27 +189,86 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
             footer.addView(stats, lp(0, WRAP, 1f))
             footer.addView(copy, lp(ctx.dp(36), ctx.dp(36)))
             footer.addView(again, lp(ctx.dp(36), ctx.dp(36)))
+            footer.addView(more, lp(ctx.dp(36), ctx.dp(36)))
             col.addView(footer, lp(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
+
+            content.setOnLongClickListener { showMenu(it); true }
+        }
+
+        // Markdown.Host
+        override fun isCollapsed(blockIndex: Int) = message?.let { folded[it.id]?.contains(blockIndex) } ?: false
+
+        override fun toggleCollapsed(blockIndex: Int, anchor: View) {
+            val m = message ?: return
+            actions.keepInPlace(anchor) {
+                val set = folded.getOrPut(m.id) { mutableSetOf() }
+                if (!set.add(blockIndex)) set.remove(blockIndex)
+                bindContent(m)
+            }
+        }
+
+        override fun copy(label: String, text: String) = itemView.context.copyText(label, text)
+
+        private fun showMenu(v: View) {
+            val m = message ?: return
+            val pm = PopupMenu(v.context, v)
+            pm.menu.add(0, 1, 0, "Copy")
+            pm.menu.add(0, 2, 1, "Select text")
+            if (!app.chat.generating) pm.menu.add(0, 3, 2, "Delete")
+            pm.setOnMenuItemClickListener {
+                when (it.itemId) {
+                    1 -> v.context.copyText("reply", m.content)
+                    2 -> actions.selectText(m.content)
+                    3 -> app.chat.delete(m)
+                }
+                true
+            }
+            pm.show()
         }
 
         fun bind(m: ChatMessage, isLast: Boolean) {
+            if (message !== m) {
+                // a different message in this view: start its text views from scratch
+                message = m
+                thinkingShown = ""
+                thinkBody.editableText?.clear()
+                content.removeAllViews()
+                content.tag = null
+            }
             val ctx = itemView.context
             val streaming = app.chat.streaming === m
             val hasThinking = m.reasoning.isNotBlank()
 
-            // Thinking: open while it is the only thing being written, then folded away unless
-            // the setting says to keep it open or it was opened by hand.
+            // Thinking: open while it is the only thing being written; folded once the answer
+            // starts, unless the setting keeps it open or you opened it.
             thinkHeader.visibility = if (hasThinking) View.VISIBLE else View.GONE
-            val open = thinkingToggled[m.id] ?: (app.settings.expandThinking || (streaming && m.content.isBlank()))
+            // If you are reading the thinking when the answer starts, it stays open: folding it
+            // would pull the text out from under you.
+            if (streaming && hasThinking && m.content.isNotBlank() && thinkingOpen[m.id] == null &&
+                thinkWrap.visibility == View.VISIBLE && !actions.isFollowing()
+            ) {
+                thinkingOpen[m.id] = true
+            }
+            val open = thinkingOpen[m.id] ?: (app.settings.expandThinking || (streaming && m.content.isBlank()))
             thinkWrap.visibility = if (hasThinking && open) View.VISIBLE else View.GONE
             if (hasThinking) {
                 thinkLabel.text = if (streaming && m.content.isBlank()) "Thinking…" else "Thoughts"
                 chevron.setImageDrawable(ContextCompat.getDrawable(ctx, if (open) R.drawable.ic_chevron_down else R.drawable.ic_chevron_right)
                     ?.mutate()?.apply { setTint(Palette.text3) })
-                if (open) thinkBody.text = m.reasoning.trim()
+                if (open) {
+                    val r = m.reasoning
+                    val e = thinkBody.editableText
+                    if (e != null && r != thinkingShown) {
+                        if (r.startsWith(thinkingShown) && thinkingShown.isNotEmpty()) e.append(r, thinkingShown.length, r.length)
+                        else { e.clear(); e.append(r) }
+                        thinkingShown = r
+                    }
+                }
                 thinkHeader.setOnClickListener {
-                    thinkingToggled[m.id] = !open
-                    notifyItemChanged(bindingAdapterPosition)
+                    actions.keepInPlace(thinkHeader) {
+                        thinkingOpen[m.id] = !open
+                        bind(m, isLast)
+                    }
                 }
             }
 
@@ -147,11 +276,9 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
                 errorText.visibility = View.VISIBLE
                 errorText.text = m.content
                 content.visibility = View.GONE
-                content.removeAllViews()
             } else {
                 errorText.visibility = View.GONE
-                content.visibility = if (m.content.isBlank()) View.GONE else View.VISIBLE
-                if (m.content.isNotBlank()) Markdown.render(content, m.content) else content.removeAllViews()
+                bindContent(m)
             }
 
             if (streaming && m.content.isBlank() && !hasThinking) {
@@ -175,7 +302,26 @@ class MessageAdapter(private val app: App, private val onEditLast: (String) -> U
                 copy.setOnClickListener { ctx.copyText("reply", m.content) }
                 again.visibility = if (isLast && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
                 again.setOnClickListener { app.chat.regenerate() }
+                more.setOnClickListener { showMenu(it) }
             }
         }
+
+        private fun bindContent(m: ChatMessage) {
+            content.visibility = if (m.content.isBlank()) View.GONE else View.VISIBLE
+            if (m.content.isNotBlank()) {
+                try {
+                    Markdown.render(content, m.content, options, this)
+                } catch (e: Exception) {
+                    // never lose a reply to a drawing problem: show it as plain text
+                    content.removeAllViews()
+                    content.tag = null
+                    content.addView(itemView.context.text(m.content))
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val PAYLOAD_STREAM = "stream"
     }
 }
