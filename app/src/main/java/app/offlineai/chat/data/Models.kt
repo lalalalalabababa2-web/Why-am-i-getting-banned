@@ -48,7 +48,7 @@ data class CatalogModel(
     /** Reads pictures (and [hears] sound) once its projector is downloaded. */
     val pictures: ExtraFile? = null,
     val hears: Boolean = false,
-    /** A drafter file that makes it write faster (Gemma 4); downloaded with the model. */
+    /** A drafter file for drafting ahead (Gemma 4); optional, added from the model's row. */
     val drafter: ExtraFile? = null,
     /** The file carries its own multi-token-prediction head (Qwen3.5 "MTP" files). */
     val mtp: Boolean = false,
@@ -67,8 +67,8 @@ object Catalog {
         // ---- Google
         CatalogModel(
             "gemma4-e4b", "Gemma 4 E4B", "Google",
-            "The best all-round model for this phone: chat, writing, code. Sees pictures and hears sound with its " +
-                "projector, and drafts ahead with its small assistant file.",
+            "The best all-round model for this phone: chat, writing, code. Sees pictures and hears sound once its " +
+                "picture support is added.",
             "unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q4_K_M.gguf", 4_977_171_584L, Family.GEMMA, true, ple = true,
             pictures = ExtraFile("mmproj-F16.gguf", 990_000_000L, "unsloth/gemma-4-E4B-it-GGUF"), hears = true,
             drafter = ExtraFile("mtp-gemma-4-E4B-it.gguf", 98_700_000L, "unsloth/gemma-4-E4B-it-GGUF"),
@@ -88,14 +88,13 @@ object Catalog {
         // ---- Alibaba Qwen
         CatalogModel(
             "qwen35-4b", "Qwen3.5 4B", "Alibaba Qwen",
-            "The official Qwen3.5 small model. Strong at reasoning and code for its size. Sees pictures, and drafts " +
-                "ahead with its own MTP head.",
+            "The official Qwen3.5 small model. Strong at reasoning and code for its size. Sees pictures.",
             "unsloth/Qwen3.5-4B-MTP-GGUF", "Qwen3.5-4B-Q4_K_M.gguf", 2_830_000_000L, Family.QWEN, true,
             pictures = qwenPictures("4B", 672_000_000L), mtp = true, olderBelow = 2_780_000_000L,
         ),
         CatalogModel(
             "qwen35-2b", "Qwen3.5 2B", "Alibaba Qwen",
-            "Half the size of the 4B, so it writes faster and leaves more memory free. Sees pictures, drafts ahead with its MTP head.",
+            "Half the size of the 4B, so it writes faster and leaves more memory free. Sees pictures.",
             "unsloth/Qwen3.5-2B-MTP-GGUF", "Qwen3.5-2B-Q4_K_M.gguf", 1_330_000_000L, Family.QWEN, true,
             pictures = qwenPictures("2B", 668_000_000L), mtp = true,
         ),
@@ -162,7 +161,7 @@ object Catalog {
         ),
         CatalogModel(
             "qwopus35-4b-coder", "Qwopus3.5 4B Coder", "Jackrong (community)",
-            "Qwen3.5 4B tuned for coding, debugging and tool use, with an MTP head for drafting ahead. Experimental.",
+            "Qwen3.5 4B tuned for coding, debugging and tool use. Experimental.",
             "Jackrong/Qwopus3.5-4B-Coder-MTP-GGUF", "Qwopus3.5-4B-Coder-MTP-Q4_K_M.gguf", 2_783_446_560L, Family.QWEN, false,
             mtp = true,
         ),
@@ -193,7 +192,7 @@ object Catalog {
         CatalogModel(
             "qwen35-9b-iq3", "Qwen3.5 9B (compact)", "Alibaba Qwen",
             "More than twice the size of the 4B models, squeezed to about 3 bits. Smarter on hard questions, " +
-                "but slower to write; its MTP head drafts ahead to win some of that back. Close other apps first.",
+                "but slower to write. Close other apps first.",
             "unsloth/Qwen3.5-9B-MTP-GGUF", "Qwen3.5-9B-UD-IQ3_XXS.gguf", 4_300_000_000L, Family.QWEN, true, large = true,
             pictures = qwenPictures("9B", 918_000_000L), mtp = true, olderBelow = 4_150_000_000L,
         ),

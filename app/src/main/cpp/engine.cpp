@@ -70,6 +70,9 @@ static bool abort_cb(void * data) {
     return static_cast<std::atomic<bool> *>(data)->load();
 }
 
+// Drafted tokens a hybrid model can copy from the conversation per step (one recurrent-state copy each).
+static constexpr int kRsNgram = 3;
+
 static double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -170,15 +173,14 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // What kind of drafting this file allows: its own MTP head (Qwen3.5 "-MTP" files), or a
     // separate drafter file next to it (Gemma 4).
     const int n_draft = params.spec_n_max > 0 ? std::min(4, params.spec_n_max) : 0;
-    bool file_mtp = false;
-    if (n_draft > 0) {
-        try {
-            for (auto t : common_speculative_types_from_gguf(path)) {
-                if (t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP) file_mtp = true;
-            }
-        } catch (...) {
+    has_mtp_ = false;
+    try {
+        for (auto t : common_speculative_types_from_gguf(path)) {
+            if (t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP) has_mtp_ = true;
         }
+    } catch (...) {
     }
+    const bool file_mtp = n_draft > 0 && has_mtp_;
     const bool use_drafter = n_draft > 0 && !file_mtp && !params.drafter_path.empty();
 
     auto mp = llama_model_default_params();
@@ -200,9 +202,13 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     is_swa_ = llama_model_n_swa(model_) > 0;
     const bool recurrent = llama_model_is_recurrent(model_) || llama_model_is_hybrid(model_);
 
-    // n-gram drafts can be long; only models whose memory can be wound back any distance use them
-    const bool want_ngram = n_draft > 0 && params.spec_ngram && !recurrent;
-    const int  ngram_n_max = 32;
+    // Copying from the conversation (n-gram drafts) costs nothing until the text repeats. Attention
+    // models can drop any number of rejected tokens, so their copies can be long; hybrids keep a copy
+    // of their recurrent state per drafted token, so they copy 3 at a time, and only while those
+    // copies stay small (models under 10B, not in low-memory mode).
+    const bool small_hybrid = recurrent && llama_model_n_params(model_) < 10000000000ULL && !params.low_memory;
+    const bool want_ngram = params.spec_ngram && (!recurrent || small_hybrid);
+    const int  ngram_n_max = recurrent ? kRsNgram : 31;
     const bool want_head = file_mtp || use_drafter;
     // Room for the logits of one token plus a draft. llama would otherwise reserve logits for
     // every token of a prompt step, hundreds of MB for vocabularies of 250k words, never used.
@@ -218,7 +224,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.n_outputs_max = (uint32_t) spec_n_out_;
     cp.n_outputs_max_per_seq = (uint32_t) spec_n_out_;
     // a recurrent state can be wound back only as far as it keeps copies: one per draft token
-    cp.n_rs_seq = (recurrent && want_head) ? (uint32_t) n_draft : 0;
+    cp.n_rs_seq = recurrent ? (uint32_t) std::max(want_head ? n_draft : 0, want_ngram ? kRsNgram : 0) : 0;
     // Sliding-window models keep every position, so any tail of the memory can be dropped and the
     // conversation never has to be read again from the start. Costs memory only for those models.
     cp.swa_full = params.swa_full;
@@ -270,7 +276,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
                            (rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && llama_n_rs_seq(ctx_) > 0);
 
     // ---- speculative decoding ----
-    if (n_draft > 0 && can_draft) {
+    if ((n_draft > 0 || want_ngram) && can_draft) {
         auto dcp = cp;
         dcp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         dcp.n_rs_seq = 0;
@@ -310,7 +316,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
             sp.draft.ctx_dft = ctx_dft_;
             sp.ngram_mod.n_match = 24;
             sp.ngram_mod.n_max = ngram_n_max;
-            sp.ngram_mod.n_min = 16;
+            sp.ngram_mod.n_min = recurrent ? kRsNgram : 15;
             try {
                 spec_ = common_speculative_init(sp, 1);
             } catch (const std::exception &) {
@@ -380,6 +386,7 @@ ModelInfo Engine::info() const {
     mi.memory = can_rm_part_ ? "attention" : "snapshots";
     mi.speculative = spec_kind_;
     mi.spec_n_max = spec_n_max_;
+    mi.has_mtp = has_mtp_;
     mi.vision = mm_vision_;
     mi.audio = mm_audio_;
     return mi;
@@ -1295,6 +1302,11 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 while (okn < draft.size() && draft[okn] >= 0 && draft[okn] < n_vocab) okn++;
                 if (okn < draft.size()) draft.resize(okn);
                 if ((int) draft.size() > cap) draft.resize(cap);
+                // ggml's repacked ARM kernels read the weights once for every 4 tokens of a step and
+                // once more for each token left over, so a step of 4 costs little more than 1 while
+                // a step of 2 or 3 costs 2 or 3 (measured on an ARM server CPU in CI). Checking
+                // 4k tokens (the last one plus 4k-1 drafted) keeps every step on the fast path.
+                if (draft.size() >= 3) draft.resize((draft.size() + 1) / 4 * 4 - 1);
                 if (draft_q.size() > draft.size()) draft_q.resize(draft.size());
                 // the drafter wrote its guesses into its own memory; the check below starts clean
                 trim_draft((size_t) pos);

@@ -23,6 +23,7 @@ data class ModelInfo(
     /** How replies are drafted ahead: "", "mtp", "drafter", "ngram" or two joined by "+". */
     val speculative: String,
     val specNMax: Int,
+    val hasMtp: Boolean = false,
     val vision: Boolean,
     val audio: Boolean,
     val computeBytes: Long,
@@ -44,6 +45,7 @@ data class ModelInfo(
                 memory = j.optString("memory"),
                 speculative = j.optString("speculative"),
                 specNMax = j.optInt("spec_n_max"),
+                hasMtp = j.optBoolean("has_mtp"),
                 vision = j.optBoolean("vision"),
                 audio = j.optBoolean("audio"),
                 computeBytes = j.optLong("compute_bytes"),

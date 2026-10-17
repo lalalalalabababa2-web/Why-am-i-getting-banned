@@ -151,6 +151,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"memory", mi.memory},
         {"speculative", mi.speculative},
         {"spec_n_max", mi.spec_n_max},
+        {"has_mtp", mi.has_mtp},
         {"vision", mi.vision},
         {"audio", mi.audio},
         {"compute_bytes", engine().compute_bytes()},

@@ -28,11 +28,14 @@ browser when Android asks. New builds install over old ones and keep models and 
   and resend the last message. Chats are saved on the phone.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
-- **Writing faster**: drafting ahead (speculative decoding). Qwen3.5 MTP files carry their own
-  multi-token-prediction head, Gemma 4 gets its small assistant drafter, and any model can copy
-  runs of words already in the conversation (n-gram drafts). The model checks every draft, so
-  the words are the same as without drafting; only the time changes. Settings has a drafting
-  test that measures it on the phone and keeps the fastest setting.
+- **Writing faster**: drafting ahead (speculative decoding), where the model checks several
+  guessed words in one step and keeps the ones it would have written anyway, so replies read the
+  same. *Copying from the conversation* (n-gram drafts) is on by default: it costs nothing until a
+  reply repeats text from the chat, then checks the repeated part many words at a time (3 at a
+  time for Qwen3.5-style hybrid models under 10B). *Drafting with a helper* (Qwen3.5's MTP head,
+  Gemma 4's drafter) is off until the drafting test in Settings finds it faster on the phone: on
+  the CI machines it was slower or no faster (see Tests), because a CPU pays for most of each
+  extra word it checks.
 - **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
   sampling (each model's recommended values by default), drafting, picture detail.
 

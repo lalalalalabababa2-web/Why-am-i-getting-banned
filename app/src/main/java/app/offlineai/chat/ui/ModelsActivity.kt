@@ -203,7 +203,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             if (blurb != null) view.addView(text(blurb, 14f, Palette.text2).apply { setPadding(0, dp(8), 0, 0) })
             val can = mutableListOf<String>()
             if (catalog?.pictures != null) can += if (catalog?.hears == true) "pictures and sound" else "pictures"
-            if (catalog?.mtp == true || catalog?.drafter != null) can += "drafts ahead (faster writing)"
+            if (catalog?.mtp == true || catalog?.drafter != null) can += "drafting test (Settings)"
             if (can.isNotEmpty()) {
                 view.addView(text("Can do: " + can.joinToString(" · "), 12f, Palette.text3).apply { setPadding(0, dp(6), 0, 0) })
             }
@@ -239,7 +239,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 }
             }
             one("mmproj", c.pictures, local?.hasPictures == true, if (c.hears) "Picture and sound support" else "Picture support")
-            one("drafter", c.drafter, local?.hasDrafter == true, "Speed-up file")
+            one("drafter", c.drafter, local?.hasDrafter == true, "Drafter")
             if (local?.isOlderCopy == true) lines += "This copy was downloaded before the faster MTP version. Delete it and download it again to write faster."
             return lines.joinToString("\n") to keyParts.joinToString(",")
         }
@@ -338,7 +338,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     "downloading" -> add(pill("Cancel") { app.models.cancel(fileName); refresh() })
                     "remote" -> if (catalog != null) add(pill("Download", primary = true) { download(catalog) })
                 }
-                // picture support and the speed-up file, once the model itself is here
+                // picture support and the drafter, once the model itself is here
                 val c = catalog
                 if (c != null && (key == "local" || key == "loaded")) {
                     val lm = app.models.find(fileName)
@@ -355,8 +355,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     }
                     val dr = c.drafter
                     if (dr != null && lm != null && !lm.hasDrafter && !downloads.containsKey(app.models.companionKey(fileName, "drafter"))) {
-                        add(pill("Add speed-up file (${ModelStore.formatBytes(dr.sizeBytes)})") {
-                            downloadExtra(c, "drafter", dr, "${c.name} speed-up file")
+                        add(pill("Add drafter (${ModelStore.formatBytes(dr.sizeBytes)})") {
+                            downloadExtra(c, "drafter", dr, "${c.name} drafter")
                         }, true)
                     }
                 }
@@ -446,12 +446,9 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 .show()
             return
         }
+        // the drafter is not downloaded with it: on phone-class CPUs it rarely pays off (see Settings,
+        // drafting test), so it is a separate button on the model's row
         val error = app.models.download(m.url, m.file, m.name)
-        // the small drafter comes along: it is what makes Gemma 4 write faster
-        val dr = m.drafter
-        if (error == null && dr != null && app.settings.speculative) {
-            app.models.downloadCompanion(m.file, "drafter", dr, "${m.name} speed-up file")
-        }
         Toast.makeText(this, error ?: "Downloading ${m.name}. It carries on if you leave the app.", Toast.LENGTH_LONG).show()
         refresh()
     }

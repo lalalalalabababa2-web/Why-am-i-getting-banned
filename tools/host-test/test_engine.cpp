@@ -474,7 +474,11 @@ static bool make_mtp_model(const std::string & src, const std::string & dst) {
 
 // Every token written must be the one the model itself picks (greedy) after the ones before
 // it; a near tie may go either way, since a step that reads several tokens rounds differently.
-static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t from, int * ties) {
+// Teacher-forced: every written token must be the one the reference (no drafting, one token per
+// step) picks there. A gap under the tolerance is a near tie that a step of another size can flip
+// (the default is for exact float models; quantized real models get a looser one).
+static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t from, int * ties, float tol_abs = -1.0f,
+                        float * max_gap = nullptr) {
     std::string err;
     ref.reset_cache();
     std::vector<token> head(seq.begin(), seq.begin() + from);
@@ -487,7 +491,9 @@ static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t
         for (size_t k = 1; k < l.size(); k++) if (l[k] > l[best]) best = (int) k;
         if (best != seq[i]) {
             const float gap = l[best] - l[seq[i]];
-            if (gap > 1e-3f * std::max(1.0f, std::fabs(l[best]))) {
+            if (max_gap) *max_gap = std::max(*max_gap, gap);
+            const float tol = tol_abs >= 0 ? tol_abs : 1e-3f * std::max(1.0f, std::fabs(l[best]));
+            if (gap > tol) {
                 if (bad < 3) std::printf("    token %zu: wrote %d, the model picks %d (gap %.4f)\n", i, seq[i], best, gap);
                 bad++;
             } else {
@@ -511,6 +517,7 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
     oa::Engine e, ref;
     oa::LoadParams lr = lp;
     lr.spec_n_max = 0;
+    lr.spec_ngram = false;
     std::string err;
     if (!e.load(path, lp, err) || !ref.load(path, lr, err)) {
         std::fprintf(stderr, "  load failed: %s\n", err.c_str());
@@ -636,29 +643,27 @@ static void test_speed(const std::string & model, const char * label, const std:
         CHECK(r.ok, "%s, %s: reply failed: %s", label, what, r.error.c_str());
         return r;
     };
-    std::string base;
+    oa::Engine ref;
     {
         oa::LoadParams lp;
         lp.n_ctx = 4096;
         lp.n_threads = threads;
         lp.spec_n_max = 0;
         lp.spec_ngram = false;
-        oa::Engine e;
         std::string err;
-        if (!e.load(model, lp, err)) {
+        if (!ref.load(model, lp, err)) {
             std::fprintf(stderr, "  FAIL %s: load: %s\n", label, err.c_str());
             g_failures++;
             return;
         }
-        CHECK(e.info().speculative.empty(), "%s: drafting should be off (%s)", label, e.info().speculative.c_str());
-        base = run(e, 0, "drafting off").content;
+        CHECK(ref.info().speculative.empty(), "%s: drafting should be off (%s)", label, ref.info().speculative.c_str());
+        run(ref, 0, "drafting off");
     }
     oa::LoadParams lp;
     lp.n_ctx = 4096;
     lp.n_threads = threads;
     lp.spec_n_max = 0;
     for (int n : drafts) lp.spec_n_max = std::max(lp.spec_n_max, n);
-    if (ngram) lp.spec_n_max = std::max(lp.spec_n_max, 2);  // copying is on when drafting is
     lp.spec_ngram = ngram;
     lp.drafter_path = drafter;
     oa::Engine e;
@@ -675,13 +680,16 @@ static void test_speed(const std::string & model, const char * label, const std:
         if (n < 0) std::snprintf(what, sizeof what, "%s", "copying on");
         else std::snprintf(what, sizeof what, "%d drafted", n);
         auto r = run(e, n, what);
-        size_t same = 0;
-        while (same < base.size() && same < r.content.size() && base[same] == r.content[same]) same++;
-        if (same < base.size()) std::printf("    %s: same text as the baseline for %zu of %zu characters\n", what, same, base.size());
-        // a near tie between two words can go either way with a batch of different size; anything
-        // more than that is a bug
-        CHECK(same >= std::min(base.size(), r.content.size()) * 8 / 10,
-              "%s, %s: drafting changed the reply early (%zu of %zu characters the same)", label, what, same, base.size());
+        if (n == 0) continue;
+        // Every word written while drafting must be the reference's pick at that point. Steps of
+        // different sizes take different kernels, so near ties can flip and the reply then goes
+        // its own way; a gap of a whole logit or more would be a real mistake.
+        int ties = 0;
+        float max_gap = 0.0f;
+        const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties, 1.0f, &max_gap);
+        std::printf("    %s: %zu written tokens checked, %d wrong, %d near ties (largest gap %.3f)\n", what,
+                    e.cached().size() - (size_t) r.stats.n_prompt, bad, ties, max_gap);
+        CHECK(bad == 0, "%s, %s: %d written tokens are not what the model picks", label, what, bad);
     }
 }
 
@@ -723,6 +731,7 @@ static void test_real(const std::string & dir, const std::string & tmp) {
 
     // 2. drafting with the model's MTP head, and copying from the conversation: same words, how fast
     test_speed(model, "Qwen3.5 0.8B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+    test_speed(model, "Qwen3.5 0.8B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
 
     // pictures: drafting off, as the app has it until the drafting test says otherwise
     oa::LoadParams lp;
@@ -859,6 +868,7 @@ int main(int argc, char ** argv) {
         const std::string rd = argv[3];
         test_real(rd, rd);
         test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
         test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M", rd + "/mtp-gemma-4-E2B-it.gguf", {0, 1, 2, 3},
                    false, kStoryPrompt);
         // copying from the conversation (attention-only models; hybrids cannot wind back that far)
@@ -895,6 +905,8 @@ int main(int argc, char ** argv) {
     // (a Qwen3.5-style hybrid with an MTP layer added), greedy and sampled
     test_spec(dir + "/llama-dense.gguf", "ngram", 2, true);
     test_spec(dir + "/gemma3-dense.gguf", "ngram", 2, true);
+    test_spec(dir + "/qwen35-dense.gguf", "ngram on a hybrid, 3 at a time", 0, true);
+    test_spec(dir + "/llama-dense.gguf", "ngram only", 0, true);
     const std::string mtp = dir + "/qwen35-mtp.gguf";
     if (!exists(mtp)) CHECK(make_mtp_model(dir + "/qwen35-dense.gguf", mtp), "could not make the MTP test model");
     if (exists(mtp)) {

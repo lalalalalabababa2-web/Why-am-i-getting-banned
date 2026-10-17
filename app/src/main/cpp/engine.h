@@ -156,6 +156,7 @@ struct ModelInfo {
     std::string memory;       // "attention" (any tail can be dropped) or "snapshots"
     std::string speculative;  // "", "mtp", "drafter", "ngram", or two of them joined by "+"
     int         spec_n_max        = 0;
+    bool        has_mtp           = false;  // the file carries an MTP head (loaded only when drafting with it)
     bool        vision            = false;
     bool        audio             = false;
 };
@@ -284,6 +285,7 @@ private:
     llama_context *        ctx_dft_   = nullptr;   // the drafter's context (MTP head or drafter file)
     common_speculative *   spec_      = nullptr;
     std::string            spec_kind_;
+    bool                   has_mtp_ = false;
     int                    spec_n_max_ = 0;        // drafter tokens per step
     int                    spec_n_out_ = 1;        // outputs per step the context was made for
     bool                   ngram_      = false;

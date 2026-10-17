@@ -121,46 +121,51 @@ class SettingsActivity : AppCompatActivity() {
             "so it can keep a steady speed instead of overheating and slowing down hard."))
 
         content.addView(sectionTitle("Writing speed"))
-        switch("Draft ahead",
-            "Proposes the next few words and checks them all in one step. Every word kept is one the model would have " +
-                "written anyway, so replies read the same; it only changes the speed.$reloadNote",
+        switch("Copy from the conversation",
+            "When a reply repeats text that is already in the chat (rewriting a note, editing code, quoting you), the " +
+                "repeated part is checked many words at a time instead of one by one. It costs nothing when nothing " +
+                "repeats, and the words are the same either way. Qwen3.5-style models copy 3 words at a time (those " +
+                "under 10B, not in low-memory mode).$reloadNote",
+            s.copyDrafts) { s.copyDrafts = it }
+        switch("Draft ahead with a helper",
+            "Models with an MTP head (the Qwen3.5 files here) or a drafter (Gemma 4) can guess the next few words and " +
+                "check them in one step. Replies read the same; only the speed changes. On a phone's CPU checking extra " +
+                "words is not free, so it is used for a model only once the drafting test below finds it faster on " +
+                "this phone, or with a number set here.$reloadNote",
             s.speculative) { s.speculative = it; rebuild() }
         if (s.speculative) {
             val file = app.engine.loaded?.key
             val measured = file?.let { s.measuredDrafts(it) } ?: -1
             val autoLabel = when {
-                measured > 0 -> "Automatic (speed test: $measured)"
-                measured == 0 -> "Automatic (speed test: off for this model)"
-                else -> "Automatic (2)"
+                measured > 0 -> "Automatic (test: $measured)"
+                measured == 0 -> "Automatic (test: off for this model)"
+                else -> "Automatic (off until tested)"
             }
             choice("Words drafted per step",
-                "More can be faster when the guesses are good, slower when they are not. The drafting test finds the best number for each model.$reloadNote",
+                "The drafting test picks this for each model. 3 is usually best when drafting helps at all: the CPU " +
+                    "checks words in groups of 4 most efficiently.$reloadNote",
                 listOf(autoLabel) + Settings.DRAFT_TOKENS.drop(1).map { "$it" }, Settings.DRAFT_TOKENS.indexOf(s.draftTokens).coerceAtLeast(0)) {
                 s.draftTokens = Settings.DRAFT_TOKENS[it]
             }
-            switch("Copy from the conversation",
-                "Also drafts by copying text already in the chat, which helps a lot when a reply repeats code or quotes you. " +
-                    "Only for models whose memory can be wound back word by word (not Qwen3.5, LFM2 or Granite 4).$reloadNote",
-                s.copyDrafts) { s.copyDrafts = it }
-            val loaded = app.engine.loaded
-            if (loaded != null) {
-                val how = loaded.info.speculative
-                val desc = when {
-                    how.isEmpty() -> "${loaded.displayName} cannot draft ahead with these settings."
-                    else -> "${loaded.displayName} drafts with " + how.split("+").joinToString(" and ") {
-                        when (it) {
-                            "mtp" -> "its own MTP head"
-                            "drafter" -> "its speed-up file"
-                            else -> "copies from the conversation"
-                        }
-                    } + (if (loaded.info.specNMax > 0) ", up to ${loaded.info.specNMax} words per step." else ".")
-                }
-                content.addView(note(desc))
-            }
-            row("Drafting test", s.draftSummary.ifBlank {
-                "Writes the same short text with drafting off and at each draft length, and keeps the fastest for this model."
-            }) { runDraftTest() }
         }
+        val loaded = app.engine.loaded
+        if (loaded != null) {
+            val how = loaded.info.speculative
+            val desc = when {
+                how.isEmpty() -> "${loaded.displayName} is not drafting with these settings."
+                else -> "${loaded.displayName} drafts by " + how.split("+").joinToString(" and ") {
+                    when (it) {
+                        "mtp" -> "its own MTP head"
+                        "drafter" -> "its drafter"
+                        else -> "copying from the conversation"
+                    }
+                } + (if (loaded.info.specNMax > 0) ", up to ${loaded.info.specNMax} words per step." else ".")
+            }
+            content.addView(note(desc))
+        }
+        row("Drafting test", s.draftSummary.ifBlank {
+            "Writes the same short text with drafting off and with 1, 2 and 3 drafted words, and keeps the fastest for this model."
+        }) { runDraftTest() }
 
         content.addView(sectionTitle("Pictures, video and sound"))
         choice("Picture detail", s.pictureDetail.help + reloadNote, PictureDetail.values().map { it.label }, s.pictureDetail.ordinal) {
@@ -333,30 +338,46 @@ class SettingsActivity : AppCompatActivity() {
         }
         val local = app.models.find(m.key) ?: return
         val how = m.info.speculative
-        if (how.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle("Nothing to test")
-                .setMessage("${m.displayName} cannot draft ahead here: it has no MTP head or speed-up file, and its memory cannot " +
-                    "be wound back for copying (or low-memory mode is on). Models that can: Qwen3.5 (MTP versions), Gemma 4 with its " +
-                    "speed-up file, and plain attention models such as Llama, Phi or Ministral for copying.")
-                .setPositiveButton("OK", null)
-                .show()
-            return
-        }
         val head = "mtp" in how || "drafter" in how
-        if (head && m.info.specNMax < 3 && !reloaded) {
-            // load once with room for 3 drafts per step, so every length can be tried
-            val keep = app.settings.draftTokens
+        if (!head) {
+            val canHead = m.info.hasMtp || local.hasDrafter
+            val drafter = local.catalog?.drafter
+            if (!canHead) {
+                AlertDialog.Builder(this)
+                    .setTitle("Drafting test")
+                    .setMessage(if (drafter != null) {
+                        "${m.displayName} drafts with a separate drafter file (${ModelStore.formatBytes(drafter.sizeBytes)}). " +
+                            "Add it on the Models screen first, then run the test."
+                    } else {
+                        "${m.displayName} has no MTP head or drafter, so there is nothing to test. Copying from the " +
+                            "conversation still works for it when a reply repeats text."
+                    })
+                    .setPositiveButton("OK", null)
+                    .show()
+                return
+            }
+        }
+        if ((!head || m.info.specNMax < 3) && !reloaded) {
+            // load once with the helper and room for 3 drafts per step, so every length can be tried
+            val keepTokens = app.settings.draftTokens
+            val keepSpec = app.settings.speculative
             app.settings.draftTokens = 3
-            Toast.makeText(this, "Loading the model with room for longer drafts…", Toast.LENGTH_SHORT).show()
+            app.settings.speculative = true
+            Toast.makeText(this, "Loading the model with its drafting helper…", Toast.LENGTH_SHORT).show()
             app.loadModel(local) { err ->
-                app.settings.draftTokens = keep
+                app.settings.draftTokens = keepTokens
+                app.settings.speculative = keepSpec
                 if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show() else if (!isFinishing) runDraftTest(reloaded = true)
             }
             return
         }
-        // drafting off, then each length; copying-only models just compare off and on
-        val candidates = if (head) listOf(0, 1, 2, 3).filter { it <= m.info.specNMax } else listOf(0, -1)
+        if (!head) {
+            Toast.makeText(this, "The drafting helper could not be loaded (not enough memory, or low-memory mode).", Toast.LENGTH_LONG).show()
+            app.reloadIfNeeded()
+            return
+        }
+        // drafting off, then each length
+        val candidates = listOf(0, 1, 2, 3).filter { it <= m.info.specNMax }
         val out = text("Writing a short text ${candidates.size} times with ${m.displayName}. Keep the app open.\n", 14f, Palette.text2).apply {
             setPadding(dp(24), dp(8), dp(24), 0)
             typeface = android.graphics.Typeface.MONOSPACE
@@ -374,7 +395,8 @@ class SettingsActivity : AppCompatActivity() {
         fun next(i: Int) {
             if (stopped || i >= candidates.size || isFinishing) {
                 dialog.dismiss()
-                if (!stopped && results.size == candidates.size) offerDraftResult(m.key, m.displayName, results, head)
+                if (!stopped && results.size == candidates.size) offerDraftResult(m.key, m.displayName, results)
+                else app.reloadIfNeeded()
                 return
             }
             val n = candidates[i]
@@ -395,6 +417,7 @@ class SettingsActivity : AppCompatActivity() {
                     if (!outcome.ok || outcome.nGenerated < 8 || outcome.tGenMs <= 0) {
                         dialog.dismiss()
                         if (!stopped) Toast.makeText(this@SettingsActivity, outcome.error.ifBlank { "The test stopped." }, Toast.LENGTH_LONG).show()
+                        app.reloadIfNeeded()
                         return
                     }
                     val tps = (outcome.nGenerated - 1) * 1000.0 / outcome.tGenMs
@@ -408,31 +431,31 @@ class SettingsActivity : AppCompatActivity() {
         next(0)
     }
 
-    private fun offerDraftResult(file: String, name: String, results: List<Pair<Int, Double>>, head: Boolean) {
+    private fun offerDraftResult(file: String, name: String, results: List<Pair<Int, Double>>) {
         val best = results.maxByOrNull { it.second } ?: return
         val off = results.firstOrNull { it.first == 0 }?.second ?: 0.0
         val summary = results.joinToString(", ") {
-            String.format(Locale.US, "%s: %.1f", when (it.first) { 0 -> "off"; -1 -> "on"; else -> "${it.first}" }, it.second)
+            String.format(Locale.US, "%s: %.1f", if (it.first == 0) "off" else "${it.first}", it.second)
         }
         val gain = if (off > 0) String.format(Locale.US, " (%.0f%% faster than without)", (best.second / off - 1) * 100) else ""
-        val choice = if (best.first == -1) 2 else best.first
         val msg = String.format(Locale.US, "Tokens per second with %s:\n%s\n\n", name, summary) + when {
-            best.first == 0 -> "Drafting does not help this model on this phone right now. Turn it off for this model?"
-            head -> "Fastest: ${best.first} drafted words per step$gain. Use that for this model?"
-            else -> "Copying from the conversation is faster$gain. Keep it on?"
+            best.first == 0 -> "Drafting does not make this model faster on this phone. Keep it off for this model?"
+            else -> "Fastest: ${best.first} drafted words per step$gain. Use that for this model?"
         }
         AlertDialog.Builder(this)
             .setTitle("Drafting test")
             .setMessage(msg)
             .setPositiveButton("Yes") { _, _ ->
-                app.settings.setMeasuredDrafts(file, choice)
+                app.settings.setMeasuredDrafts(file, best.first)
                 app.settings.draftTokens = 0
+                if (best.first > 0) app.settings.speculative = true
                 app.settings.draftSummary = String.format(Locale.US, "%s: %s tok/s. Using %s.", name, summary,
-                    if (choice == 0) "no drafting" else if (head) "$choice per step" else "copying")
+                    if (best.first == 0) "no drafting" else "${best.first} per step")
                 app.reloadIfNeeded()
                 rebuild()
             }
-            .setNegativeButton("No", null)
+            .setNegativeButton("No") { _, _ -> app.reloadIfNeeded() }
+            .setOnCancelListener { app.reloadIfNeeded() }
             .show()
     }
 
