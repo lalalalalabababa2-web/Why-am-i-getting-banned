@@ -813,7 +813,7 @@ static void test_real(const std::string & dir, const std::string & tmp) {
 
 // Bonsai: Qwen models with weights of -1/0/+1 (Q2_0, with PrismML's Hadamard rotation) or 1 bit
 // (Q1_0). They must load and answer sensibly, not just run.
-static void test_bonsai(const std::string & path, const char * label, int ctx) {
+static void test_bonsai(const std::string & path, const char * label, int ctx, bool low_memory = false) {
     if (!exists(path)) {
         std::printf("== %s: %s not there, skipped\n", label, path.c_str());
         return;
@@ -823,6 +823,11 @@ static void test_bonsai(const std::string & path, const char * label, int ctx) {
     lp.n_ctx = ctx;
     lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
     lp.spec_n_max = 0;
+    // low memory: weights stay in the file's pages (the plain dot products, this repository's
+    // ARM kernels for Bonsai) instead of being copied into ggml's repacked layout
+    lp.low_memory = low_memory;
+    lp.kv_q8 = low_memory;
+    lp.swa_full = !low_memory;
     oa::Engine e;
     std::string err;
     const auto t0 = std::chrono::steady_clock::now();
@@ -849,6 +854,32 @@ static void test_bonsai(const std::string & path, const char * label, int ctx) {
                 r.stats.n_prompt, r.stats.t_prompt_ms / 1000.0);
     CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
     CHECK(lower(r.content).find("paris") != std::string::npos, "%s: not a sensible answer: %s", label, r.content.c_str());
+
+    // reading a longer message (a new chat, so nothing is in memory yet)
+    oa::ChatRequest longer = req;
+    longer.messages.clear();
+    std::string text;
+    for (int k = 0; k < 3; k++) text += std::string(kCopyPrompt) + "\n\n";
+    text += "Which harbour does the boat leave from? Answer in a few words.";
+    longer.messages.push_back({"user", text, ""});
+    longer.sampling.max_tokens = 16;
+    int reports = 0;
+    oa::ChatCallbacks lcb;
+    lcb.on_prompt_progress = [&](int, int) { reports++; };
+    e.reset_cache();
+    auto rl = e.chat(longer, lcb);
+    std::printf("  long message: ok=%d reply=[%s] progress reports=%d storage page reads=%ld\n", rl.ok, rl.content.c_str(),
+                reports, rl.stats.n_majflt);
+    std::printf("SPEED: %s on %d threads: reads %d tokens in %.1fs (%.1f tokens/s), then writes %.1f tokens/s\n", label,
+                lp.n_threads, rl.stats.n_evaluated, rl.stats.t_prompt_ms / 1000.0,
+                rl.stats.n_evaluated * 1000.0 / std::max(1.0, rl.stats.t_prompt_ms),
+                rl.stats.n_generated * 1000.0 / std::max(1.0, rl.stats.t_gen_ms));
+    CHECK(rl.ok, "%s: the long message failed: %s", label, rl.error.c_str());
+    CHECK(lower(rl.content).find("north") != std::string::npos, "%s: did not read the message: %s", label, rl.content.c_str());
+    // steps of about a second: a slow read reports progress about once a second
+    if (rl.stats.t_prompt_ms > 4000)
+        CHECK(reports >= (int) (rl.stats.t_prompt_ms / 3000), "%s: progress should move while a long message is read "
+              "(%d reports in %.1fs)", label, reports, rl.stats.t_prompt_ms / 1000.0);
 }
 
 int main(int argc, char ** argv) {
@@ -864,6 +895,12 @@ int main(int argc, char ** argv) {
     oa::Engine::backend_init("");
 
     // test_engine <tiny models dir> <llama.cpp dir> [real models dir] [--real-only]
+    // one model on its own (CI runs Bonsai 27B again under a memory limit, the way a phone has it)
+    if (argc >= 6 && std::string(argv[4]) == "--one") {
+        test_bonsai(argv[5], "Bonsai 27B Q1_0, low memory", 2048, true);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     const bool real_only = argc >= 5 && std::string(argv[4]) == "--real-only";
     if (real_only) {
         const std::string rd = argv[3];
@@ -877,6 +914,11 @@ int main(int argc, char ** argv) {
         test_speed(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", 2048);
+        test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0, low memory", 2048, true);
+        test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0, low memory", 2048, true);
+        // abliterated copies load and answer like their originals
+        test_bonsai(std::string(argv[3]) + "/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", "Qwen3.5 2B abliterated", 2048);
+        test_bonsai(std::string(argv[3]) + "/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf", "LFM2.5 1.2B abliterated", 2048);
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -68,6 +69,32 @@ static size_t common_prefix(const std::vector<token> & a, const std::vector<toke
 
 static bool abort_cb(void * data) {
     return static_cast<std::atomic<bool> *>(data)->load();
+}
+
+// Pages this process had to read back from storage so far. A model that fits in memory reads its
+// file once while loading; one that does not keeps reading it, step after step, and crawls.
+static long major_faults() {
+    FILE * f = std::fopen("/proc/self/stat", "r");
+    if (!f) return 0;
+    char buf[1024];
+    const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    buf[n] = 0;
+    const char * p = std::strrchr(buf, ')');  // the name can hold spaces; fields follow it
+    if (!p) return 0;
+    long v[10] = {0};
+    // after ")": state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt
+    char state = 0;
+    if (std::sscanf(p + 1, " %c %ld %ld %ld %ld %ld %ld %ld %ld %ld", &state, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                    &v[6], &v[7], &v[8]) < 10) {
+        return 0;
+    }
+    return v[8];
+}
+
+static ChatResult & with_faults(ChatResult & r, long faults0) {
+    r.stats.n_majflt = major_faults() - faults0;
+    return r;
 }
 
 // Drafted tokens a hybrid model can copy from the conversation per step (one recurrent-state copy each).
@@ -200,6 +227,12 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     }
     vocab_ = llama_model_get_vocab(model_);
     is_swa_ = llama_model_n_swa(model_) > 0;
+    {
+        char desc[256] = {0};
+        llama_model_desc(model_, desc, sizeof desc);
+        const std::string d = desc;
+        prefer_even_ = d.find("Q1_0") != std::string::npos || d.find("Q2_0") != std::string::npos;
+    }
     const bool recurrent = llama_model_is_recurrent(model_) || llama_model_is_hybrid(model_);
 
     // Copying from the conversation (n-gram drafts) costs nothing until the text repeats. Attention
@@ -509,8 +542,15 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
     apply_threads();
     const int n_batch = (int) llama_n_batch(ctx_);
     common_batch batch(ctx_);
-    for (size_t i = from; i < to; i += n_batch) {
-        const size_t n = std::min<size_t>(n_batch, to - i);
+    // While someone watches the progress, steps are sized to take about a second each (a big model
+    // reading a long message would otherwise sit at 0% for the whole first step of 256 tokens).
+    int step = progress ? std::min(n_batch, 32) : n_batch;
+    for (size_t i = from; i < to;) {
+        size_t n = std::min<size_t>(step, to - i);
+        // 1- and 2-bit weights (Bonsai) are read two tokens at a time; one odd step would make ggml
+        // read that whole step one token at a time, so the odd one out goes in a step of its own
+        if (prefer_even_ && n > 1 && (n & 1)) n -= 1;
+        const auto t_step = std::chrono::steady_clock::now();
         batch.clear();
         for (size_t j = 0; j < n; j++) {
             batch.add(tokens[i + j], (llama_pos) (i + j), 0, logits_last && i + j == to - 1);
@@ -544,6 +584,13 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
             err = "stopped";
             return false;
         }
+        if (progress && n >= 8) {
+            const double ms = std::max(1.0, ms_since(t_step));
+            int want = (int) (n * 1000.0 / ms);  // tokens in about a second
+            want = std::max(16, std::min(n_batch, want));
+            step = want & ~1;
+        }
+        i += n;
     }
     return true;
 }
@@ -1017,13 +1064,14 @@ static void text_only(const std::vector<token> & units, std::vector<token> & out
 }
 
 ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
+    const long faults0 = major_faults();
     ChatResult res;
     stop_.store(false);
     const auto t_start = std::chrono::steady_clock::now();
     if (!ctx_ || !tmpls_) {
         res.error = "No model is loaded.";
         res.stats.stop_reason = "error";
-        return res;
+        return with_faults(res, faults0);
     }
 
     const bool can_see = !params_.mmproj_path.empty() && mm_vision_;
@@ -1071,7 +1119,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     if (all.empty() || all.back().role != "user") {
         res.error = "The last message has to be yours.";
         res.stats.stop_reason = "error";
-        return res;
+        return with_faults(res, faults0);
     }
 
     const size_t first = all[0].role == "system" ? 1 : 0;
@@ -1110,7 +1158,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         if (!ensure_mtmd(err)) {
             res.error = err;
             res.stats.stop_reason = "error";
-            return res;
+            return with_faults(res, faults0);
         }
     }
     while (true) {
@@ -1119,12 +1167,12 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         } catch (const std::exception & e) {
             res.error = std::string("The model's chat template failed: ") + e.what();
             res.stats.stop_reason = "error";
-            return res;
+            return with_faults(res, faults0);
         }
         if (!build_prompt(session->prompt().str(), media_of(drop), prompt, err)) {
             res.error = err;
             res.stats.stop_reason = "error";
-            return res;
+            return with_faults(res, faults0);
         }
         const size_t remaining = all.size() - first - drop;
         const int cells = (int) prompt.units.size() + prompt.extra_cells;
@@ -1141,7 +1189,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         res.error = "This message is too long for the context size (" + std::to_string(prompt_cells) +
                     " tokens, the limit is " + std::to_string(n_ctx) + "). Raise the context size in Settings or shorten it.";
         res.stats.stop_reason = "error";
-        return res;
+        return with_faults(res, faults0);
     }
 
     // Where the reply starts: the conversation rendered without the generation prompt. A snapshot
@@ -1171,7 +1219,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             res.error = err;
             res.stats.stop_reason = "error";
         }
-        return res;
+        return with_faults(res, faults0);
     }
     res.stats.t_prompt_ms = ms_since(t_prompt0);
 
@@ -1188,7 +1236,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     if (!smpl) {
         res.error = "Could not set up sampling.";
         res.stats.stop_reason = "error";
-        return res;
+        return with_faults(res, faults0);
     }
     const auto & preserved = sp.preserved_tokens;
     const auto & stops = session->additional_stops();
@@ -1395,7 +1443,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     res.stats.stop_reason = reason;
     res.ok = reason != "error";
     if (cb.on_update) cb.on_update(res.reasoning, res.content, n_gen);
-    return res;
+    return with_faults(res, faults0);
 }
 
 }  // namespace oa

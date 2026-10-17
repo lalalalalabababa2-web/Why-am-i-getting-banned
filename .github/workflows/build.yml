@@ -84,14 +84,38 @@ jobs:
           get unsloth/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
           get prism-ml/Ternary-Bonsai-2-9B-gguf Ternary-Bonsai-2-9B-Q2_0.gguf
           get prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf
+          get mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf
+          get mradermacher/Huihui-LFM2.5-1.2B-Instruct-abliterated-GGUF Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf
           df -h . ; free -g ; nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
+
+      # Offline AI's ARM kernels for Bonsai's 1- and 2-bit weights, against plain C, with and
+      # without the dot-product instructions; and how fast they are on one core.
+      - name: Kernels
+        if: matrix.cpu == 'arm64'
+        run: |
+          set -o pipefail
+          gcc -O2 -std=c11 -mcpu=native -I third_party/llama.cpp/ggml/src tools/host-test/test_kernels.c -lm -o tk-native
+          gcc -O2 -std=c11 -march=armv8-a -I third_party/llama.cpp/ggml/src tools/host-test/test_kernels.c -lm -o tk-v80
+          (./tk-native && ./tk-v80) 2>&1 | tee real.log
 
       - name: Run
         env:
           REAL_MODELS: ${{ github.workspace }}/real-models
         run: |
           set -o pipefail
-          tools/host-test/real.sh 2>&1 | tee real.log
+          tools/host-test/real.sh 2>&1 | tee -a real.log
+
+      # Bonsai 27B once more with only 3 GB of memory, less than the model: what happens on a phone
+      # without enough free memory (the app should notice the storage reads and say so).
+      - name: Bonsai 27B in 3 GB
+        if: matrix.cpu == 'arm64'
+        continue-on-error: true
+        run: |
+          OUT=build/host-test
+          echo "== Bonsai 27B, memory limited to 3 GB" | tee -a real.log
+          sudo systemd-run --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
+            timeout 900 "$OUT/test_engine_real" "$OUT/models" third_party/llama.cpp real-models --one real-models/Bonsai-27B-Q1_0.gguf 2>&1 \
+            | sed 's/^SPEED: /SPEED: [3 GB] /' | tee -a real.log || echo "  (stopped or failed: $?)" | tee -a real.log
       # GitHub keeps at most 10 notices a step, so the results go out as a few multi-line ones.
       - name: Results
         if: always()

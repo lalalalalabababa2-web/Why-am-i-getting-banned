@@ -109,6 +109,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("More 3-4B models", null, listOf("llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini"))
         group("Community", "Qwen3.5 4B tuned by people outside Alibaba.",
             listOf("qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm"))
+        group("Uncensored (abliterated)",
+            "Community copies of the models above with their refusals removed. They answer what the originals decline; " +
+                "what they say is up to you to judge.",
+            listOf("abl-gemma4-e4b", "abl-qwen35-4b", "abl-gemma4-e2b", "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b",
+                "abl-qwen35-9b"))
         group("Bigger models",
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
@@ -117,7 +122,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         val placed = setOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b", "qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b",
             "llama32-1b", "qwen35-0.8b", "gemma3-270m", "llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini",
             "qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm", "lfm25-8b-a1b",
-            "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b")
+            "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b", "abl-gemma4-e4b", "abl-qwen35-4b", "abl-gemma4-e2b",
+            "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b", "abl-qwen35-9b")
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
         val local = app.models.local()
@@ -399,8 +405,9 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             AlertDialog.Builder(this)
                 .setTitle("This may not fit right now")
                 .setMessage("${model.displayName} needs about ${ModelStore.formatBytes(need)} of memory and " +
-                    "${ModelStore.formatBytes(free)} is free. Android may close the app while it loads. Close other apps first, " +
-                    "or switch Memory mode to Low memory in Settings.")
+                    "${ModelStore.formatBytes(free)} is free. If it does not fit, it still loads, but it has to read itself " +
+                    "from storage again for every step, and a single message can take minutes. Close other apps first, " +
+                    "lower the context size, or pick a smaller model (Ternary Bonsai 2 9B is 2.6 GB).")
                 .setPositiveButton("Load anyway") { _, _ -> go() }
                 .setNegativeButton("Cancel", null)
                 .show()

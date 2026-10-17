@@ -290,6 +290,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"t_draft_ms", res.stats.t_draft_ms},
             {"t_verify_ms", res.stats.t_verify_ms},
             {"t_sync_ms", res.stats.t_sync_ms},
+            {"n_majflt", res.stats.n_majflt},
             {"stop_reason", res.stats.stop_reason},
         }},
     };

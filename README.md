@@ -45,6 +45,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 | Small and fast | Qwen3.5 2B and 0.8B, LFM2.5-VL 1.6B, LFM2.5 1.2B, Llama 3.2 1B, Gemma 3 270M |
 | More 3-4B models | Llama 3.2 3B, Ministral 3 3B, Granite 4.1 3B, Phi-4-mini |
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
+| Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed |
 | Bigger | LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
@@ -80,6 +81,14 @@ multiply). Inference uses the fast cores only (six on an S24 FE).
   draft can use.
 - Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
   Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
+
+## Changes to llama.cpp
+
+`third_party/patches/` holds the app's own changes, applied to the submodule at build time by
+`apply.sh` (the Android build and the test scripts run it): faster ARM NEON dot products for the
+Q1_0 and Q2_0 weights of PrismML's Bonsai models, including a two-rows-by-two-tokens version for
+reading prompts. `tools/host-test/test_kernels.c` checks them against plain C (on ARM in CI; on
+other computers through [SIMDe](https://github.com/simd-everywhere/simde)).
 
 ## Tests
 

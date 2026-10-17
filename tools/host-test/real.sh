@@ -11,6 +11,7 @@ OUT="${HOST_TEST_OUT:-$ROOT/build/host-test}"
 : "${REAL_MODELS:?set REAL_MODELS to the folder with the downloaded models}"
 mkdir -p "$OUT/models"
 
+sh "$ROOT/third_party/patches/apply.sh"
 if [ ! -f "$OUT/llama/bin/libmtmd.so" ]; then
   cmake -S "$SRC" -B "$OUT/llama" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF \

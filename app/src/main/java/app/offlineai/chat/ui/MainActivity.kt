@@ -255,6 +255,26 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         refreshAll()
     }
 
+    // While a reply is on its way the header is redrawn every second: the time left keeps moving,
+    // and a model that has run out of memory says so even in the middle of a long step.
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (app.chat.generating) refreshHeader()
+            subtitle.postDelayed(this, 1000)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        subtitle.removeCallbacks(ticker)
+        subtitle.postDelayed(ticker, 1000)
+    }
+
+    override fun onStop() {
+        subtitle.removeCallbacks(ticker)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         app.chat.removeListener(this)
         app.engine.removeListener(this)
@@ -559,7 +579,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         title.text = loaded?.displayName ?: e.loadingName ?: "Offline AI"
         subtitle.setTextColor(Palette.text3)
         val heat = app.currentThermal()
-        val hot = if (heat >= PowerManager.THERMAL_STATUS_MODERATE) " · phone ${Device.thermalLabel(heat)}, slowed down" else ""
+        val hot = (if (heat >= PowerManager.THERMAL_STATUS_MODERATE) " · phone ${Device.thermalLabel(heat)}, slowed down" else "") +
+            (if (c.thrashing()) " · too big for free memory, reading itself from storage" else "")
         subtitle.text = when {
             app.nativeError != null -> "Engine unavailable"
             e.phase == EngineController.Phase.LOADING -> "Loading… ${(e.loadProgress * 100).toInt()}%"
@@ -567,7 +588,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             c.generating && c.mediaIndex == -1 -> "Loading the picture part…"
             c.generating && c.mediaIndex >= 0 && c.mediaTotal > 0 && (c.promptTotal == 0 || c.promptDone < c.promptTotal) ->
                 "Looking at attachment ${c.mediaIndex + 1} of ${c.mediaTotal}…$hot"
-            c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens$hot"
+            c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens${c.promptEtaLabel()}$hot"
             c.generating && c.generated > 1 -> String.format(Locale.US, "Writing · %.1f tok/s", c.tokensPerSecond()) + hot
             c.generating -> "Starting…$hot"
             loaded == null && e.lastError != null -> {

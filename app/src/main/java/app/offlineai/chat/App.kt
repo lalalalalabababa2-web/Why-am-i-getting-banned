@@ -97,7 +97,11 @@ class App : Application() {
     fun lowMemoryFor(model: LocalModel): Boolean = when (settings.memoryMode) {
         MemoryMode.FAST -> false
         MemoryMode.LOW -> true
-        MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.55
+        // Fast mode copies the weights into ggml's faster layout in the app's own memory, which
+        // Android can only make room for by swapping it out or closing the app; low memory leaves
+        // them in the file, where Android can drop pages and read them again. A model of more
+        // than 45% of the phone's memory (3.8 GB Bonsai 27B on an 8 GB phone) goes low.
+        MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.45
     }
 
     fun configFor(model: LocalModel): LoadConfig {

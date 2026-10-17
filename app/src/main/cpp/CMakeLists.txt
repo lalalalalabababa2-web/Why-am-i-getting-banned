@@ -35,6 +35,12 @@ set(LLAMA_BUILD_UI OFF)
 set(LLAMA_BUILD_MTMD ON)
 set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
 
+# Offline AI's own changes to llama.cpp (faster ARM kernels for the Bonsai formats)
+execute_process(COMMAND sh ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/patches/apply.sh RESULT_VARIABLE OA_PATCH_RESULT)
+if(NOT OA_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "third_party/patches/apply.sh failed")
+endif()
+
 add_subdirectory(${LLAMA_SRC} llama-build)
 
 add_library(offlineai SHARED

@@ -182,6 +182,58 @@ object Catalog {
             "AdvancedDataIntelligence/adi-qwen3.5-4b-glm5.2-general-GGUF", "adi-qwen3.5-4b-glm5.2-general-q4_k_m.gguf",
             2_708_804_064L, Family.QWEN, false,
         ),
+        // ---- abliterated: community copies with the refusal direction removed from the weights
+        // (huihui-ai's method), quantized by mradermacher or huihui-ai. Same skills as the originals,
+        // sometimes a little weaker; they answer things the originals decline.
+        CatalogModel(
+            "abl-qwen35-4b", "Qwen3.5 4B abliterated", "huihui-ai (community)",
+            "Qwen3.5 4B with its refusals removed. Answers what the original declines; otherwise much the same model. Sees pictures.",
+            "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF", "Huihui-Qwen3.5-4B-abliterated.Q4_K_M.gguf", 2_707_514_688L,
+            Family.QWEN, false,
+            pictures = ExtraFile("Huihui-Qwen3.5-4B-abliterated.mmproj-f16.gguf", 672_423_552L, "mradermacher/Huihui-Qwen3.5-4B-abliterated-GGUF"),
+        ),
+        CatalogModel(
+            "abl-qwen35-2b", "Qwen3.5 2B abliterated", "huihui-ai (community)",
+            "The smaller Qwen3.5 with its refusals removed: faster, lighter, sees pictures.",
+            "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF", "Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", 1_270_809_024L,
+            Family.QWEN, false,
+            pictures = ExtraFile("Huihui-Qwen3.5-2B-abliterated.mmproj-f16.gguf", 668_227_200L, "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF"),
+        ),
+        CatalogModel(
+            "abl-gemma4-e4b", "Gemma 4 E4B abliterated", "huihui-ai (community)",
+            "Gemma 4 E4B with its refusals removed. The strongest uncensored all-rounder here. Sees pictures.",
+            "mradermacher/Huihui-gemma-4-E4B-it-abliterated-GGUF", "Huihui-gemma-4-E4B-it-abliterated.Q4_K_M.gguf", 5_335_286_272L,
+            Family.GEMMA, false, ple = true,
+            pictures = ExtraFile("Huihui-gemma-4-E4B-it-abliterated.mmproj-f16.gguf", 990_372_672L, "mradermacher/Huihui-gemma-4-E4B-it-abliterated-GGUF"),
+        ),
+        CatalogModel(
+            "abl-gemma4-e2b", "Gemma 4 E2B abliterated", "huihui-ai (community)",
+            "Gemma 4 E2B (Google's quantization-trained version) with its refusals removed. Faster than E4B. Sees pictures.",
+            "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF",
+            "Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf", 3_416_118_240L, Family.GEMMA, false, ple = true,
+            pictures = ExtraFile("mmproj-model-bf16.gguf", 986_833_408L, "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF"),
+        ),
+        CatalogModel(
+            "abl-llama32-3b", "Llama 3.2 3B abliterated", "huihui-ai (community)",
+            "Meta's Llama 3.2 3B with its refusals removed. A plain, steady chat model.",
+            "mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF", "Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf", 2_241_004_512L,
+            Family.LLAMA, false,
+        ),
+        CatalogModel(
+            "abl-lfm25-1.2b", "LFM2.5 1.2B abliterated", "huihui-ai (community)",
+            "Liquid's fast phone model with its refusals removed.",
+            "mradermacher/Huihui-LFM2.5-1.2B-Instruct-abliterated-GGUF", "Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf",
+            730_896_000L, Family.LIQUID, false,
+        ),
+        CatalogModel(
+            "abl-qwen35-9b", "Qwen3.5 9B Opus abliterated", "huihui-ai (community)",
+            "Qwen3.5 9B tuned on Claude-style reasoning, refusals removed, squeezed to about 3 bits. Smarter on hard " +
+                "questions but slower; close other apps first. Sees pictures.",
+            "mradermacher/Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated-GGUF",
+            "Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated.Q3_K_S.gguf", 4_259_403_840L, Family.QWEN, false, large = true,
+            pictures = ExtraFile("Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated.mmproj-Q8_0.gguf", 624_230_080L,
+                "mradermacher/Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated-GGUF"),
+        ),
         // ---- Bigger than 4B: these only fit an 8 GB phone squeezed to about 3 bits, with other apps closed.
         CatalogModel(
             "lfm25-8b-a1b", "LFM2.5 8B-A1B", "Liquid AI",
@@ -205,8 +257,9 @@ object Catalog {
         ),
         CatalogModel(
             "bonsai-27b", "Bonsai 27B (1-bit)", "PrismML",
-            "Qwen3.6 27B with 1-bit weights: a 27B model in 3.8 GB, the most knowledge this phone can hold. It is the " +
-                "slowest model here and needs nearly all free memory; close every other app first. Sees pictures.",
+            "Qwen3.6 27B with 1-bit weights: a 27B model in 3.8 GB, the most knowledge this phone can hold. The slowest " +
+                "model here, and it needs about 4.3 GB of free memory: on an 8 GB phone close every other app first, " +
+                "because if it does not fit it reads itself from storage on every step and crawls. Sees pictures.",
             "prism-ml/Bonsai-27B-gguf", "Bonsai-27B-Q1_0.gguf", 3_803_452_480L, Family.QWEN, true, large = true,
             pictures = ExtraFile("Bonsai-27B-mmproj-Q8_0.gguf", 629_246_880L, "prism-ml/Bonsai-27B-gguf"),
         ),

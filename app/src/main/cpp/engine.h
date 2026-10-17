@@ -122,6 +122,7 @@ struct ChatStats {
     double      t_draft_ms     = 0;  // writing time spent drafting
     double      t_verify_ms    = 0;  //   ... in the model's steps (one per draft check)
     double      t_sync_ms      = 0;  //   ... keeping the drafter's memory in step with the model
+    long        n_majflt       = 0;  // pages read back from storage during the turn (the model does not fit)
     std::string stop_reason;         // eos, length, context, stopped, error
 };
 
@@ -301,6 +302,7 @@ private:
     std::vector<Snapshot> snapshots_;
     bool                  can_rm_part_ = true;
     bool                  is_swa_      = false;
+    bool                  prefer_even_ = false;  // 1-/2-bit weights: prompt steps of an even size
     std::atomic<bool>     stop_{false};
     std::atomic<int>      want_threads_{0};
     int                   cur_threads_ = 0;

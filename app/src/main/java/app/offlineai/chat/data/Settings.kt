@@ -245,6 +245,19 @@ class Settings(context: Context) {
 
 /** What this phone's CPU, memory and temperature look like. */
 object Device {
+    /**
+     * Pages this app has had to read back from storage so far (/proc/self/stat, majflt). A model
+     * that fits in memory is read once while loading; one that does not is read again on every
+     * step, and that is what makes it crawl.
+     */
+    fun majorFaults(): Long = try {
+        val stat = File("/proc/self/stat").readText()
+        val fields = stat.substring(stat.lastIndexOf(')') + 2).split(' ')
+        fields[9].toLong()  // after ")": state ppid pgrp session tty tpgid flags minflt cminflt majflt
+    } catch (e: Exception) {
+        0L
+    }
+
     private fun maxFreqs(): List<Long> = (0 until 16).mapNotNull { cpu ->
         try {
             File("/sys/devices/system/cpu/cpu$cpu/cpufreq/cpuinfo_max_freq").readText().trim().toLong()

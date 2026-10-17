@@ -4,6 +4,7 @@ import android.os.SystemClock
 import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.ChatMessage
 import app.offlineai.chat.data.Conversation
+import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.Family
 import app.offlineai.chat.data.recommended
 import app.offlineai.chat.engine.ChatOutcome
@@ -12,6 +13,9 @@ import app.offlineai.chat.engine.ReplyListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
+
+/** Pages read back from storage in one turn above which the model plainly does not fit in free memory. */
+private const val SLOW_MEMORY_FAULTS = 2000L
 
 /**
  * The open conversation and the reply being written. Lives in the application, not in a
@@ -44,6 +48,31 @@ class ChatController(private val app: App) {
     var generated = 0
         private set
     private var genStartedAt = 0L
+    private var promptT0 = 0L
+    private var promptDone0 = 0
+    private var faults0 = 0L
+
+    /** The model is being read again from storage during this reply: it does not fit in free memory. */
+    fun thrashing(): Boolean = generating && Device.majorFaults() - faults0 > SLOW_MEMORY_FAULTS
+
+    /** Seconds left reading the message, from the speed so far; -1 until there is a speed to go by. */
+    fun promptSecondsLeft(): Int {
+        if (promptT0 == 0L || promptDone <= promptDone0 || promptTotal <= promptDone) return -1
+        val ms = android.os.SystemClock.elapsedRealtime() - promptT0
+        if (ms < 300) return -1
+        val perMs = (promptDone - promptDone0).toDouble() / ms
+        return ((promptTotal - promptDone) / perMs / 1000.0).toInt() + 1
+    }
+
+    /** " · about 20 s left" while reading a long message, else "". */
+    fun promptEtaLabel(): String {
+        val s = promptSecondsLeft()
+        return when {
+            s < 0 -> ""
+            s < 90 -> " · about $s s left"
+            else -> " · about ${(s + 30) / 60} min left"
+        }
+    }
 
     /** Pictures being read: index of the current one (-1 while the picture part loads), and how many. */
     var mediaIndex = -2
@@ -180,6 +209,9 @@ class ChatController(private val app: App) {
         streaming = reply
         promptDone = 0
         promptTotal = 0
+        promptT0 = 0L
+        promptDone0 = 0
+        faults0 = Device.majorFaults()
         generated = 0
         genStartedAt = 0L
         mediaIndex = -2
@@ -192,6 +224,11 @@ class ChatController(private val app: App) {
 
         app.engine.reply(request, object : ReplyListener {
             override fun onPromptProgress(done: Int, total: Int) {
+                if (promptT0 == 0L || done < promptDone) {
+                    // the speed is measured from the first progress report on
+                    promptT0 = android.os.SystemClock.elapsedRealtime()
+                    promptDone0 = done
+                }
                 promptDone = done
                 promptTotal = total
                 status()
@@ -258,6 +295,10 @@ class ChatController(private val app: App) {
             parts += String.format(Locale.US, "read %d in %.1fs", o.nEvaluated, o.tPromptMs / 1000.0)
         }
         if (o.nDropped > 0) parts += "${o.nDropped} oldest messages left out to fit"
+        if (o.nMajflt > SLOW_MEMORY_FAULTS) {
+            parts += "slow because the model did not fit in free memory and was read again from storage; close other " +
+                "apps, lower the context size or pick a smaller model"
+        }
         when (o.stopReason) {
             "stopped" -> parts += "stopped"
             "context" -> parts += "context full"

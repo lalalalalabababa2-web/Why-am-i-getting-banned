@@ -312,7 +312,7 @@ class MessageAdapter(
                 waiting.visibility = View.VISIBLE
                 val c = app.chat
                 waiting.text = if (c.promptTotal > 0 && c.promptDone < c.promptTotal) {
-                    "Reading… ${c.promptDone * 100 / c.promptTotal}%"
+                    "Reading… ${c.promptDone * 100 / c.promptTotal}%${c.promptEtaLabel()}"
                 } else {
                     "…"
                 }

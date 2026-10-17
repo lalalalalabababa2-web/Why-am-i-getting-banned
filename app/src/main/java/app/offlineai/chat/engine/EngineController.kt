@@ -120,6 +120,8 @@ data class ChatOutcome(
     val nSteps: Int = 0,
     val nMedia: Int = 0,
     val tMediaMs: Double = 0.0,
+    /** Pages read back from storage during the turn: many means the model did not fit in free memory. */
+    val nMajflt: Long = 0,
 ) {
     companion object {
         fun parse(json: String): ChatOutcome {
@@ -144,6 +146,7 @@ data class ChatOutcome(
                 nSteps = s.optInt("n_steps"),
                 nMedia = s.optInt("n_media"),
                 tMediaMs = s.optDouble("t_media_ms", 0.0),
+                nMajflt = s.optLong("n_majflt"),
             )
         }
 
