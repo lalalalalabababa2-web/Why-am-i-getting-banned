@@ -169,9 +169,11 @@ static double now_s(void) {
 }
 
 int main(void) {
-    const int sizes[] = {128, 384, 5120, 17408};
+    // Q1_0 needs multiples of 128, Q2_0 of 64; 192 gives Q2_0 an odd number of blocks, 640 Q1_0
+    const int sizes[] = {128, 192, 384, 640, 5120, 17408};
     for (size_t si = 0; si < sizeof sizes / sizeof sizes[0]; si++) {
         const int n = sizes[si];
+        const int q1 = n % QK1_0 == 0;  // Q1_0 checks only for whole blocks
         // two rows of weights, two columns of tokens
         block_q1_0 * x1 = malloc(sizeof(block_q1_0) * (n / QK1_0) * 4);
         block_q2_0 * x2 = malloc(sizeof(block_q2_0) * (n / QK2_0) * 4);
@@ -193,9 +195,11 @@ int main(void) {
         for (int r = 0; r < 2; r++) {
             for (int c = 0; c < 2; c++) {
                 float s = 0;
-                oa_vec_dot_q1_0_q8_0(n, &s, 0, x1r[r], 0, yc[c], 0, 1);
-                snprintf(what, sizeof what, "q1 n=%d row %d col %d", n, r, c);
-                check(what, s, ref_q1(n, x1r[r], yc[c]));
+                if (q1) {
+                    oa_vec_dot_q1_0_q8_0(n, &s, 0, x1r[r], 0, yc[c], 0, 1);
+                    snprintf(what, sizeof what, "q1 n=%d row %d col %d", n, r, c);
+                    check(what, s, ref_q1(n, x1r[r], yc[c]));
+                }
                 oa_vec_dot_q2_0_q8_0(n, &s, 0, x2r[r], 0, yc[c], 0, 1);
                 snprintf(what, sizeof what, "q2 n=%d row %d col %d", n, r, c);
                 check(what, s, ref_q2(n, x2r[r], yc[c]));
@@ -203,8 +207,8 @@ int main(void) {
         }
         float out[32];
         memset(out, 0, sizeof out);
-        oa_vec_dot_q1_0_q8_0(n, out, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 2);
-        for (int r = 0; r < 2; r++) for (int c = 0; c < 2; c++) {
+        if (q1) oa_vec_dot_q1_0_q8_0(n, out, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 2);
+        if (q1) for (int r = 0; r < 2; r++) for (int c = 0; c < 2; c++) {
             snprintf(what, sizeof what, "q1 2x2 n=%d row %d col %d", n, r, c);
             check(what, out[c * 16 + r], ref_q1(n, x1r[r], yc[c]));
         }
@@ -214,12 +218,25 @@ int main(void) {
             snprintf(what, sizeof what, "q2 2x2 n=%d row %d col %d", n, r, c);
             check(what, out[c * 16 + r], ref_q2(n, x2r[r], yc[c]));
         }
+        {
+            float o4[4];
+            if (q1) oa_vec_dot_q1_0_q8_0(n, o4, 1, x1, sizeof(block_q1_0) * (n / QK1_0), y, 0, OA_NRC_ROWS4);
+            if (q1) for (int r = 0; r < 4; r++) {
+                snprintf(what, sizeof what, "q1 4 rows n=%d row %d", n, r);
+                check(what, o4[r], ref_q1(n, x1 + r * (n / QK1_0), y));
+            }
+            oa_vec_dot_q2_0_q8_0(n, o4, 1, x2, sizeof(block_q2_0) * (n / QK2_0), y, 0, OA_NRC_ROWS4);
+            for (int r = 0; r < 4; r++) {
+                snprintf(what, sizeof what, "q2 4 rows n=%d row %d", n, r);
+                check(what, o4[r], ref_q2(n, x2 + r * (n / QK2_0), y));
+            }
+        }
 #if defined(__ARM_FEATURE_MATMUL_INT8)
         {
             float out4[64];
             memset(out4, 0, sizeof out4);
-            oa_vec_dot_q1_0_q8_0(n, out4, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 4);
-            for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
+            if (q1) oa_vec_dot_q1_0_q8_0(n, out4, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 4);
+            if (q1) for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
                 snprintf(what, sizeof what, "q1 4x4 n=%d row %d col %d", n, r, c);
                 check(what, out4[c * 16 + r], ref_q1(n, x1 + r * (n / QK1_0), y + c * (n / 32)));
             }
@@ -249,6 +266,13 @@ int main(void) {
             const double t_new = (now_s() - t0) / reps;
             t0 = now_s();
             for (int k = 0; k < reps / 4; k++) {
+                float o4[4];
+                oa_vec_dot_q1_0_q8_0(n, o4, 1, x1, sizeof(block_q1_0) * (n / QK1_0), y, 0, OA_NRC_ROWS4);
+                sink += o4[0];
+            }
+            const double t_rows4 = (now_s() - t0) / reps;  // reps/4 calls of 4 dots
+            t0 = now_s();
+            for (int k = 0; k < reps / 4; k++) {
                 oa_vec_dot_q1_0_q8_0(n, out, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 2);
                 sink += out[0];
             }
@@ -265,9 +289,9 @@ int main(void) {
                 t_4x4 = (now_s() - t0) / reps;  // reps/16 calls of 16 dots
             }
 #endif
-            printf("SPEED: q1_0 dot of %d weights on one core, ns per dot: upstream NEON %.0f, new %.0f (%.2fx), "
-                   "new 2x2 %.0f, new 4x4 %.0f (%.2fx)\n", n, t_up * 1e9, t_new * 1e9, t_up / t_new, t_2x2 * 1e9,
-                   t_4x4 * 1e9, t_4x4 > 0 ? t_up / t_4x4 : 0.0);
+            printf("SPEED: q1_0 dot of %d weights on one core, ns per dot: upstream NEON %.0f; new: one row %.0f (%.2fx), "
+                   "4 rows %.0f (%.2fx), 2x2 %.0f, 4x4 %.0f (%.2fx)\n", n, t_up * 1e9, t_new * 1e9, t_up / t_new,
+                   t_rows4 * 1e9, t_up / t_rows4, t_2x2 * 1e9, t_4x4 * 1e9, t_4x4 > 0 ? t_up / t_4x4 : 0.0);
             (void) sink;
         }
 #endif

@@ -14,6 +14,10 @@
 //   column. ggml calls them when type_traits nrows is 2 or 4 (the 4 needs a small change to ggml's
 //   mul_mat, also in this patch).
 
+// nrc value ggml's mul_mat (as patched) passes for four weight rows against one token column, the
+// writing case: the token's values and scales are loaded once for all four rows.
+#define OA_NRC_ROWS4 0x41
+
 // ---------------------------------------------------------------- Q1_0
 
 // Lanes 0-7 take byte 2t of a block's 16 bytes of bits, lanes 8-15 byte 2t+1.
@@ -146,10 +150,46 @@ static void oa_q1_4x4(int n, float * GGML_RESTRICT s, size_t bs, const void * GG
 }
 #endif  // __ARM_FEATURE_MATMUL_INT8
 
+// Four rows of weights against one column of the token: s[r * bs] for rows r = 0..3.
+static void oa_q1_rows4(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
+                        const void * GGML_RESTRICT vy) {
+    const int nb = n / QK1_0;
+    const uint8x16_t bitmask = vld1q_u8(oa_q1_bit);
+    const block_q1_0 * x[4];
+    for (int r = 0; r < 4; r++) x[r] = (const block_q1_0 *) ((const uint8_t *) vx + r * bx);
+    const block_q8_0 * GGML_RESTRICT y = (const block_q8_0 *) vy;
+    float32x4_t acc[4] = {vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f)};
+    for (int i = 0; i < nb; i++) {
+        const block_q8_0 * yb = &y[i * 4];
+        int8x16_t yv[8];
+        for (int k = 0; k < 4; k++) {
+            yv[2 * k] = vld1q_s8(yb[k].qs);
+            yv[2 * k + 1] = vld1q_s8(yb[k].qs + 16);
+        }
+        const float32x4_t dy = oa_q8_scales4(yb);
+        for (int r = 0; r < 4; r++) {
+            const uint8x16_t bits = vld1q_u8(x[r][i].qs);
+            int32x4_t a[4];
+            for (int k = 0; k < 4; k++) {
+                const int8x16_t s0 = oa_q1_nsign(bits, oa_q1_idx[2 * k], bitmask);
+                const int8x16_t s1 = oa_q1_nsign(bits, oa_q1_idx[2 * k + 1], bitmask);
+                a[k] = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), s0, yv[2 * k]), s1, yv[2 * k + 1]);
+            }
+            const int32x4_t v = vpaddq_s32(vpaddq_s32(a[0], a[1]), vpaddq_s32(a[2], a[3]));
+            acc[r] = vfmaq_f32(acc[r], vcvtq_f32_s32(v), vmulq_n_f32(dy, -GGML_CPU_FP16_TO_FP32(x[r][i].d)));
+        }
+    }
+    for (int r = 0; r < 4; r++) s[r * bs] = vaddvq_f32(acc[r]);
+}
+
 static void oa_vec_dot_q1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
                                  const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int nb = n / QK1_0;
     const uint8x16_t bitmask = vld1q_u8(oa_q1_bit);
+    if (nrc == OA_NRC_ROWS4) {
+        oa_q1_rows4(n, s, bs, vx, bx, vy);
+        return;
+    }
 #if defined(__ARM_FEATURE_MATMUL_INT8)
     if (nrc == 4) {
         oa_q1_4x4(n, s, bs, vx, bx, vy, by);
@@ -310,10 +350,67 @@ static void oa_q2_4x4(int n, float * GGML_RESTRICT s, size_t bs, const void * GG
 }
 #endif  // __ARM_FEATURE_MATMUL_INT8
 
+// Four rows against one column, as for Q1_0. Q2_0 blocks are 64 weights; an odd last block is
+// done on its own.
+static void oa_q2_rows4(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
+                        const void * GGML_RESTRICT vy) {
+    const int nb = n / QK2_0;
+    const int8x16_t shifts = vld1q_s8(oa_q2_shift);
+    const block_q2_0 * x[4];
+    for (int r = 0; r < 4; r++) x[r] = (const block_q2_0 *) ((const uint8_t *) vx + r * bx);
+    const block_q8_0 * GGML_RESTRICT y = (const block_q8_0 *) vy;
+    float32x4_t acc[4] = {vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f), vdupq_n_f32(0.0f)};
+    int i = 0;
+    for (; i + 1 < nb; i += 2) {
+        const block_q8_0 * yb = &y[i * 2];
+        int8x16_t yv[8];
+        for (int k = 0; k < 4; k++) {
+            yv[2 * k] = vld1q_s8(yb[k].qs);
+            yv[2 * k + 1] = vld1q_s8(yb[k].qs + 16);
+        }
+        const float32x4_t dy = oa_q8_scales4(yb);
+        for (int r = 0; r < 4; r++) {
+            int32x4_t a[4];
+            for (int h = 0; h < 2; h++) {
+                const uint8x16_t qs = vld1q_u8(x[r][i + h].qs);
+                for (int k = 0; k < 2; k++) {
+                    const int8x16_t v0 = oa_q2_vals(qs, oa_q2_idx[2 * k], shifts);
+                    const int8x16_t v1 = oa_q2_vals(qs, oa_q2_idx[2 * k + 1], shifts);
+                    a[2 * h + k] = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), v0, yv[4 * h + 2 * k]), v1, yv[4 * h + 2 * k + 1]);
+                }
+            }
+            const int32x4_t v = vpaddq_s32(vpaddq_s32(a[0], a[1]), vpaddq_s32(a[2], a[3]));
+            const float d0 = GGML_CPU_FP16_TO_FP32(x[r][i].d);
+            const float d1 = GGML_CPU_FP16_TO_FP32(x[r][i + 1].d);
+            const float32x4_t dx = {d0, d0, d1, d1};
+            acc[r] = vfmaq_f32(acc[r], vcvtq_f32_s32(v), vmulq_f32(dy, dx));
+        }
+    }
+    float tail[4] = {0, 0, 0, 0};
+    for (; i < nb; i++) {
+        for (int r = 0; r < 4; r++) {
+            const uint8x16_t qs = vld1q_u8(x[r][i].qs);
+            const float d0 = GGML_CPU_FP16_TO_FP32(x[r][i].d);
+            for (int k = 0; k < 2; k++) {
+                const block_q8_0 * yb = &y[i * 2 + k];
+                const int8x16_t v0 = oa_q2_vals(qs, oa_q2_idx[2 * k], shifts);
+                const int8x16_t v1 = oa_q2_vals(qs, oa_q2_idx[2 * k + 1], shifts);
+                const int32x4_t a = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), v0, vld1q_s8(yb->qs)), v1, vld1q_s8(yb->qs + 16));
+                tail[r] += (float) vaddvq_s32(a) * d0 * GGML_CPU_FP16_TO_FP32(yb->d);
+            }
+        }
+    }
+    for (int r = 0; r < 4; r++) s[r * bs] = vaddvq_f32(acc[r]) + tail[r];
+}
+
 static void oa_vec_dot_q2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx,
                                  const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int nb = n / QK2_0;
     const int8x16_t shifts = vld1q_s8(oa_q2_shift);
+    if (nrc == OA_NRC_ROWS4) {
+        oa_q2_rows4(n, s, bs, vx, bx, vy);
+        return;
+    }
 #if defined(__ARM_FEATURE_MATMUL_INT8)
     if (nrc == 4) {
         oa_q2_4x4(n, s, bs, vx, bx, vy, by);

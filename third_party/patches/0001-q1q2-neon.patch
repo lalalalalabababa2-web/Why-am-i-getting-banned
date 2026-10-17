@@ -38,7 +38,7 @@ index cfbbf6617..d74b04281 100644
      const int nb = n / qk;
  
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..432f23825 100644
+index ab82e3d6c..8cca6190a 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -229,13 +229,25 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -78,7 +78,27 @@ index ab82e3d6c..432f23825 100644
  
      for (int64_t iir1 = ir1_start; iir1 < ir1_end; iir1 += blck_1) {
          for (int64_t iir0 = ir0_start; iir0 < ir0_end; iir0 += blck_0) {
-@@ -1458,8 +1470,11 @@ UseGgmlGemm2:;
+@@ -1240,6 +1252,19 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+                 //    vec_dot(ne00, &dst_col[ir0], src0_row + ir0*nb01, src1_col);
+                 //}
+ 
++#if defined(__ARM_NEON) && defined(__aarch64__)
++                // Offline AI: Q1_0/Q2_0 rows four at a time against one column (q1q2-neon.inc)
++                if (num_rows_per_vec_dot == 1 && (type == GGML_TYPE_Q1_0 || type == GGML_TYPE_Q2_0)) {
++                    const int64_t ir0_last = MIN(iir0 + blck_0, ir0_end);
++                    int64_t ir0 = iir0;
++                    for (; ir0 + 4 <= ir0_last; ir0 += 4) {
++                        vec_dot(ne00, &tmp[ir0 - iir0], 1, src0_row + ir0 * nb01, nb01, src1_col, 0, 0x41 /* OA_NRC_ROWS4 */);
++                    }
++                    for (; ir0 < ir0_last; ir0++) {
++                        vec_dot(ne00, &tmp[ir0 - iir0], 0, src0_row + ir0 * nb01, 0, src1_col, 0, 1);
++                    }
++                } else
++#endif
+                 for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ir0 += num_rows_per_vec_dot) {
+                     vec_dot(ne00, &tmp[ir0 - iir0], (num_rows_per_vec_dot > 1 ? 16 : 0), src0_row + ir0 * nb01, (num_rows_per_vec_dot > 1 ? nb01 : 0), src1_col, (num_rows_per_vec_dot > 1 ? src1_col_stride : 0), num_rows_per_vec_dot);
+                 }
+@@ -1458,8 +1483,11 @@ UseGgmlGemm2:;
  
          // these checks are needed to avoid crossing dim1 boundaries
          // can be optimized, but the logic would become more complicated, so keeping it like this for simplicity
