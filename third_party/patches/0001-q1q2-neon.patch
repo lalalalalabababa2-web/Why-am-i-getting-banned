@@ -38,14 +38,16 @@ index cfbbf6617..d74b04281 100644
      const int nb = n / qk;
  
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..8d236e4e1 100644
+index ab82e3d6c..432f23825 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
-@@ -229,13 +229,21 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
+@@ -229,13 +229,25 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
          .from_float               = quantize_row_q1_0,
          .vec_dot                  = ggml_vec_dot_q1_0_q8_0,
          .vec_dot_type             = GGML_TYPE_Q8_0,
-+#if defined(__ARM_NEON) && defined(__aarch64__)
++#if defined(__ARM_NEON) && defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
++        .nrows                    = 4,  // Offline AI: 4x4 int8-matmul dot products for prompts (q1q2-neon.inc)
++#elif defined(__ARM_NEON) && defined(__aarch64__)
 +        .nrows                    = 2,  // Offline AI: 2x2 dot products for prompts (q1q2-neon.inc)
 +#else
          .nrows                    = 1,
@@ -55,7 +57,9 @@ index ab82e3d6c..8d236e4e1 100644
          .from_float               = quantize_row_q2_0,
          .vec_dot                  = ggml_vec_dot_q2_0_q8_0,
          .vec_dot_type             = GGML_TYPE_Q8_0,
-+#if defined(__ARM_NEON) && defined(__aarch64__)
++#if defined(__ARM_NEON) && defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
++        .nrows                    = 4,  // Offline AI: 4x4 int8-matmul dot products for prompts (q1q2-neon.inc)
++#elif defined(__ARM_NEON) && defined(__aarch64__)
 +        .nrows                    = 2,  // Offline AI: 2x2 dot products for prompts (q1q2-neon.inc)
 +#else
          .nrows                    = 1,
@@ -63,3 +67,28 @@ index ab82e3d6c..8d236e4e1 100644
      },
      [GGML_TYPE_Q4_0] = {
          .from_float               = quantize_row_q4_0,
+@@ -1206,8 +1218,8 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+     const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? row_size : nb11;
+ 
+     // attempt to reduce false-sharing (does not seem to make a difference)
+-    // 16 * 2, accounting for mmla kernels
+-    float tmp[32];
++    // 16 * 4, accounting for mmla kernels (Offline AI: up to 4x4, see q1q2-neon.inc)
++    float tmp[64];
+ 
+     for (int64_t iir1 = ir1_start; iir1 < ir1_end; iir1 += blck_1) {
+         for (int64_t iir0 = ir0_start; iir0 < ir0_end; iir0 += blck_0) {
+@@ -1458,8 +1470,11 @@ UseGgmlGemm2:;
+ 
+         // these checks are needed to avoid crossing dim1 boundaries
+         // can be optimized, but the logic would become more complicated, so keeping it like this for simplicity
+-        if ((nr0 % 2 != 0) || (ne11 % 2 != 0) || ((ir0_end - ir0_start) % 2 != 0) || ((ir1_end - ir1_start) % 2 != 0)) {
+-            num_rows_per_vec_dot = 1;
++        // (Offline AI: kernels of 4 fall back to 2, then 1)
++        while (num_rows_per_vec_dot > 1 &&
++               ((nr0 % num_rows_per_vec_dot != 0) || (ne11 % num_rows_per_vec_dot != 0) ||
++                ((ir0_end - ir0_start) % num_rows_per_vec_dot != 0) || ((ir1_end - ir1_start) % num_rows_per_vec_dot != 0))) {
++            num_rows_per_vec_dot /= 2;
+         }
+         ggml_compute_forward_mul_mat_one_chunk(params, dst, src0->type, num_rows_per_vec_dot, ir0_start, ir0_end, ir1_start, ir1_end);
+ 

@@ -547,9 +547,10 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
     int step = progress ? std::min(n_batch, 32) : n_batch;
     for (size_t i = from; i < to;) {
         size_t n = std::min<size_t>(step, to - i);
-        // 1- and 2-bit weights (Bonsai) are read two tokens at a time; one odd step would make ggml
-        // read that whole step one token at a time, so the odd one out goes in a step of its own
-        if (prefer_even_ && n > 1 && (n & 1)) n -= 1;
+        // 1- and 2-bit weights (Bonsai) are read four tokens at a time (third_party/patches); a step
+        // that is not a multiple of 4 would read all of it two or one at a time, so the few left over
+        // go in a step of their own
+        if (prefer_even_ && n > 4 && (n % 4) != 0) n -= n % 4;
         const auto t_step = std::chrono::steady_clock::now();
         batch.clear();
         for (size_t j = 0; j < n; j++) {
@@ -586,9 +587,10 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
         }
         if (progress && n >= 8) {
             const double ms = std::max(1.0, ms_since(t_step));
-            int want = (int) (n * 1000.0 / ms);  // tokens in about a second
-            want = std::max(16, std::min(n_batch, want));
-            step = want & ~1;
+            // tokens in about a second and a half, a multiple of 4, at least 8
+            int want = (int) (n * 1500.0 / ms);
+            want = std::max(8, std::min(n_batch, want));
+            step = want & ~3;
         }
         i += n;
     }

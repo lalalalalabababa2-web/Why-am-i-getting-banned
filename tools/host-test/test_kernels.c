@@ -27,6 +27,7 @@ static inline int32x4_t ggml_vdotq_s32(int32x4_t acc, int8x16_t a, int8x16_t b) 
 #define SIMDE_ENABLE_NATIVE_ALIASES
 #include <simde/arm/neon.h>
 #define ggml_vdotq_s32(a, b, c) vdotq_s32(a, b, c)
+#define __ARM_FEATURE_MATMUL_INT8 1  // SIMDe has vmmlaq_s32: check the 4x4 kernels too
 #endif
 #define ggml_vqtbl1q_u8 vqtbl1q_u8
 #define GGML_RESTRICT restrict
@@ -95,23 +96,46 @@ static double ref_q2(int n, const block_q2_0 * x, const block_q8_0 * y) {
     return s;
 }
 
-// upstream's plain version, for timing on ARM (the same arithmetic as its NEON one, near enough)
-static float plain_q1(int n, const block_q1_0 * x, const block_q8_0 * y) {
-    float s = 0;
-    for (int i = 0; i < n / QK1_0; i++) {
+#if defined(__aarch64__)
+// upstream's NEON version (ggml/src/ggml-cpu/arch/arm/quants.c before this patch), for timing
+#define B1(c,s,n)  0x ## n ## c ,  0x ## n ## s
+#define B2(c,s,n) B1(c,s,n ## c), B1(c,s,n ## s)
+#define B3(c,s,n) B2(c,s,n ## c), B2(c,s,n ## s)
+#define B4(c,s,n) B3(c,s,n ## c), B3(c,s,n ## s)
+#define B5(c,s,n) B4(c,s,n ## c), B4(c,s,n ## s)
+#define B6(c,s,n) B5(c,s,n ## c), B5(c,s,n ## s)
+#define B7(c,s,n) B6(c,s,n ## c), B6(c,s,n ## s)
+#define B8(c,s  ) B7(c,s,     c), B7(c,s,     s)
+static const uint64_t table_b2b_0[1 << 8] = { B8(00, 10) };
+static float upstream_q1(int n, const block_q1_0 * x, const block_q8_0 * y) {
+    const int nb = n / QK1_0;
+    float32x4_t sumv = vdupq_n_f32(0.0f);
+    for (int i = 0; i < nb; i++) {
         const float d0 = h2f(x[i].d);
         for (int k = 0; k < 4; k++) {
             const block_q8_0 * yb = &y[i * 4 + k];
-            int si = 0;
-            for (int j = 0; j < 32; j++) {
-                const int bit = (x[i].qs[k * 4 + j / 8] >> (j % 8)) & 1;
-                si += bit ? yb->qs[j] : -yb->qs[j];
-            }
-            s += d0 * h2f(yb->d) * si;
+            const float d1 = h2f(yb->d);
+            const uint8_t * bits = &x[i].qs[k * 4];
+            const int8x16_t y0 = vld1q_s8(yb->qs);
+            const int8x16_t y1 = vld1q_s8(yb->qs + 16);
+            int8x8_t s0 = vreinterpret_s8_u8(vshr_n_u8(vcreate_u8(table_b2b_0[bits[0]]), 4));
+            int8x8_t s1 = vreinterpret_s8_u8(vshr_n_u8(vcreate_u8(table_b2b_0[bits[1]]), 4));
+            int8x8_t s2 = vreinterpret_s8_u8(vshr_n_u8(vcreate_u8(table_b2b_0[bits[2]]), 4));
+            int8x8_t s3 = vreinterpret_s8_u8(vshr_n_u8(vcreate_u8(table_b2b_0[bits[3]]), 4));
+            const int8x8_t one = vdup_n_s8(1);
+            s0 = vsub_s8(vadd_s8(s0, s0), one);
+            s1 = vsub_s8(vadd_s8(s1, s1), one);
+            s2 = vsub_s8(vadd_s8(s2, s2), one);
+            s3 = vsub_s8(vadd_s8(s3, s3), one);
+            const int32x4_t p0 = ggml_vdotq_s32(vdupq_n_s32(0), vcombine_s8(s0, s1), y0);
+            const int32x4_t p1 = ggml_vdotq_s32(p0, vcombine_s8(s2, s3), y1);
+            sumv = vmlaq_n_f32(sumv, vcvtq_f32_s32(p1), d0 * d1);
         }
     }
-    return s;
+    return vaddvq_f32(sumv);
 }
+#endif
+
 
 static uint32_t rng = 12345;
 static uint32_t rnd(void) {
@@ -149,18 +173,18 @@ int main(void) {
     for (size_t si = 0; si < sizeof sizes / sizeof sizes[0]; si++) {
         const int n = sizes[si];
         // two rows of weights, two columns of tokens
-        block_q1_0 * x1 = malloc(sizeof(block_q1_0) * (n / QK1_0) * 2);
-        block_q2_0 * x2 = malloc(sizeof(block_q2_0) * (n / QK2_0) * 2);
-        block_q8_0 * y = malloc(sizeof(block_q8_0) * (n / 32) * 2);
-        for (int i = 0; i < (n / QK1_0) * 2; i++) {
+        block_q1_0 * x1 = malloc(sizeof(block_q1_0) * (n / QK1_0) * 4);
+        block_q2_0 * x2 = malloc(sizeof(block_q2_0) * (n / QK2_0) * 4);
+        block_q8_0 * y = malloc(sizeof(block_q8_0) * (n / 32) * 4);
+        for (int i = 0; i < (n / QK1_0) * 4; i++) {
             x1[i].d = f2h(rndf(0.002f, 0.03f));
             for (int j = 0; j < QK1_0 / 8; j++) x1[i].qs[j] = (uint8_t) rnd();
         }
-        for (int i = 0; i < (n / QK2_0) * 2; i++) {
+        for (int i = 0; i < (n / QK2_0) * 4; i++) {
             x2[i].d = f2h(rndf(0.002f, 0.03f));
             for (int j = 0; j < QK2_0 / 4; j++) x2[i].qs[j] = (uint8_t) rnd();
         }
-        fill_y(y, (n / 32) * 2);
+        fill_y(y, (n / 32) * 4);
         const block_q1_0 * x1r[2] = {x1, x1 + n / QK1_0};
         const block_q2_0 * x2r[2] = {x2, x2 + n / QK2_0};
         const block_q8_0 * yc[2] = {y, y + n / 32};
@@ -190,29 +214,60 @@ int main(void) {
             snprintf(what, sizeof what, "q2 2x2 n=%d row %d col %d", n, r, c);
             check(what, out[c * 16 + r], ref_q2(n, x2r[r], yc[c]));
         }
+#if defined(__ARM_FEATURE_MATMUL_INT8)
+        {
+            float out4[64];
+            memset(out4, 0, sizeof out4);
+            oa_vec_dot_q1_0_q8_0(n, out4, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 4);
+            for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
+                snprintf(what, sizeof what, "q1 4x4 n=%d row %d col %d", n, r, c);
+                check(what, out4[c * 16 + r], ref_q1(n, x1 + r * (n / QK1_0), y + c * (n / 32)));
+            }
+            memset(out4, 0, sizeof out4);
+            oa_vec_dot_q2_0_q8_0(n, out4, 16, x2, sizeof(block_q2_0) * (n / QK2_0), y, sizeof(block_q8_0) * (n / 32), 4);
+            for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) {
+                snprintf(what, sizeof what, "q2 4x4 n=%d row %d col %d", n, r, c);
+                check(what, out4[c * 16 + r], ref_q2(n, x2 + r * (n / QK2_0), y + c * (n / 32)));
+            }
+            if (n == 5120) printf("checked the 4x4 (i8mm) kernels\n");
+        }
+#endif
 
 #if defined(__aarch64__)
-        if (n == 5120) {
-            const int reps = 20000;
+        if (n == 5120 || n == 17408) {
+            const int reps = n == 5120 ? 20000 : 6000;
             volatile float sink = 0;
             double t0 = now_s();
-            for (int k = 0; k < reps; k++) sink += plain_q1(n, x1, y);
-            const double t_plain = now_s() - t0;
+            for (int k = 0; k < reps; k++) sink += upstream_q1(n, x1, y);
+            const double t_up = (now_s() - t0) / reps;
             t0 = now_s();
             for (int k = 0; k < reps; k++) {
-                float s;
-                oa_vec_dot_q1_0_q8_0(n, &s, 0, x1, 0, y, 0, 1);
-                sink += s;
+                float sv;
+                oa_vec_dot_q1_0_q8_0(n, &sv, 0, x1, 0, y, 0, 1);
+                sink += sv;
             }
-            const double t_new = now_s() - t0;
+            const double t_new = (now_s() - t0) / reps;
             t0 = now_s();
             for (int k = 0; k < reps / 4; k++) {
                 oa_vec_dot_q1_0_q8_0(n, out, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 2);
                 sink += out[0];
             }
-            const double t_2x2 = now_s() - t0;  // reps/4 calls of 4 dots each
-            printf("SPEED: q1_0 dot of %d, one core: plain C %.0f ns, new %.0f ns, new 2x2 %.0f ns per dot\n", n,
-                   t_plain / reps * 1e9, t_new / reps * 1e9, t_2x2 / reps * 1e9);
+            const double t_2x2 = (now_s() - t0) / reps;  // reps/4 calls of 4 dots
+            double t_4x4 = 0;
+#if defined(__ARM_FEATURE_MATMUL_INT8)
+            {
+                float out4[64];
+                t0 = now_s();
+                for (int k = 0; k < reps / 16; k++) {
+                    oa_vec_dot_q1_0_q8_0(n, out4, 16, x1, sizeof(block_q1_0) * (n / QK1_0), y, sizeof(block_q8_0) * (n / 32), 4);
+                    sink += out4[0];
+                }
+                t_4x4 = (now_s() - t0) / reps;  // reps/16 calls of 16 dots
+            }
+#endif
+            printf("SPEED: q1_0 dot of %d weights on one core, ns per dot: upstream NEON %.0f, new %.0f (%.2fx), "
+                   "new 2x2 %.0f, new 4x4 %.0f (%.2fx)\n", n, t_up * 1e9, t_new * 1e9, t_up / t_new, t_2x2 * 1e9,
+                   t_4x4 * 1e9, t_4x4 > 0 ? t_up / t_4x4 : 0.0);
             (void) sink;
         }
 #endif

@@ -302,7 +302,7 @@ private:
     std::vector<Snapshot> snapshots_;
     bool                  can_rm_part_ = true;
     bool                  is_swa_      = false;
-    bool                  prefer_even_ = false;  // 1-/2-bit weights: prompt steps of an even size
+    bool                  prefer_even_ = false;  // 1-/2-bit weights: prompt steps of a multiple of 4 tokens
     std::atomic<bool>     stop_{false};
     std::atomic<int>      want_threads_{0};
     int                   cur_threads_ = 0;

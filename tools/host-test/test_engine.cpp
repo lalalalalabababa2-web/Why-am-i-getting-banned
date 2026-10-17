@@ -877,8 +877,8 @@ static void test_bonsai(const std::string & path, const char * label, int ctx, b
     CHECK(rl.ok, "%s: the long message failed: %s", label, rl.error.c_str());
     CHECK(lower(rl.content).find("north") != std::string::npos, "%s: did not read the message: %s", label, rl.content.c_str());
     // steps of about a second: a slow read reports progress about once a second
-    if (rl.stats.t_prompt_ms > 4000)
-        CHECK(reports >= (int) (rl.stats.t_prompt_ms / 3000), "%s: progress should move while a long message is read "
+    if (rl.stats.t_prompt_ms > 6000)
+        CHECK(reports >= (int) (rl.stats.t_prompt_ms / 5000), "%s: progress should move while a long message is read "
               "(%d reports in %.1fs)", label, reports, rl.stats.t_prompt_ms / 1000.0);
 }
 

@@ -86,8 +86,10 @@ multiply). Inference uses the fast cores only (six on an S24 FE).
 
 `third_party/patches/` holds the app's own changes, applied to the submodule at build time by
 `apply.sh` (the Android build and the test scripts run it): faster ARM NEON dot products for the
-Q1_0 and Q2_0 weights of PrismML's Bonsai models, including a two-rows-by-two-tokens version for
-reading prompts. `tools/host-test/test_kernels.c` checks them against plain C (on ARM in CI; on
+Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
+the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
+lets it call a 4x4 one. They matter most in low-memory mode, where the weights stay in the file
+and ggml's own repacked kernels (which need a copy of the weights in memory) are not used. `tools/host-test/test_kernels.c` checks them against plain C (on ARM in CI; on
 other computers through [SIMDe](https://github.com/simd-everywhere/simde)).
 
 ## Tests
