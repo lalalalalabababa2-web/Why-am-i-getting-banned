@@ -35,6 +35,8 @@ struct common_speculative;
 struct mtmd_context;
 struct mtmd_input_chunks;
 
+struct ggml_threadpool;  // ggml-cpu.h
+
 namespace oa {
 
 using token = int32_t;
@@ -202,6 +204,13 @@ public:
     // Threads for the next evaluation step. Safe from any thread; takes effect between tokens,
     // so a reply can slow down (or speed up again) as the phone heats and cools.
     void set_threads(int n) { want_threads_.store(n); }
+    // In the background (another app in front): this many threads at a low priority, idle threads
+    // asleep instead of spinning, so the phone stays smooth while the reply carries on. Takes
+    // effect at the next step.
+    void set_background(bool on, int threads) {
+        bg_threads_.store(threads);
+        background_.store(on);
+    }
 
     // Measures reading and writing speed at each thread count, with this model and context.
     // Clears the model's memory. Can be ended early with request_stop().
@@ -272,6 +281,9 @@ private:
     void clear_memory();
     void trim_draft(size_t n_tokens);
     void apply_threads();
+    void make_fg_pool(int n);
+    void free_pools();
+    void attach_pool(::ggml_threadpool * pool);
     bool memory_truncate(size_t n_tokens);
     int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
     void free_spec();
@@ -306,6 +318,17 @@ private:
     std::atomic<bool>     stop_{false};
     std::atomic<int>      want_threads_{0};
     int                   cur_threads_ = 0;
+    // Threads that stay between steps (llama would start and stop them for every step), on the
+    // phone's fastest cores; a second, gentler set for the background.
+    std::atomic<bool>     background_{false};
+    std::atomic<int>      bg_threads_{2};
+    ::ggml_threadpool *   pool_fg_  = nullptr;
+    ::ggml_threadpool *   pool_bg_  = nullptr;
+    ::ggml_threadpool *   pool_cur_ = nullptr;
+    int                   pool_fg_n_ = 0;
+    int                   pool_bg_n_ = 0;
+    bool                  self_bg_   = false;
+    std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
 
     static constexpr size_t kMaxSnapshots = 2;

@@ -28,6 +28,8 @@ object NativeEngine {
     @JvmStatic external fun nativeReleaseMedia()
     @JvmStatic external fun nativeChat(request: ByteArray, listener: ChatListener?): ByteArray
     @JvmStatic external fun nativeSetThreads(n: Int)
+    /** Gentle writing while another app is in front: [threads] threads, low priority, takes effect at the next step. */
+    @JvmStatic external fun nativeSetBackground(on: Boolean, threads: Int)
     @JvmStatic external fun nativeBench(threads: IntArray, nPrompt: Int, nGen: Int): ByteArray
 }
 

@@ -318,6 +318,43 @@ static void test_template(const std::string & vocab_path, const std::string & tm
 
 // chat() end to end on the random models: the text is nonsense (their tokenizer is a dummy),
 // but every path runs: template, session, sampling, streaming, stop, the cache across turns.
+// Background mode (fewer threads at a low priority, a pool of its own) writes the same words, and
+// switching back and forth between replies leaves the engine working.
+static void test_background(const std::string & path) {
+    std::printf("== background: %s\n", path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 1024;
+    lp.n_threads = 4;
+    lp.spec_n_max = 0;
+    lp.spec_ngram = false;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(path, lp, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 48;
+    req.messages.push_back({"user", "Tell me about the sea.", ""});
+    oa::ChatCallbacks cb;
+    std::vector<std::string> out;
+    for (int round = 0; round < 4; round++) {
+        e.set_background(round % 2 == 1, round == 3 ? 1 : 2);
+        e.reset_cache();
+        auto r = e.chat(req, cb);
+        CHECK(r.ok, "background round %d failed: %s", round, r.error.c_str());
+        out.push_back(r.reasoning + "|" + r.content);
+    }
+    for (int round = 1; round < 4; round++) {
+        CHECK(out[round] == out[0], "round %d (%s) wrote something else", round, round % 2 ? "background" : "front");
+    }
+    e.set_background(false, 2);
+}
+
 static void test_chat_smoke(const std::string & path) {
     std::printf("== chat smoke: %s\n", path.c_str());
     oa::LoadParams lp;
@@ -750,6 +787,32 @@ static void test_real(const std::string & dir, const std::string & tmp) {
     }
     CHECK(e.info().vision, "the projector should read pictures");
 
+    // writing with the app in front, then in the background (gentle: 2 threads, low priority)
+    {
+        oa::ChatRequest sr;
+        sr.now_ms = 1760000000000LL;
+        sr.enable_thinking = false;
+        sr.sampling.temp = 0.0f;
+        sr.sampling.top_k = 1;
+        sr.sampling.max_tokens = 96;
+        sr.messages.push_back({"user", kStoryPrompt, ""});
+        oa::ChatCallbacks scb;
+        std::string front_text;
+        for (int bg = 0; bg < 2; bg++) {
+            e.set_background(bg == 1, 2);
+            e.reset_cache();
+            auto r = e.chat(sr, scb);
+            const double tps = r.stats.n_generated * 1000.0 / std::max(1.0, r.stats.t_gen_ms);
+            std::printf("SPEED: Qwen3.5 0.8B Q4_K_M, %s: %.1f tokens/s writing, %.1f tokens/s reading\n",
+                        bg ? "in the background (2 threads, low priority)" : "in front", tps,
+                        r.stats.n_evaluated * 1000.0 / std::max(1.0, r.stats.t_prompt_ms));
+            CHECK(r.ok, "background %d: %s", bg, r.error.c_str());
+            if (bg == 0) front_text = r.content;
+            else CHECK(r.content == front_text, "the background wrote something else");
+        }
+        e.set_background(false, 2);
+    }
+
     // 3. a picture: the colour must be seen, and the next turn must not read it again
     const std::string red = write_ppm(tmp + "/red.ppm", 128, 96, 220, 20, 20);
     oa::ChatRequest pic;
@@ -999,6 +1062,8 @@ int main(int argc, char ** argv) {
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");
+    test_background(dir + "/llama-dense.gguf");
+    test_background(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/gemma3-dense.gguf");
 
     const std::string qwen_reply = "I should plan a short greeting.\n</think>\n\nHello! \xF0\x9F\x98\x80 How can I help?";

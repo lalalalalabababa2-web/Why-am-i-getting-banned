@@ -16,6 +16,7 @@ import androidx.appcompat.widget.SwitchCompat
 import app.offlineai.chat.App
 import app.offlineai.chat.BuildConfig
 import app.offlineai.chat.data.Accent
+import app.offlineai.chat.data.BackgroundSpeed
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.ModelStore
@@ -108,8 +109,32 @@ class SettingsActivity : AppCompatActivity() {
         row("Speed test", if (s.measuredSummary.isBlank()) "Measure reading and writing speed at different thread counts with the loaded model."
         else s.measuredSummary) { runSpeedTest() }
         switch("Keep writing in the background",
-            "Lets a reply finish when you switch apps or the screen turns off, with a notification while it writes.",
-            s.backgroundWriting) { s.backgroundWriting = it }
+            "Lets a reply finish when you switch apps or the screen turns off, with a notification showing how far it " +
+                "has got.",
+            s.backgroundWriting) { s.backgroundWriting = it; rebuild() }
+        if (s.backgroundWriting) {
+            choice("Speed in the background", s.backgroundSpeed.help, BackgroundSpeed.values().map { it.label },
+                s.backgroundSpeed.ordinal) {
+                s.backgroundSpeed = BackgroundSpeed.values()[it]
+                app.applyBackground()
+                rebuild()
+            }
+            switch("Tell me when a reply is ready", "A notification when a reply finishes while you are in another app.",
+                s.replyNotifications) { s.replyNotifications = it }
+            val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            val free = pm.isIgnoringBatteryOptimizations(packageName)
+            row("Let Android keep it running",
+                if (free) "Allowed: battery saving will not pause a reply." else
+                    "Android may pause long replies to save battery (some phones close apps in the background). Tap to allow.") {
+                if (!free) {
+                    val asked = runCatching {
+                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                            .setData(android.net.Uri.parse("package:$packageName")))
+                    }.isSuccess
+                    if (!asked) runCatching { startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                }
+            }
+        }
         choice("Screen updates while writing",
             "How often new text is drawn. Less often uses a little less battery.",
             Settings.STREAM_INTERVALS.map { if (it <= 16) "Every frame" else "Every $it ms" },

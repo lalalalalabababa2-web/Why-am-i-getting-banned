@@ -12,6 +12,12 @@ enum class PerfMode(val label: String, val help: String) {
     MAXIMUM("Maximum", "The fastest thread count, kept until Android reports critical heat."),
 }
 
+enum class BackgroundSpeed(val label: String, val help: String) {
+    GENTLE("Gentle", "While another app is in front, the reply carries on with fewer threads at a low priority, so the " +
+        "phone stays smooth. Back to full speed when you return."),
+    FULL("Full speed", "The same speed as with the app open. The app you are using may stutter while it writes."),
+}
+
 enum class MemoryMode(val label: String, val help: String) {
     AUTO("Automatic", "Fast mode, or low-memory mode for models too big to copy into this phone's memory."),
     FAST("Fast", "Copies the weights into memory in a layout the CPU computes with fastest."),
@@ -88,6 +94,15 @@ class Settings(context: Context) {
     var backgroundWriting: Boolean
         get() = bool("background_writing", true)
         set(v) = put("background_writing", v)
+    var backgroundSpeed: BackgroundSpeed
+        get() = runCatching { BackgroundSpeed.valueOf(str("background_speed", "GENTLE")) }.getOrDefault(BackgroundSpeed.GENTLE)
+        set(v) = put("background_speed", v.name)
+    /** Threads for writing while another app is in front (gentle mode). */
+    fun backgroundThreads(): Int = (Device.fastCores() / 2).coerceIn(2, 4)
+    /** Tell when a reply finished while the app was in the background. */
+    var replyNotifications: Boolean
+        get() = bool("reply_notifications", true)
+        set(v) = put("reply_notifications", v)
     var streamIntervalMs: Int
         get() = int("stream_interval", 50)
         set(v) = put("stream_interval", v)

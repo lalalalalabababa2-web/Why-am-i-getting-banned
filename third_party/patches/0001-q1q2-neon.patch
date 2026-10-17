@@ -38,7 +38,7 @@ index cfbbf6617..d74b04281 100644
      const int nb = n / qk;
  
 diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
-index ab82e3d6c..8cca6190a 100644
+index ab82e3d6c..ff9a7e754 100644
 --- a/ggml/src/ggml-cpu/ggml-cpu.c
 +++ b/ggml/src/ggml-cpu/ggml-cpu.c
 @@ -229,13 +229,25 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
@@ -98,7 +98,22 @@ index ab82e3d6c..8cca6190a 100644
                  for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ir0 += num_rows_per_vec_dot) {
                      vec_dot(ne00, &tmp[ir0 - iir0], (num_rows_per_vec_dot > 1 ? 16 : 0), src0_row + ir0 * nb01, (num_rows_per_vec_dot > 1 ? nb01 : 0), src1_col, (num_rows_per_vec_dot > 1 ? src1_col_stride : 0), num_rows_per_vec_dot);
                  }
-@@ -1458,8 +1483,11 @@ UseGgmlGemm2:;
+@@ -1435,6 +1460,14 @@ UseGgmlGemm2:;
+         nchunk0 = nr0 > nr1 ? nth : 1; // parallelize by src0 rows
+         nchunk1 = nr0 > nr1 ? 1 : nth; // parallelize by src1 rows
+     }
++#if defined(__ARM_NEON) && defined(__aarch64__)
++    // Offline AI: writing one token with Q1_0/Q2_0 weights read from the model file's pages: a few
++    // long runs of rows per thread stream from memory better than many runs of 64
++    if (nr1 == 1 && (src0->type == GGML_TYPE_Q1_0 || src0->type == GGML_TYPE_Q2_0) && nr0 >= nth * 4 * 16) {
++        nchunk0 = nth * 4;
++        nchunk1 = 1;
++    }
++#endif
+ 
+     // The number of elements in each chunk
+     const int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;
+@@ -1458,8 +1491,11 @@ UseGgmlGemm2:;
  
          // these checks are needed to avoid crossing dim1 boundaries
          // can be optimized, but the logic would become more complicated, so keeping it like this for simplicity

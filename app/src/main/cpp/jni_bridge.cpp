@@ -179,6 +179,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeSetThreads(JNIEnv *, jclass, j
     engine().set_threads(n);
 }
 
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeSetBackground(JNIEnv *, jclass, jboolean on, jint threads) {
+    engine().set_background(on == JNI_TRUE, threads);
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeBench(JNIEnv * env, jclass, jintArray jthreads, jint n_prompt, jint n_gen) {
     std::vector<int> threads;

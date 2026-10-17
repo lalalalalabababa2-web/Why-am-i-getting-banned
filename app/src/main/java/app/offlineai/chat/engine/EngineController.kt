@@ -311,6 +311,11 @@ class EngineController {
     }
 
     /** Threads for the next step; takes effect between tokens, even in the middle of a reply. */
+    /** Gentle mode while another app is in front (see [NativeEngine.nativeSetBackground]). */
+    fun setBackground(on: Boolean, threads: Int) {
+        runCatching { NativeEngine.nativeSetBackground(on, threads) }
+    }
+
     fun setThreads(n: Int) {
         if (n > 0) NativeEngine.nativeSetThreads(n)
     }

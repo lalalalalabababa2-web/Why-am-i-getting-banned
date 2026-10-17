@@ -50,11 +50,14 @@ class ChatMessage(
     var model: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val attachments: List<Attachment> = emptyList(),
+    /** Still being written when last saved: if the app is closed meanwhile, this is what was kept. */
+    var partial: Boolean = false,
 ) {
     fun toJson(): JSONObject {
         val j = JSONObject()
             .put("id", id).put("role", role).put("content", content).put("reasoning", reasoning)
             .put("stats", stats).put("error", error).put("model", model).put("created_at", createdAt)
+        if (partial) j.put("partial", true)
         if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
         return j
     }
@@ -74,6 +77,7 @@ class ChatMessage(
                 attachments = if (att == null) emptyList() else (0 until att.length()).mapNotNull {
                     runCatching { Attachment.fromJson(att.getJSONObject(it)) }.getOrNull()
                 },
+                partial = j.optBoolean("partial"),
             )
         }
     }

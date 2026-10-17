@@ -7,12 +7,17 @@
 #include "llama.h"
 #include "llama-ext.h"   // memory breakdown (llama's staging API)
 #include "ggml-backend.h"
+#include "ggml-cpu.h"     // threadpool types (the functions come from the loaded CPU backend)
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <sched.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -92,6 +97,69 @@ static long major_faults() {
     return v[8];
 }
 
+// ---------------------------------------------------------------- threads
+
+namespace {
+
+using tp_new_t  = ::ggml_threadpool * (*)(struct ggml_threadpool_params *);
+using tp_free_t = void (*)(::ggml_threadpool *);
+
+struct PoolFns {
+    tp_new_t  make = nullptr;
+    tp_free_t free = nullptr;
+};
+
+// The CPU backend is a library picked at start-up for this CPU, so its threadpool functions are
+// looked up through it rather than linked.
+const PoolFns & pool_fns() {
+    static PoolFns fns = [] {
+        PoolFns f;
+        if (auto * dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
+            auto * reg = ggml_backend_dev_backend_reg(dev);
+            f.make = (tp_new_t) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
+            f.free = (tp_free_t) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free");
+        }
+        return f;
+    }();
+    return fns;
+}
+
+// The n fastest cores by top clock, or none when the cores are all alike (or there are no more
+// than n). A step is only as fast as its slowest thread, so on a phone (one prime core, a few big
+// ones, a few little ones) the threads should stay off the little cores.
+std::vector<int> fastest_cpus(int n) {
+    std::vector<std::pair<long, int>> f;
+    for (int c = 0; c < 32; c++) {
+        const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(c) + "/cpufreq/cpuinfo_max_freq";
+        FILE * fp = std::fopen(path.c_str(), "r");
+        if (!fp) continue;
+        long v = 0;
+        if (std::fscanf(fp, "%ld", &v) == 1 && v > 0) f.push_back({v, c});
+        std::fclose(fp);
+    }
+    if ((int) f.size() <= n || n <= 0) return {};
+    std::stable_sort(f.begin(), f.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+    if (f.front().first == f.back().first) return {};
+    std::vector<int> out;
+    for (int i = 0; i < n; i++) out.push_back(f[i].second);
+    return out;
+}
+
+int current_tid() { return (int) syscall(SYS_gettid); }
+
+// The calling thread computes along with the pool's threads, so it gets the same treatment.
+void place_this_thread(const std::vector<int> & cpus, bool background) {
+    if (!cpus.empty()) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int c : cpus) CPU_SET(c, &set);
+        sched_setaffinity(0, sizeof set, &set);  // refused (outside the app's cores): runs where it was
+    }
+    setpriority(PRIO_PROCESS, current_tid(), background ? 10 : 0);
+}
+
+}  // namespace
+
 static ChatResult & with_faults(ChatResult & r, long faults0) {
     r.stats.n_majflt = major_faults() - faults0;
     return r;
@@ -150,6 +218,7 @@ void Engine::release_media() {
 }
 
 void Engine::unload() {
+    attach_pool(nullptr);
     free_spec();
     release_media();
     if (tmpls_) {
@@ -170,6 +239,7 @@ void Engine::unload() {
     snapshots_.clear();
     mm_vision_ = mm_audio_ = false;
     compute_bytes_ = 0;
+    free_pools();
 }
 
 struct ProgressBridge {
@@ -287,6 +357,10 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     }
     cur_threads_ = cp.n_threads;
     want_threads_.store(cp.n_threads);
+    make_fg_pool(cp.n_threads);
+    attach_pool(pool_fg_);
+    place_this_thread(fast_cpus_, false);
+    self_bg_ = false;
 
     if (params.warmup) {
         // One evaluation step reads every weight, so it is paid for here, while the progress bar
@@ -335,7 +409,10 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
                 model_dft_ = nullptr;
             }
         }
-        if (ctx_dft_) llama_set_abort_callback(ctx_dft_, abort_cb, &stop_);
+        if (ctx_dft_) {
+            llama_set_abort_callback(ctx_dft_, abort_cb, &stop_);
+            if (pool_cur_) llama_attach_threadpool(ctx_dft_, pool_cur_, pool_cur_);
+        }
 
         const bool head = ctx_dft_ != nullptr;
         if (head || want_ngram) {
@@ -459,9 +536,77 @@ void Engine::clear_memory() {
     cache_extra_cells_ = 0;
 }
 
+
+void Engine::attach_pool(::ggml_threadpool * pool) {
+    if (pool == pool_cur_) return;
+    if (ctx_) llama_attach_threadpool(ctx_, pool, pool);
+    if (ctx_dft_) llama_attach_threadpool(ctx_dft_, pool, pool);
+    pool_cur_ = pool;
+}
+
+void Engine::make_fg_pool(int n) {
+    const auto & fns = pool_fns();
+    if (!fns.make || !fns.free || n < 1) return;
+    attach_pool(nullptr);
+    if (pool_fg_) fns.free(pool_fg_);
+    pool_fg_ = nullptr;
+    pool_fg_n_ = 0;
+    fast_cpus_ = fastest_cpus(n);
+    auto p = ggml_threadpool_params_default(n);
+    for (int c : fast_cpus_) if (c >= 0 && c < GGML_MAX_N_THREADS) p.cpumask[c] = true;
+    p.strict_cpu = false;  // free to move between the fast cores
+    p.poll = 50;           // spin briefly between steps instead of sleeping
+    pool_fg_ = fns.make(&p);
+    if (pool_fg_) pool_fg_n_ = n;
+}
+
+void Engine::free_pools() {
+    attach_pool(nullptr);
+    const auto & fns = pool_fns();
+    if (fns.free) {
+        if (pool_fg_) fns.free(pool_fg_);
+        if (pool_bg_) fns.free(pool_bg_);
+    }
+    pool_fg_ = pool_bg_ = nullptr;
+    pool_fg_n_ = pool_bg_n_ = 0;
+    if (self_bg_) {
+        setpriority(PRIO_PROCESS, current_tid(), 0);
+        self_bg_ = false;
+    }
+}
+
 void Engine::apply_threads() {
-    const int want = want_threads_.load();
-    if (want > 0 && want != cur_threads_) {
+    if (!ctx_) return;
+    const bool bg = background_.load();
+    int want = bg ? std::max(1, bg_threads_.load()) : want_threads_.load();
+    if (want <= 0) want = cur_threads_ > 0 ? cur_threads_ : 1;
+    if (!bg && want > pool_fg_n_ && pool_fns().make) make_fg_pool(want);
+    ::ggml_threadpool * pool = pool_fg_;
+    if (bg && pool_fns().make) {
+        if (!pool_bg_ || pool_bg_n_ != want) {
+            attach_pool(pool_fg_);
+            if (pool_bg_) pool_fns().free(pool_bg_);
+            // new threads take the creating thread's niceness: create them from a nice thread
+            const int tid = current_tid();
+            setpriority(PRIO_PROCESS, tid, 10);
+            auto p = ggml_threadpool_params_default(want);
+            for (int c : fast_cpus_) if (c >= 0 && c < GGML_MAX_N_THREADS) p.cpumask[c] = true;
+            p.strict_cpu = false;
+            p.prio = GGML_SCHED_PRIO_LOW;
+            p.poll = 0;  // idle threads sleep: the app in front gets the CPU
+            pool_bg_ = pool_fns().make(&p);
+            pool_bg_n_ = pool_bg_ ? want : 0;
+            setpriority(PRIO_PROCESS, tid, self_bg_ ? 10 : 0);
+        }
+        if (pool_bg_) pool = pool_bg_;
+    }
+    if (pool) want = std::min(want, pool == pool_bg_ ? pool_bg_n_ : pool_fg_n_);
+    attach_pool(pool);
+    if (bg != self_bg_ || pool_cur_ == nullptr) {
+        place_this_thread(fast_cpus_, bg);
+        self_bg_ = bg;
+    }
+    if (want != cur_threads_) {
         llama_set_n_threads(ctx_, want, want);
         if (ctx_dft_) llama_set_n_threads(ctx_dft_, want, want);
         cur_threads_ = want;

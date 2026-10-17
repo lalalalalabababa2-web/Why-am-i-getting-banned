@@ -36,6 +36,11 @@ browser when Android asks. New builds install over old ones and keep models and 
   Gemma 4's drafter) is off until the drafting test in Settings finds it faster on the phone: on
   the CI machines it was slower or no faster (see Tests), because a CPU pays for most of each
   extra word it checks.
+- **In the background**: a reply keeps going when you switch apps or turn the screen off (a
+  foreground service with a wake lock), with a notification showing how far it has got and
+  another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
+  priority while another app is in front, so the phone stays smooth. A reply is saved every few
+  seconds while it is written, so if Android closes the app anyway, what was written is kept.
 - **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
   sampling (each model's recommended values by default), drafting, picture detail.
 
@@ -72,7 +77,10 @@ measured on one.
 
 ggml is built with every ARM CPU variant as a separate library (armv8.0 to armv9.2); at start
 the best one this phone supports is picked (on an S24 FE, one with dot products and int8 matrix
-multiply). Inference uses the fast cores only (six on an S24 FE).
+multiply). Inference uses the fast cores only (six on an S24 FE): the engine keeps its own
+threads between steps (llama.cpp would start and stop them for every step) and keeps them, and
+the thread that drives them, off the little cores, since a step is only as fast as its slowest
+thread.
 
 - Drafting: `common_speculative` from llama.cpp, with the draft context sharing the target's
   memory; drafts are checked in one batch and rejected tokens removed again (for hybrid models,
@@ -145,4 +153,5 @@ git submodule update --init
 
 - Never run on a real phone by its author: built and tested on desktop and in CI only.
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
-- Generation stops if Android kills the app in the background; keep it open while it writes.
+- If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
+  what was written is kept and marked as cut short.

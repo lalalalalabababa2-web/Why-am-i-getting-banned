@@ -91,10 +91,30 @@ class ChatController(private val app: App) {
     private fun replyUpdated() = listeners.toList().forEach { it.onReplyUpdate() }
 
     private fun save() = app.chats.saveAsync(conversation)
+    private var lastPartialSave = 0L
 
     fun restore() {
         val id = app.settings.lastChatId ?: return
-        app.chats.load(id)?.let { conversation = it }
+        app.chats.load(id)?.let { conversation = it; settleInterrupted() }
+    }
+
+    /**
+     * A reply that was still being written when the app was closed (Android ended it, the phone
+     * restarted) keeps what it had, marked as cut short; one with nothing yet is dropped.
+     */
+    private fun settleInterrupted() {
+        var changedAny = false
+        for (m in conversation.messages.toList()) {
+            if (!m.partial) continue
+            m.partial = false
+            changedAny = true
+            if (m.content.isBlank() && m.reasoning.isBlank()) {
+                conversation.messages.remove(m)
+            } else {
+                m.stats = "cut short: the app was closed while it was writing · use Write again for a full reply"
+            }
+        }
+        if (changedAny) save()
     }
 
     /** Attachments picked but never sent are dropped, files and all, when you leave the chat. */
@@ -109,6 +129,7 @@ class ChatController(private val app: App) {
         if (id != conversation.id) discardDraft()
         app.chats.load(id)?.let {
             conversation = it
+            settleInterrupted()
             app.settings.lastChatId = it.id
             switched()
         }
@@ -203,10 +224,11 @@ class ChatController(private val app: App) {
     }
 
     private fun startReply(model: LoadedModel) {
-        val reply = ChatMessage(role = "assistant", content = "", model = model.displayName)
+        val reply = ChatMessage(role = "assistant", content = "", model = model.displayName, partial = true)
         val request = buildRequest(model)
         conversation.messages.add(reply)
         streaming = reply
+        lastPartialSave = SystemClock.uptimeMillis()
         promptDone = 0
         promptTotal = 0
         promptT0 = 0L
@@ -240,6 +262,12 @@ class ChatController(private val app: App) {
                 reply.reasoning = reasoning
                 reply.content = content
                 replyUpdated()
+                // kept every few seconds, so a reply cut off by Android is not lost
+                val now = SystemClock.uptimeMillis()
+                if (now - lastPartialSave > 3000) {
+                    lastPartialSave = now
+                    save()
+                }
             }
 
             override fun onMedia(index: Int, total: Int) {
@@ -257,6 +285,7 @@ class ChatController(private val app: App) {
 
     private fun finish(reply: ChatMessage, o: ChatOutcome) {
         streaming = null
+        reply.partial = false
         GenerationService.stop(app)
         if (!o.ok) {
             reply.error = true
@@ -274,6 +303,10 @@ class ChatController(private val app: App) {
         save()
         changed()
         status()
+        if (!app.inFront && app.settings.replyNotifications && o.stopReason != "stopped") {
+            val text = (if (reply.content.isNotBlank()) reply.content else reply.reasoning).take(300)
+            GenerationService.replyReady(app, if (reply.error) "The reply failed" else "Reply ready", text.ifBlank { "Open the chat to see it." })
+        }
     }
 
     private fun describe(o: ChatOutcome): String {

@@ -7,6 +7,7 @@ import android.content.Context
 import android.os.PowerManager
 import app.offlineai.chat.data.ChatStore
 import app.offlineai.chat.data.LocalModel
+import app.offlineai.chat.data.BackgroundSpeed
 import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Settings
@@ -64,6 +65,45 @@ class App : Application() {
         }
         chat.restore()
         watchHeat()
+        watchFront()
+    }
+
+    // ---------------------------------------------------------------- in front or not
+
+    /** One of the app's screens is visible. */
+    var inFront = false
+        private set
+    private var started = 0
+
+    private fun watchFront() {
+        registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: android.app.Activity) {
+                started++
+                if (started == 1) frontChanged(true)
+            }
+
+            override fun onActivityStopped(activity: android.app.Activity) {
+                started = (started - 1).coerceAtLeast(0)
+                if (started == 0) frontChanged(false)
+            }
+
+            override fun onActivityCreated(activity: android.app.Activity, state: android.os.Bundle?) {}
+            override fun onActivityResumed(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, state: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
+    }
+
+    private fun frontChanged(front: Boolean) {
+        inFront = front
+        applyBackground()
+        if (front) GenerationService.clearReplyReady(this)
+    }
+
+    /** Gentle writing while another app is in front, if the setting says so. */
+    fun applyBackground() {
+        engine.setBackground(!inFront && settings.backgroundSpeed == BackgroundSpeed.GENTLE, settings.backgroundThreads())
     }
 
     // ---------------------------------------------------------------- models
