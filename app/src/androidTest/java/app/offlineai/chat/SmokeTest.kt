@@ -6,6 +6,7 @@ import android.widget.LinearLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.ui.ChatsActivity
 import app.offlineai.chat.ui.MainActivity
@@ -238,7 +239,7 @@ class SmokeTest {
         bmp.eraseColor(android.graphics.Color.RED)
         png.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
         // the import path the picker uses: shrink and copy as JPEG
-        val att = app.offlineai.chat.data.MediaImport.image(inst.targetContext, android.net.Uri.fromFile(png), dir, 32)
+        val att = MediaImport.image(inst.targetContext, android.net.Uri.fromFile(png), dir, 32)
         assertEquals("image", att.kind)
         val jpg = android.graphics.BitmapFactory.decodeFile(att.files[0])
         assertTrue("the picture should be shrunk to 32 px", maxOf(jpg.width, jpg.height) <= 32)
@@ -258,8 +259,8 @@ class SmokeTest {
         val src = File(dir, "tone.wav")
         val rate = 44_100
         val pcm = FloatArray(rate * 2) { i -> (0.3 * Math.sin(2 * Math.PI * 440 * i / rate)).toFloat() }
-        app.offlineai.chat.data.MediaImport.writeWav(src, pcm, pcm.size, rate)
-        val att = app.offlineai.chat.data.MediaImport.audio(inst.targetContext, android.net.Uri.fromFile(src), dir, 30)
+        MediaImport.writeWav(src, pcm, pcm.size, rate)
+        val att = MediaImport.audio(inst.targetContext, android.net.Uri.fromFile(src), dir, 30)
         Log.i(TAG, "sound: ${att.durationMs} ms, ${File(att.files[0]).length()} bytes")
         assertEquals("audio", att.kind)
         assertTrue("about two seconds (${att.durationMs})", att.durationMs in 1800..2200)

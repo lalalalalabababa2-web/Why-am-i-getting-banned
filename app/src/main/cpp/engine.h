@@ -119,6 +119,9 @@ struct ChatStats {
     int         n_steps        = 0;  // model evaluations while writing
     int         n_media        = 0;  // pictures/sounds encoded this turn
     double      t_media_ms     = 0;
+    double      t_draft_ms     = 0;  // writing time spent drafting
+    double      t_verify_ms    = 0;  //   ... in the model's steps (one per draft check)
+    double      t_sync_ms      = 0;  //   ... keeping the drafter's memory in step with the model
     std::string stop_reason;         // eos, length, context, stopped, error
 };
 

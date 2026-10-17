@@ -1287,7 +1287,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 dp.result_q = sp.temp > 0.0f ? &draft_q : nullptr;
                 dp.temp = sp.temp;
                 dp.seed = sp.seed;
+                const auto t_d = std::chrono::steady_clock::now();
                 common_speculative_draft(spec_);
+                res.stats.t_draft_ms += ms_since(t_d);
                 // a draft never holds anything the model could not read
                 size_t okn = 0;
                 while (okn < draft.size() && draft[okn] >= 0 && draft[okn] < n_vocab) okn++;
@@ -1304,7 +1306,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         batch.clear();
         batch.add(last, pos, 0, true);
         for (size_t i = 0; i < draft.size(); i++) batch.add(draft[i], pos + 1 + (llama_pos) i, 0, true);
+        const auto t_v = std::chrono::steady_clock::now();
         const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        res.stats.t_verify_ms += ms_since(t_v);
         if (ret != 0) {
             const size_t before = cache_.size();
             if (!can_rm_part_) {
@@ -1321,7 +1325,11 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             }
             break;
         }
-        if (spec_) common_speculative_process(spec_, batch);
+        if (spec_) {
+            const auto t_s = std::chrono::steady_clock::now();
+            common_speculative_process(spec_, batch);
+            res.stats.t_sync_ms += ms_since(t_s);
+        }
 
         std::vector<token> ids;
         if (draft.empty()) {

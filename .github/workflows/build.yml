@@ -66,15 +66,25 @@ jobs:
       - name: Tools
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
 
+      # about 15 GB of models; the x86 image carries SDKs these tests do not need
+      - name: Disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h .
+
       - name: Download the models
         run: |
           mkdir -p real-models && cd real-models
           get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
           get unsloth/Qwen3.5-0.8B-MTP-GGUF Qwen3.5-0.8B-Q4_K_M.gguf
           get unsloth/Qwen3.5-0.8B-MTP-GGUF mmproj-F16.gguf
+          get unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-Q4_K_M.gguf
+          get unsloth/gemma-4-E2B-it-GGUF gemma-4-E2B-it-Q4_K_M.gguf
+          get unsloth/gemma-4-E2B-it-GGUF mtp-gemma-4-E2B-it.gguf
+          get unsloth/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
           get prism-ml/Ternary-Bonsai-2-9B-gguf Ternary-Bonsai-2-9B-Q2_0.gguf
           get prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf
-          df -h . ; free -g ; nproc
+          df -h . ; free -g ; nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
 
       - name: Run
         env:
@@ -82,12 +92,10 @@ jobs:
         run: |
           set -o pipefail
           tools/host-test/real.sh 2>&1 | tee real.log
-      - name: Speeds
+      # GitHub keeps at most 10 notices a step, so the results go out as a few multi-line ones.
+      - name: Results
         if: always()
-        run: |
-          [ -f real.log ] || exit 0
-          grep '^SPEED:' real.log | sed 's/^SPEED: /::notice title=${{ matrix.cpu }} speed::/' || true
-          grep -E 'reply ok=|loaded in' real.log | sed 's/^ */::notice title=${{ matrix.cpu }}::/' || true
+        run: python3 ci/real_report.py real.log ${{ matrix.cpu }}
 
   emulator:
     name: On-device tests (Android 14 emulator)

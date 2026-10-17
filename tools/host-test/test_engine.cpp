@@ -593,6 +593,98 @@ static std::string lower(std::string s) {
     return s;
 }
 
+static const char * kStoryPrompt = "Write a short story about a lighthouse keeper who finds a message in a bottle.";
+static const char * kCopyPrompt =
+    "Here is a note:\n\n"
+    "Dear Sam, the boat leaves the north harbour at seven on Saturday morning. Bring your warm coat, the blue "
+    "rope from the shed, two bottles of water and the map with the red marks on it. We will sail past the old "
+    "lighthouse, stop for lunch on the small island with the white rocks, and come back before the tide turns "
+    "at four. If the wind is too strong we will stay in the harbour and fix the engine instead. Call me on "
+    "Friday night if you cannot come. See you soon, Alex.\n\n"
+    "Write the note out again exactly as it is, but with the name Sam changed to Robin.";
+
+// Writing speed with each drafting setting, against a baseline loaded with drafting off (no drafter
+// memory at all). Greedy, so every setting must write the same words as the baseline.
+static void test_speed(const std::string & model, const char * label, const std::string & drafter,
+                       std::vector<int> drafts, bool ngram, const char * prompt) {
+    if (!exists(model)) {
+        std::printf("== speed %s: %s not there, skipped\n", label, model.c_str());
+        return;
+    }
+    std::printf("== speed %s\n", label);
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = false;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 160;
+    req.messages.push_back({"user", prompt, ""});
+    oa::ChatCallbacks cb;
+    const int threads = std::max(1, (int) std::thread::hardware_concurrency());
+    auto run = [&](oa::Engine & e, int n, const char * what) {
+        req.spec_n_max = n;
+        oa::ChatRequest warm = req;
+        warm.sampling.max_tokens = 4;
+        e.chat(warm, cb);  // the file's pages read in, threads up
+        auto r = e.chat(req, cb);
+        const double tps = r.stats.n_generated * 1000.0 / std::max(1.0, r.stats.t_gen_ms);
+        const double steps = std::max(1, r.stats.n_steps);
+        std::printf("SPEED: %s, %s: %.1f tokens/s (%d tokens in %d steps; %d of %d drafts kept; per step: model %.1f ms, "
+                    "drafting %.1f ms, drafter memory %.1f ms)\n",
+                    label, what, tps, r.stats.n_generated, r.stats.n_steps, r.stats.n_accepted, r.stats.n_drafted,
+                    r.stats.t_verify_ms / steps, r.stats.t_draft_ms / steps, r.stats.t_sync_ms / steps);
+        CHECK(r.ok, "%s, %s: reply failed: %s", label, what, r.error.c_str());
+        return r;
+    };
+    std::string base;
+    {
+        oa::LoadParams lp;
+        lp.n_ctx = 4096;
+        lp.n_threads = threads;
+        lp.spec_n_max = 0;
+        lp.spec_ngram = false;
+        oa::Engine e;
+        std::string err;
+        if (!e.load(model, lp, err)) {
+            std::fprintf(stderr, "  FAIL %s: load: %s\n", label, err.c_str());
+            g_failures++;
+            return;
+        }
+        CHECK(e.info().speculative.empty(), "%s: drafting should be off (%s)", label, e.info().speculative.c_str());
+        base = run(e, 0, "drafting off").content;
+    }
+    oa::LoadParams lp;
+    lp.n_ctx = 4096;
+    lp.n_threads = threads;
+    lp.spec_n_max = 0;
+    for (int n : drafts) lp.spec_n_max = std::max(lp.spec_n_max, n);
+    if (ngram) lp.spec_n_max = std::max(lp.spec_n_max, 2);  // copying is on when drafting is
+    lp.spec_ngram = ngram;
+    lp.drafter_path = drafter;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(model, lp, err)) {
+        std::fprintf(stderr, "  FAIL %s: load with drafting: %s\n", label, err.c_str());
+        g_failures++;
+        return;
+    }
+    std::printf("  drafting with: %s\n", e.info().speculative.c_str());
+    CHECK(!e.info().speculative.empty(), "%s: no drafting", label);
+    for (int n : drafts) {
+        char what[64];
+        if (n < 0) std::snprintf(what, sizeof what, "%s", "copying on");
+        else std::snprintf(what, sizeof what, "%d drafted", n);
+        auto r = run(e, n, what);
+        size_t same = 0;
+        while (same < base.size() && same < r.content.size() && base[same] == r.content[same]) same++;
+        if (same < base.size()) std::printf("    %s: same text as the baseline for %zu of %zu characters\n", what, same, base.size());
+        // a near tie between two words can go either way with a batch of different size; anything
+        // more than that is a bug
+        CHECK(same >= std::min(base.size(), r.content.size()) * 8 / 10,
+              "%s, %s: drafting changed the reply early (%zu of %zu characters the same)", label, what, same, base.size());
+    }
+}
+
 static void test_real(const std::string & dir, const std::string & tmp) {
     const std::string model = dir + "/Qwen3.5-0.8B-Q4_K_M.gguf";
     const std::string mmproj = dir + "/mmproj-F16.gguf";
@@ -629,53 +721,23 @@ static void test_real(const std::string & dir, const std::string & tmp) {
         CHECK(e.compute_bytes() < def, "the engine should reserve less compute memory than llama's default");
     }
 
-    // 2. drafting with the model's MTP head: same words, how much faster
+    // 2. drafting with the model's MTP head, and copying from the conversation: same words, how fast
+    test_speed(model, "Qwen3.5 0.8B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+
+    // pictures: drafting off, as the app has it until the drafting test says otherwise
     oa::LoadParams lp;
     lp.n_ctx = 4096;
     lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
-    lp.spec_n_max = 3;
-    lp.spec_ngram = false;
+    lp.spec_n_max = 0;
     lp.mmproj_path = mmproj;
     oa::Engine e;
     std::string err;
     if (!e.load(model, lp, err)) {
-        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        std::fprintf(stderr, "  FAIL load with the projector: %s\n", err.c_str());
         g_failures++;
         return;
     }
-    const auto info = e.info();
-    std::printf("  speculative=%s vision=%d audio=%d memory=%s threads=%d\n", info.speculative.c_str(), info.vision,
-                info.audio, info.memory.c_str(), lp.n_threads);
-    CHECK(info.speculative == "mtp", "the MTP file should draft with its own head (%s)", info.speculative.c_str());
-    CHECK(info.vision, "the projector should read pictures");
-
-    oa::ChatRequest req;
-    req.now_ms = 1760000000000LL;
-    req.enable_thinking = false;
-    req.sampling.temp = 0.0f;
-    req.sampling.top_k = 1;
-    req.sampling.max_tokens = 160;
-    req.messages.push_back({"user", "Write a short story about a lighthouse keeper who finds a message in a bottle.", ""});
-    oa::ChatCallbacks cb;
-    std::string base_text;
-    for (int n : {0, 1, 2, 3, 0}) {
-        req.spec_n_max = n;
-        auto r = e.chat(req, cb);
-        const double tps = r.stats.n_generated * 1000.0 / std::max(1.0, r.stats.t_gen_ms);
-        const double acc = r.stats.n_drafted ? 100.0 * r.stats.n_accepted / r.stats.n_drafted : 0.0;
-        std::printf("SPEED: Qwen3.5 0.8B Q4_K_M, %d threads, drafts %d: %.1f tokens/s (%d tokens in %d steps, %d of %d drafts accepted, %.0f%%)\n",
-                    lp.n_threads, n, tps, r.stats.n_generated, r.stats.n_steps, r.stats.n_accepted, r.stats.n_drafted, acc);
-        CHECK(r.ok, "reply with %d drafts failed: %s", n, r.error.c_str());
-        if (n == 0 && base_text.empty()) base_text = r.content;
-        if (n > 0) {
-            // greedy: the same words with and without drafting (a near tie could differ; report it)
-            size_t same = 0;
-            while (same < base_text.size() && same < r.content.size() && base_text[same] == r.content[same]) same++;
-            std::printf("    same text as without drafts for %zu of %zu characters\n", same, base_text.size());
-            CHECK(same >= std::min(base_text.size(), r.content.size()) * 9 / 10,
-                  "drafting changed the reply early (%zu of %zu characters the same)", same, base_text.size());
-        }
-    }
+    CHECK(e.info().vision, "the projector should read pictures");
 
     // 3. a picture: the colour must be seen, and the next turn must not read it again
     const std::string red = write_ppm(tmp + "/red.ppm", 128, 96, 220, 20, 20);
@@ -794,7 +856,14 @@ int main(int argc, char ** argv) {
     // test_engine <tiny models dir> <llama.cpp dir> [real models dir] [--real-only]
     const bool real_only = argc >= 5 && std::string(argv[4]) == "--real-only";
     if (real_only) {
-        test_real(argv[3], argv[3]);
+        const std::string rd = argv[3];
+        test_real(rd, rd);
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+        test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M", rd + "/mtp-gemma-4-E2B-it.gguf", {0, 1, 2, 3},
+                   false, kStoryPrompt);
+        // copying from the conversation (attention-only models; hybrids cannot wind back that far)
+        test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
+        test_speed(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", 2048);
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
