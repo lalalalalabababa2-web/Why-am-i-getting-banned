@@ -113,6 +113,8 @@ jobs:
         run: |
           OUT=build/host-test
           echo "== Bonsai 27B, memory limited to 3 GB" | tee -a real.log
+          # pages already cached count against the memory of whoever read them first, so start cold
+          sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
           sudo systemd-run --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
             timeout 900 "$OUT/test_engine_real" "$OUT/models" third_party/llama.cpp real-models --one real-models/Bonsai-27B-Q1_0.gguf 2>&1 \
             | sed 's/^SPEED: /SPEED: [3 GB] /' | tee -a real.log || echo "  (stopped or failed: $?)" | tee -a real.log

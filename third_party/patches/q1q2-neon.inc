@@ -168,6 +168,9 @@ static void oa_q1_rows4(int n, float * GGML_RESTRICT s, size_t bs, const void * 
         }
         const float32x4_t dy = oa_q8_scales4(yb);
         for (int r = 0; r < 4; r++) {
+            // the weights come from the model file's pages (low memory): ask for them early, past
+            // the 4 KB page ends where the CPU's own prefetching stops
+            __builtin_prefetch((const uint8_t *) &x[r][i] + 512);
             const uint8x16_t bits = vld1q_u8(x[r][i].qs);
             int32x4_t a[4];
             for (int k = 0; k < 4; k++) {
@@ -370,6 +373,7 @@ static void oa_q2_rows4(int n, float * GGML_RESTRICT s, size_t bs, const void * 
         }
         const float32x4_t dy = oa_q8_scales4(yb);
         for (int r = 0; r < 4; r++) {
+            __builtin_prefetch((const uint8_t *) &x[r][i] + 512);
             int32x4_t a[4];
             for (int h = 0; h < 2; h++) {
                 const uint8x16_t qs = vld1q_u8(x[r][i + h].qs);

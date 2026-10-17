@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
@@ -882,6 +883,69 @@ static void test_bonsai(const std::string & path, const char * label, int ctx, b
               "(%d reports in %.1fs)", label, reports, rl.stats.t_prompt_ms / 1000.0);
 }
 
+// Where the time goes while writing: each graph node is computed on its own (slower overall, but
+// the shares are what matter) and its time is added up by operation and weight type.
+struct OpProfile {
+    std::map<std::string, double> ms;
+    std::chrono::steady_clock::time_point last;
+    bool on = false;
+};
+static bool profile_cb(struct ggml_tensor * t, bool ask, void * ud) {
+    auto * p = (OpProfile *) ud;
+    if (ask) return true;
+    const auto now = std::chrono::steady_clock::now();
+    if (p->on) {
+        std::string key = ggml_op_desc(t);
+        if (t->op == GGML_OP_MUL_MAT && t->src[0]) key += std::string(" ") + ggml_type_name(t->src[0]->type);
+        p->ms[key] += std::chrono::duration<double, std::milli>(now - p->last).count();
+    }
+    p->last = now;
+    return true;
+}
+static void profile_writing(const std::string & path, const char * label, bool low_memory) {
+    if (!exists(path)) return;
+    auto mp = llama_model_default_params();
+    mp.n_gpu_layers = 0;
+    mp.use_extra_bufts = !low_memory;
+    llama_model * m = llama_model_load_from_file(path.c_str(), mp);
+    if (!m) return;
+    OpProfile prof;
+    auto cp = llama_context_default_params();
+    cp.n_ctx = 1024;
+    cp.n_batch = 64;
+    cp.n_ubatch = 64;
+    cp.n_threads = cp.n_threads_batch = std::max(1, (int) std::thread::hardware_concurrency());
+    cp.cb_eval = profile_cb;
+    cp.cb_eval_user_data = &prof;
+    llama_context * c = llama_init_from_model(m, cp);
+    std::vector<llama_token> toks(32);
+    for (size_t i = 0; i < toks.size(); i++) toks[i] = (llama_token) (100 + 7 * i);
+    llama_decode(c, llama_batch_get_one(toks.data(), (int32_t) toks.size()));
+    const int n = 16;
+    prof.on = true;
+    prof.last = std::chrono::steady_clock::now();
+    const auto t0 = prof.last;
+    for (int i = 0; i < n; i++) {
+        llama_token tk = (llama_token) (200 + i);
+        llama_decode(c, llama_batch_get_one(&tk, 1));
+    }
+    const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / n;
+    std::vector<std::pair<double, std::string>> v;
+    double sum = 0;
+    for (auto & [k, ms] : prof.ms) { v.push_back({ms / n, k}); sum += ms / n; }
+    std::sort(v.rbegin(), v.rend());
+    std::string line;
+    for (size_t i = 0; i < v.size() && i < 8; i++) {
+        char b[96];
+        std::snprintf(b, sizeof b, "%s%s %.0f ms (%.0f%%)", i ? ", " : "", v[i].second.c_str(), v[i].first, 100.0 * v[i].first / sum);
+        line += b;
+    }
+    std::printf("SPEED: %s%s, per written token, node by node (%.0f ms in all): %s\n", label,
+                low_memory ? " (low memory)" : "", total, line.c_str());
+    llama_free(c);
+    llama_model_free(m);
+}
+
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <models dir> <llama.cpp dir>\n", argv[0]);
@@ -915,6 +979,9 @@ int main(int argc, char ** argv) {
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0, low memory", 2048, true);
+        profile_writing(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", false);
+        profile_writing(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", true);
+        profile_writing(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", true);
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0, low memory", 2048, true);
         // abliterated copies load and answer like their originals
         test_bonsai(std::string(argv[3]) + "/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", "Qwen3.5 2B abliterated", 2048);
