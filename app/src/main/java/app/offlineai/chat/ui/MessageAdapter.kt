@@ -55,7 +55,7 @@ class MessageAdapter(
     override fun getItemId(position: Int): Long = ids.getOrPut(messages[position].id) { nextId++ }
 
     private fun fingerprint(m: ChatMessage) =
-        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}"
+        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}|${m.attachments.size}"
 
     /** Shows the conversation as it is now, changing only what changed. */
     fun submit() {
@@ -104,21 +104,46 @@ class MessageAdapter(
 
     inner class UserHolder(ctx: Context) : RecyclerView.ViewHolder(LinearLayout(ctx)) {
         private val row = itemView as LinearLayout
+        private val media = android.widget.LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
         private val bubble = ctx.text().apply {
             background = rounded(Palette.surface3, ctx.dp(18).toFloat())
             setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
             maxWidth = (ctx.resources.displayMetrics.widthPixels * 0.82).toInt()
         }
+        private var mediaShown: List<app.offlineai.chat.data.Attachment>? = null
 
         init {
-            row.orientation = LinearLayout.HORIZONTAL
+            row.orientation = LinearLayout.VERTICAL
             row.gravity = Gravity.END
             row.layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
             row.setPadding(ctx.dp(48), ctx.dp(12), ctx.dp(14), ctx.dp(4))
-            row.addView(bubble, lp(WRAP, WRAP))
+            row.addView(media, lp(WRAP, WRAP).apply { gravity = Gravity.END })
+            row.addView(bubble, lp(WRAP, WRAP).apply { gravity = Gravity.END })
         }
 
         fun bind(m: ChatMessage, isLastUser: Boolean) {
+            if (mediaShown !== m.attachments) {
+                // pictures, videos and recordings sent with it, as small tiles; tap one to see it
+                mediaShown = m.attachments
+                media.removeAllViews()
+                val ctx = itemView.context
+                val shown = m.attachments.take(4)
+                for (a in shown) {
+                    media.addView(Thumbs.tile(ctx, a, if (m.attachments.size == 1) 132 else 72, onClick = { Thumbs.show(ctx, a) }),
+                        lp(WRAP, WRAP).apply { marginStart = ctx.dp(6) })
+                }
+                if (m.attachments.size > shown.size) {
+                    media.addView(ctx.text("+${m.attachments.size - shown.size}", 14f, Palette.text2, bold = true).apply {
+                        gravity = Gravity.CENTER
+                    }, lp(ctx.dp(40), ctx.dp(72)))
+                }
+                media.visibility = if (m.attachments.isEmpty()) View.GONE else View.VISIBLE
+                (bubble.layoutParams as LinearLayout.LayoutParams).topMargin = if (m.attachments.isEmpty()) 0 else ctx.dp(6)
+            }
+            bubble.visibility = if (m.content.isBlank()) View.GONE else View.VISIBLE
             bubble.text = m.content
             val menu = View.OnClickListener { v ->
                 val pm = PopupMenu(v.context, v)
@@ -139,6 +164,8 @@ class MessageAdapter(
             }
             bubble.setOnClickListener(menu)
             bubble.setOnLongClickListener { menu.onClick(it); true }
+            // a message of only attachments has no bubble: its tiles open the same menu on a long press
+            for (i in 0 until media.childCount) media.getChildAt(i).setOnLongClickListener { menu.onClick(it); true }
         }
     }
 

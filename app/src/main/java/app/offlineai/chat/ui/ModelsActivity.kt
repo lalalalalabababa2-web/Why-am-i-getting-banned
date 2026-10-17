@@ -19,6 +19,7 @@ import app.offlineai.chat.App
 import app.offlineai.chat.data.Catalog
 import app.offlineai.chat.data.CatalogModel
 import app.offlineai.chat.data.DownloadState
+import app.offlineai.chat.data.ExtraFile
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.engine.EngineController
@@ -93,15 +94,31 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         importRow = null
         content.addView(info)
 
-        content.addView(sectionTitle("Recommended for this phone"))
-        Catalog.models.filter { !it.large }.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
-        content.addView(sectionTitle("Bigger models"))
-        content.addView(text(
-            "9B models are smarter on hard questions, but they need almost all of an 8 GB phone's free memory and write at " +
-                "about half the speed. Close other apps before loading one.",
-            13f, Palette.text2,
-        ).apply { setPadding(dp(20), 0, dp(20), dp(6)) })
-        Catalog.models.filter { it.large }.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
+        // the catalog, grouped by what you would pick it for
+        val byId = Catalog.models.associateBy { it.id }
+        fun group(title: String, note: String?, ids: List<String>) {
+            val ms = ids.mapNotNull { byId[it] }
+            if (ms.isEmpty()) return
+            content.addView(sectionTitle(title))
+            if (note != null) content.addView(text(note, 13f, Palette.text2).apply { setPadding(dp(20), 0, dp(20), dp(6)) })
+            ms.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
+        }
+        group("Best for this phone", null, listOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b"))
+        group("Small and fast", "Under 2 GB. Quick replies, light on memory and battery; they know less.",
+            listOf("qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b", "llama32-1b", "qwen35-0.8b", "gemma3-270m"))
+        group("More 3-4B models", null, listOf("llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini"))
+        group("Community", "Qwen3.5 4B tuned by people outside Alibaba.",
+            listOf("qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm"))
+        group("Bigger models",
+            "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
+                "free memory and write more slowly. Close other apps before loading one.",
+            listOf("lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
+        // anything in the catalog not placed above still shows
+        val placed = setOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b", "qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b",
+            "llama32-1b", "qwen35-0.8b", "gemma3-270m", "llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini",
+            "qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm", "lfm25-8b-a1b",
+            "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b")
+        group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
         val local = app.models.local()
         knownLocal = local.map { it.file.name }.toSet()
@@ -152,7 +169,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             (if (free >= 0) "${ModelStore.formatBytes(free)} of storage free. " else "") +
             "Memory: ${ModelStore.formatBytes(app.availableRam())} free of ${ModelStore.formatBytes(app.totalRam)}." +
             (if (app.settings.offlineOnly) "\nOffline only is on (Settings), so downloads are off." else "")
-        rows.forEach { it.update(downloads[it.fileName]) }
+        rows.forEach { it.update(downloads) }
         importing?.let { (name, pct) -> importRow?.text = "Copying $name… $pct%" }
     }
 
@@ -165,6 +182,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     ) {
         val view = card()
         private val status = text("", 13f, Palette.text2)
+        private val extra = text("", 12f, Palette.text3)
         private val bar = ProgressBar(this@ModelsActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progressTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
@@ -183,12 +201,51 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 setPadding(0, dp(2), 0, 0)
             })
             if (blurb != null) view.addView(text(blurb, 14f, Palette.text2).apply { setPadding(0, dp(8), 0, 0) })
+            val can = mutableListOf<String>()
+            if (catalog?.pictures != null) can += if (catalog?.hears == true) "pictures and sound" else "pictures"
+            if (catalog?.mtp == true || catalog?.drafter != null) can += "drafts ahead (faster writing)"
+            if (can.isNotEmpty()) {
+                view.addView(text("Can do: " + can.joinToString(" · "), 12f, Palette.text3).apply { setPadding(0, dp(6), 0, 0) })
+            }
             view.addView(bar, lp(MATCH, dp(4)).apply { topMargin = dp(10) })
             view.addView(status, lp(MATCH, WRAP).apply { topMargin = dp(6) })
+            view.addView(extra, lp(MATCH, WRAP).apply { topMargin = dp(4) })
             view.addView(actions, lp(MATCH, WRAP).apply { topMargin = dp(10) })
         }
 
-        fun update(d: DownloadState?) {
+        /** Picture support and the drafter: what is there, what is downloading. */
+        private fun extras(local: LocalModel?, downloads: Map<String, DownloadState>): Pair<String, String> {
+            val c = catalog ?: return "" to ""
+            val lines = mutableListOf<String>()
+            val keyParts = mutableListOf<String>()
+            fun one(kind: String, file: ExtraFile?, have: Boolean, what: String) {
+                if (file == null) return
+                val d = downloads[app.models.companionKey(fileName, kind)]
+                val failed = app.models.failures[app.models.companionKey(fileName, kind)]
+                val state = when {
+                    have -> "have"
+                    d != null -> "dl"
+                    else -> "none"
+                }
+                keyParts += "$kind:$state"
+                when {
+                    have -> lines += "$what: on this phone (${ModelStore.formatBytes(file.sizeBytes)})"
+                    d != null -> {
+                        val total = if (d.total > 0) d.total else file.sizeBytes
+                        lines += "$what: downloading ${ModelStore.formatBytes(d.done)} of ${ModelStore.formatBytes(total)}"
+                    }
+                    failed != null -> lines += "$what: $failed"
+                    local != null -> lines += "$what: not downloaded (${ModelStore.formatBytes(file.sizeBytes)})"
+                }
+            }
+            one("mmproj", c.pictures, local?.hasPictures == true, if (c.hears) "Picture and sound support" else "Picture support")
+            one("drafter", c.drafter, local?.hasDrafter == true, "Speed-up file")
+            if (local?.isOlderCopy == true) lines += "This copy was downloaded before the faster MTP version. Delete it and download it again to write faster."
+            return lines.joinToString("\n") to keyParts.joinToString(",")
+        }
+
+        fun update(downloads: Map<String, DownloadState>) {
+            val d = downloads[fileName]
             val e = app.engine
             val local = app.models.find(fileName)
             val loadedNow = e.loaded
@@ -257,10 +314,20 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     }
                 }
             }
-            if (key != actionsKey) {
-                actionsKey = key
+            val (extraText, extraKey) = extras(local, downloads)
+            extra.text = extraText
+            extra.visibility = if (extraText.isEmpty()) View.GONE else View.VISIBLE
+            val fullKey = "$key|$extraKey"
+            if (fullKey != actionsKey) {
+                actionsKey = fullKey
                 actions.removeAllViews()
-                fun add(v: View) = actions.addView(v, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
+                val row1 = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                val row2 = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                actions.orientation = LinearLayout.VERTICAL
+                actions.addView(row1)
+                actions.addView(row2, lp(WRAP, WRAP).apply { topMargin = dp(8) })
+                fun add(v: View, second: Boolean = false) =
+                    (if (second) row2 else row1).addView(v, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
                 when (key) {
                     "loaded" -> add(pill("Unload") { app.engine.unload() })
                     "loading" -> add(pill("Cancel") { app.engine.cancelLoading() })
@@ -271,8 +338,50 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     "downloading" -> add(pill("Cancel") { app.models.cancel(fileName); refresh() })
                     "remote" -> if (catalog != null) add(pill("Download", primary = true) { download(catalog) })
                 }
+                // picture support and the speed-up file, once the model itself is here
+                val c = catalog
+                if (c != null && (key == "local" || key == "loaded")) {
+                    val lm = app.models.find(fileName)
+                    val pics = c.pictures
+                    if (pics != null && lm != null) {
+                        val k = app.models.companionKey(fileName, "mmproj")
+                        when {
+                            downloads.containsKey(k) -> add(pill("Stop picture download") { app.models.cancel(k); refresh() }, true)
+                            lm.hasPictures -> add(pill("Remove picture support") { removeExtra(lm, "mmproj") }, true)
+                            else -> add(pill("Add picture support (${ModelStore.formatBytes(pics.sizeBytes)})") {
+                                downloadExtra(c, "mmproj", pics, "${c.name} picture support")
+                            }, true)
+                        }
+                    }
+                    val dr = c.drafter
+                    if (dr != null && lm != null && !lm.hasDrafter && !downloads.containsKey(app.models.companionKey(fileName, "drafter"))) {
+                        add(pill("Add speed-up file (${ModelStore.formatBytes(dr.sizeBytes)})") {
+                            downloadExtra(c, "drafter", dr, "${c.name} speed-up file")
+                        }, true)
+                    }
+                }
+                row2.visibility = if (row2.childCount > 0) View.VISIBLE else View.GONE
             }
         }
+    }
+
+    private fun downloadExtra(m: CatalogModel, kind: String, f: ExtraFile, title: String) {
+        if (offlineBlocked()) return
+        val free = app.models.freeBytes()
+        if (free in 0 until f.sizeBytes + 100_000_000L) {
+            Toast.makeText(this, "Not enough free space (${ModelStore.formatBytes(f.sizeBytes)} needed).", Toast.LENGTH_LONG).show()
+            return
+        }
+        val error = app.models.downloadCompanion(m.file, kind, f, title)
+        Toast.makeText(this, error ?: "Downloading. The model reloads with it when you go back to the chat.", Toast.LENGTH_LONG).show()
+        refresh()
+    }
+
+    private fun removeExtra(model: LocalModel, kind: String) {
+        val loadedNow = app.engine.loaded?.key == model.file.name
+        app.models.deleteCompanion(model, kind)
+        if (loadedNow) app.reloadIfNeeded()
+        refresh()
     }
 
     private fun use(model: LocalModel) {
@@ -338,6 +447,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             return
         }
         val error = app.models.download(m.url, m.file, m.name)
+        // the small drafter comes along: it is what makes Gemma 4 write faster
+        val dr = m.drafter
+        if (error == null && dr != null && app.settings.speculative) {
+            app.models.downloadCompanion(m.file, "drafter", dr, "${m.name} speed-up file")
+        }
         Toast.makeText(this, error ?: "Downloading ${m.name}. It carries on if you leave the app.", Toast.LENGTH_LONG).show()
         refresh()
     }

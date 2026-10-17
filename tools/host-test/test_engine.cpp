@@ -739,6 +739,46 @@ static void test_real(const std::string & dir, const std::string & tmp) {
     CHECK(r5.ok, "the engine should work again after a damaged picture: %s", r5.error.c_str());
 }
 
+// Bonsai: Qwen models with weights of -1/0/+1 (Q2_0, with PrismML's Hadamard rotation) or 1 bit
+// (Q1_0). They must load and answer sensibly, not just run.
+static void test_bonsai(const std::string & path, const char * label, int ctx) {
+    if (!exists(path)) {
+        std::printf("== %s: %s not there, skipped\n", label, path.c_str());
+        return;
+    }
+    std::printf("== %s: %s\n", label, path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = ctx;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 0;
+    oa::Engine e;
+    std::string err;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!e.load(path, lp, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    const double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const auto info = e.info();
+    std::printf("  %s, %.2f GB, loaded in %.1fs, memory=%s\n", info.desc.c_str(), info.size_bytes / 1e9, load_s, info.memory.c_str());
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = false;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 48;
+    req.messages.push_back({"user", "What is the capital of France? Answer with one word.", ""});
+    oa::ChatCallbacks cb;
+    auto r = e.chat(req, cb);
+    const double tps = r.stats.n_generated * 1000.0 / std::max(1.0, r.stats.t_gen_ms);
+    std::printf("  reply ok=%d [%s] err=%s\n", r.ok, r.content.c_str(), r.error.c_str());
+    std::printf("SPEED: %s on %d threads: %.1f tokens/s writing, prompt %d tokens in %.1fs\n", label, lp.n_threads, tps,
+                r.stats.n_prompt, r.stats.t_prompt_ms / 1000.0);
+    CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
+    CHECK(lower(r.content).find("paris") != std::string::npos, "%s: not a sensible answer: %s", label, r.content.c_str());
+}
+
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <models dir> <llama.cpp dir>\n", argv[0]);
@@ -750,6 +790,16 @@ int main(int argc, char ** argv) {
         if (level >= GGML_LOG_LEVEL_ERROR) std::fputs(text, stderr);
     }, nullptr);
     oa::Engine::backend_init("");
+
+    // test_engine <tiny models dir> <llama.cpp dir> [real models dir] [--real-only]
+    const bool real_only = argc >= 5 && std::string(argv[4]) == "--real-only";
+    if (real_only) {
+        test_real(argv[3], argv[3]);
+        test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", 2048);
+        test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", 2048);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
 
     for (const char * m : {"llama-dense.gguf", "qwen35-dense.gguf", "gemma3-dense.gguf", "mistral3-moe.gguf"}) {
         test_cache(dir + "/" + m);

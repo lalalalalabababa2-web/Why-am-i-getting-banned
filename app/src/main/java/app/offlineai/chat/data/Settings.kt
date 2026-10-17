@@ -20,6 +20,13 @@ enum class MemoryMode(val label: String, val help: String) {
 
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Same as the phone") }
 
+/** How closely pictures are looked at: pixels kept, and tokens a picture may take for models that scale with size. */
+enum class PictureDetail(val label: String, val maxSide: Int, val maxTokens: Int, val help: String) {
+    LOW("Quick", 512, 160, "Smaller pictures: read in a few seconds, fewer details."),
+    NORMAL("Normal", 768, 400, "A good balance for photos and screenshots."),
+    HIGH("Detailed", 1024, 1024, "Small text and fine details; several times slower to read."),
+}
+
 enum class Accent(val label: String, val dark: Int, val light: Int) {
     SLATE("Slate", 0xFF8FA9C7.toInt(), 0xFF3C5F86.toInt()),
     TEAL("Teal", 0xFF6CC4B8.toInt(), 0xFF1D766E.toInt()),
@@ -84,6 +91,43 @@ class Settings(context: Context) {
     var streamIntervalMs: Int
         get() = int("stream_interval", 50)
         set(v) = put("stream_interval", v)
+
+    /** Draft a few tokens ahead and check them in one step (speculative decoding). */
+    var speculative: Boolean
+        get() = bool("speculative", true)
+        set(v) = put("speculative", v)
+    /** Tokens drafted per step; 0 means the speed test's pick for the model, or 2. */
+    var draftTokens: Int
+        get() = int("draft_tokens", 0)
+        set(v) = put("draft_tokens", v)
+    /** Also draft by copying from the conversation (helps with code and edits). */
+    var copyDrafts: Boolean
+        get() = bool("copy_drafts", true)
+        set(v) = put("copy_drafts", v)
+
+    var draftSummary: String
+        get() = str("draft_summary", "")
+        set(v) = put("draft_summary", v)
+
+    /** The draft length the speed test found fastest for a model file: 0 = drafting off, -1 = not measured. */
+    fun measuredDrafts(modelFile: String): Int = int("drafts:$modelFile", -1)
+    fun setMeasuredDrafts(modelFile: String, n: Int) = put("drafts:$modelFile", n)
+
+    /** Drafts per step to load [modelFile] with (0: off). */
+    fun draftsFor(modelFile: String): Int {
+        if (!speculative) return 0
+        if (draftTokens > 0) return draftTokens
+        val m = measuredDrafts(modelFile)
+        return if (m >= 0) m else 2
+    }
+
+    // ---- pictures, video and sound
+    var pictureDetail: PictureDetail
+        get() = runCatching { PictureDetail.valueOf(str("picture_detail", "NORMAL")) }.getOrDefault(PictureDetail.NORMAL)
+        set(v) = put("picture_detail", v.name)
+    var videoFrames: Int
+        get() = int("video_frames", 6)
+        set(v) = put("video_frames", v)
 
     // ---- replies
     var thinking: Boolean
@@ -186,6 +230,11 @@ class Settings(context: Context) {
         val PROMPT_BATCHES = intArrayOf(64, 128, 256, 512)
         val STREAM_INTERVALS = intArrayOf(16, 33, 50, 100, 250)
         val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)
+        val DRAFT_TOKENS = intArrayOf(0, 1, 2, 3, 4)
+        val VIDEO_FRAMES = intArrayOf(4, 6, 8, 12)
+
+        /** How long one recorded or picked sound may be (Gemma 4 hears up to 30 seconds). */
+        const val MAX_SOUND_SECONDS = 30
     }
 }
 

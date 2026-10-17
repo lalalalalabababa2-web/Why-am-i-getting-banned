@@ -1,6 +1,7 @@
 package app.offlineai.chat
 
 import android.os.SystemClock
+import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.ChatMessage
 import app.offlineai.chat.data.Conversation
 import app.offlineai.chat.data.Family
@@ -44,6 +45,15 @@ class ChatController(private val app: App) {
         private set
     private var genStartedAt = 0L
 
+    /** Pictures being read: index of the current one (-1 while the picture part loads), and how many. */
+    var mediaIndex = -2
+        private set
+    var mediaTotal = 0
+        private set
+
+    /** Attachments waiting in the composer, to go with the next message you send. */
+    val draftAttachments: MutableList<Attachment> = mutableListOf()
+
     fun addListener(l: Listener) = listeners.add(l)
     fun removeListener(l: Listener) = listeners.remove(l)
     private fun changed() = listeners.toList().forEach { it.onMessagesChanged() }
@@ -58,8 +68,16 @@ class ChatController(private val app: App) {
         app.chats.load(id)?.let { conversation = it }
     }
 
+    /** Attachments picked but never sent are dropped, files and all, when you leave the chat. */
+    private fun discardDraft() {
+        if (draftAttachments.isEmpty()) return
+        app.chats.deleteFiles(draftAttachments)
+        draftAttachments.clear()
+    }
+
     fun open(id: String) {
         if (generating) return
+        if (id != conversation.id) discardDraft()
         app.chats.load(id)?.let {
             conversation = it
             app.settings.lastChatId = it.id
@@ -69,6 +87,7 @@ class ChatController(private val app: App) {
 
     fun newChat() {
         if (generating) stop()
+        discardDraft()
         conversation = Conversation()
         app.settings.lastChatId = conversation.id
         switched()
@@ -95,13 +114,25 @@ class ChatController(private val app: App) {
 
     fun send(text: String): Boolean {
         val model = app.engine.loaded ?: return false
-        if (generating || text.isBlank()) return false
-        conversation.messages.add(ChatMessage(role = "user", content = text.trim()))
-        if (conversation.title.isBlank()) conversation.title = text.trim().lineSequence().first().take(60)
+        val attachments = draftAttachments.toList()
+        if (generating || (text.isBlank() && attachments.isEmpty())) return false
+        conversation.messages.add(ChatMessage(role = "user", content = text.trim(), attachments = attachments))
+        draftAttachments.clear()
+        if (conversation.title.isBlank()) {
+            conversation.title = text.trim().lineSequence().firstOrNull()?.take(60)?.ifBlank { null }
+                ?: when (attachments.firstOrNull()?.kind) { "video" -> "A video"; "audio" -> "A recording"; else -> "A picture" }
+        }
         app.settings.lastChatId = conversation.id
         save()
         startReply(model)
         return true
+    }
+
+    /** The open conversation, for files that belong to it (pictures, sounds, video frames). */
+    fun mediaDir() = app.chats.mediaDir(conversation.id)
+
+    fun removeDraftAttachment(a: Attachment) {
+        if (draftAttachments.remove(a)) app.chats.deleteFiles(listOf(a))
     }
 
     /** Writes the last reply again. */
@@ -121,6 +152,9 @@ class ChatController(private val app: App) {
         val i = msgs.indexOfLast { it.role == "user" }
         if (i < 0) return null
         val text = msgs[i].content
+        // its attachments go back into the composer with the text
+        draftAttachments.clear()
+        draftAttachments.addAll(msgs[i].attachments)
         while (msgs.size > i) msgs.removeAt(msgs.size - 1)
         save()
         changed()
@@ -130,6 +164,7 @@ class ChatController(private val app: App) {
     fun delete(message: ChatMessage) {
         if (generating) return
         conversation.messages.remove(message)
+        app.chats.deleteFiles(message.attachments)
         save()
         changed()
     }
@@ -147,6 +182,8 @@ class ChatController(private val app: App) {
         promptTotal = 0
         generated = 0
         genStartedAt = 0L
+        mediaIndex = -2
+        mediaTotal = 0
         changed()
         status()
 
@@ -168,7 +205,14 @@ class ChatController(private val app: App) {
                 replyUpdated()
             }
 
+            override fun onMedia(index: Int, total: Int) {
+                mediaIndex = index
+                mediaTotal = total
+                status()
+            }
+
             override fun onDone(outcome: ChatOutcome) {
+                mediaIndex = -2
                 finish(reply, outcome)
             }
         })
@@ -202,6 +246,14 @@ class ChatController(private val app: App) {
         }
         parts += "${o.nGenerated} tokens"
         if (o.tFirstMs > 0) parts += String.format(Locale.US, "first word %.1fs", o.tFirstMs / 1000.0)
+        if (o.nDrafted > 0 && o.nSteps > 0) {
+            // how much drafting ahead helped: tokens written per model step (1.0 without it)
+            parts += String.format(Locale.US, "%.1f tokens per step", o.nGenerated.toDouble() / o.nSteps)
+        }
+        if (o.nMedia > 0) {
+            val what = if (o.nMedia == 1) "1 attachment" else "${o.nMedia} attachments"
+            parts += String.format(Locale.US, "read %s in %.1fs", what, o.tMediaMs / 1000.0)
+        }
         if (o.nEvaluated > 0 && o.tPromptMs > 500) {
             parts += String.format(Locale.US, "read %d in %.1fs", o.nEvaluated, o.tPromptMs / 1000.0)
         }
@@ -228,13 +280,19 @@ class ChatController(private val app: App) {
         for (m in conversation.messages) {
             if (m.error) continue
             if (m.role == "assistant" && m.content.isBlank()) continue
+            val media = if (m.role == "user") mediaJson(m.attachments) else null
             val prev = last
             if (prev != null && prev.getString("role") == m.role) {
                 prev.put("content", prev.getString("content") + "\n\n" + m.content)
+                if (media != null) {
+                    val into = prev.optJSONArray("media") ?: JSONArray().also { prev.put("media", it) }
+                    for (k in 0 until media.length()) into.put(media.get(k))
+                }
                 continue
             }
             val j = JSONObject().put("role", m.role).put("content", m.content)
             if (m.role == "assistant" && m.reasoning.isNotBlank()) j.put("reasoning", m.reasoning)
+            if (media != null) j.put("media", media)
             messages.put(j)
             last = j
         }
@@ -242,7 +300,7 @@ class ChatController(private val app: App) {
         val sampling = if (s.useRecommendedSampling) {
             val r = familyOf(model).recommended()
             JSONObject().put("temp", r.temp.toDouble()).put("top_p", r.topP.toDouble())
-                .put("top_k", r.topK).put("min_p", r.minP.toDouble()).put("repeat_penalty", 1.0)
+                .put("top_k", r.topK).put("min_p", r.minP.toDouble()).put("repeat_penalty", r.repeat.toDouble())
         } else {
             JSONObject().put("temp", s.temperature.toDouble()).put("top_p", s.topP.toDouble())
                 .put("top_k", s.topK).put("min_p", s.minP.toDouble()).put("repeat_penalty", s.repeatPenalty.toDouble())
@@ -254,6 +312,27 @@ class ChatController(private val app: App) {
             .put("thinking", s.thinking)
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
+    }
+
+    /** Attachments as the engine reads them; files that went missing are left out. */
+    private fun mediaJson(list: List<Attachment>): JSONArray? {
+        if (list.isEmpty()) return null
+        val arr = JSONArray()
+        for (a in list) {
+            for ((k, path) in a.files.withIndex()) {
+                if (!java.io.File(path).isFile) continue
+                // a video says what it is before its first frame, then each frame its time
+                val intro = if (a.kind == "video" && k == 0) {
+                    String.format(Locale.US, "(a video of %.0f seconds, shown as %d frames) ", a.durationMs / 1000.0, a.files.size)
+                } else {
+                    ""
+                }
+                arr.put(JSONObject().put("path", path)
+                    .put("label", intro + (a.labels.getOrNull(k) ?: ""))
+                    .put("frame", a.kind == "video"))
+            }
+        }
+        return if (arr.length() > 0) arr else null
     }
 
     // ---- for the on-device tests only: a reply streamed from text instead of from a model,

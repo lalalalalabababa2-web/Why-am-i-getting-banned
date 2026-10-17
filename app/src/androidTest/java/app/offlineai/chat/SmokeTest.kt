@@ -224,6 +224,51 @@ class SmokeTest {
         }
     }
 
+    /** A picture sent to a model that cannot see: the app sends it, the engine says so to the model, the reply works. */
+    @Test
+    fun attachmentGoesWithTheMessage() {
+        app.settings.contextSize = 2048
+        app.settings.maxTokens = 32
+        val file = installModel("test-llama.gguf")
+        load(file)
+        onMain { app.chat.newChat() }
+        val dir = app.chats.mediaDir(app.chat.conversation.id)
+        val png = File(dir, "test.png")
+        val bmp = android.graphics.Bitmap.createBitmap(64, 48, android.graphics.Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(android.graphics.Color.RED)
+        png.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        // the import path the picker uses: shrink and copy as JPEG
+        val att = app.offlineai.chat.data.MediaImport.image(inst.targetContext, android.net.Uri.fromFile(png), dir, 32)
+        assertEquals("image", att.kind)
+        val jpg = android.graphics.BitmapFactory.decodeFile(att.files[0])
+        assertTrue("the picture should be shrunk to 32 px", maxOf(jpg.width, jpg.height) <= 32)
+        onMain { app.chat.draftAttachments.add(att) }
+        turn("What is in this picture?")
+        val sent = app.chat.conversation.messages.first { it.role == "user" }
+        assertEquals(1, sent.attachments.size)
+        // saved with the chat and read back
+        val again = app.chats.load(app.chat.conversation.id)!!
+        assertEquals(att.files, again.messages.first { it.role == "user" }.attachments[0].files)
+    }
+
+    /** Sound files are decoded by Android and turned into 16 kHz mono WAV, the way the engine reads them. */
+    @Test
+    fun soundIsDecodedToWav() {
+        val dir = File(inst.targetContext.cacheDir, "sound-test").apply { mkdirs() }
+        val src = File(dir, "tone.wav")
+        val rate = 44_100
+        val pcm = FloatArray(rate * 2) { i -> (0.3 * Math.sin(2 * Math.PI * 440 * i / rate)).toFloat() }
+        app.offlineai.chat.data.MediaImport.writeWav(src, pcm, pcm.size, rate)
+        val att = app.offlineai.chat.data.MediaImport.audio(inst.targetContext, android.net.Uri.fromFile(src), dir, 30)
+        Log.i(TAG, "sound: ${att.durationMs} ms, ${File(att.files[0]).length()} bytes")
+        assertEquals("audio", att.kind)
+        assertTrue("about two seconds (${att.durationMs})", att.durationMs in 1800..2200)
+        val bytes = File(att.files[0]).readBytes()
+        val bb = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        assertEquals("16 kHz", 16_000, bb.getInt(24))
+        assertEquals("mono", 1, bb.getShort(22).toInt())
+    }
+
     @Test
     fun screensOpen() {
         ActivityScenario.launch(ModelsActivity::class.java).use { Thread.sleep(1500) }

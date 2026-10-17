@@ -19,20 +19,13 @@ object NativeEngine {
 
     @JvmStatic external fun nativeInit(libDir: String)
     @JvmStatic external fun nativeSystemInfo(): String
-    @JvmStatic external fun nativeLoad(
-        path: ByteArray,
-        nCtx: Int,
-        nThreads: Int,
-        nBatch: Int,
-        nUbatch: Int,
-        lowMemory: Boolean,
-        kvQ8: Boolean,
-        listener: LoadListener?,
-    ): ByteArray?
+    /** [options] is JSON (UTF-8): n_ctx, n_threads, n_batch, n_ubatch, low_memory, kv_q8, spec_n_max, spec_ngram, drafter, mmproj, image_max_tokens. */
+    @JvmStatic external fun nativeLoad(path: ByteArray, options: ByteArray, listener: LoadListener?): ByteArray?
     @JvmStatic external fun nativeUnload()
     @JvmStatic external fun nativeInfo(): ByteArray
     @JvmStatic external fun nativeStop()
     @JvmStatic external fun nativeResetCache()
+    @JvmStatic external fun nativeReleaseMedia()
     @JvmStatic external fun nativeChat(request: ByteArray, listener: ChatListener?): ByteArray
     @JvmStatic external fun nativeSetThreads(n: Int)
     @JvmStatic external fun nativeBench(threads: IntArray, nPrompt: Int, nGen: Int): ByteArray
@@ -48,4 +41,6 @@ interface LoadListener {
 interface ChatListener {
     fun onPromptProgress(done: Int, total: Int)
     fun onUpdate(reasoning: ByteArray, content: ByteArray, generated: Int)
+    /** About to read attachment [index] of [total]; index -1 while the picture part loads. */
+    fun onMedia(index: Int, total: Int)
 }

@@ -20,6 +20,12 @@ data class ModelInfo(
     val supportsThinking: Boolean,
     val hasTemplate: Boolean,
     val memory: String,
+    /** How replies are drafted ahead: "", "mtp", "drafter", "ngram" or two joined by "+". */
+    val speculative: String,
+    val specNMax: Int,
+    val vision: Boolean,
+    val audio: Boolean,
+    val computeBytes: Long,
 ) {
     companion object {
         fun parse(json: String): ModelInfo {
@@ -36,6 +42,11 @@ data class ModelInfo(
                 supportsThinking = j.optBoolean("supports_thinking"),
                 hasTemplate = j.optBoolean("has_template"),
                 memory = j.optString("memory"),
+                speculative = j.optString("speculative"),
+                specNMax = j.optInt("spec_n_max"),
+                vision = j.optBoolean("vision"),
+                audio = j.optBoolean("audio"),
+                computeBytes = j.optLong("compute_bytes"),
             )
         }
     }
@@ -48,8 +59,32 @@ data class LoadConfig(
     val nUbatch: Int,
     val lowMemory: Boolean,
     val kvQ8: Boolean,
+    /** Tokens drafted ahead per step (0: off). */
+    val specNMax: Int = 0,
+    val specNgram: Boolean = false,
+    /** A drafter file next to the model (Gemma 4 "mtp-*.gguf"), or empty. */
+    val drafterPath: String = "",
+    /** The picture/sound projector, or empty. */
+    val mmprojPath: String = "",
+    val imageMaxTokens: Int = 0,
+    /** Full sliding-window cache (drafting and cheap rollbacks) or a compact one (less memory). */
+    val swaFull: Boolean = true,
 ) {
-    fun sameShape(o: LoadConfig) = nCtx == o.nCtx && nUbatch == o.nUbatch && lowMemory == o.lowMemory && kvQ8 == o.kvQ8
+    fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("n_ctx", nCtx)
+        .put("n_threads", nThreads)
+        .put("n_batch", 512)
+        .put("n_ubatch", nUbatch)
+        .put("low_memory", lowMemory)
+        .put("kv_q8", kvQ8)
+        .put("spec_n_max", specNMax)
+        .put("spec_ngram", specNgram)
+        .put("drafter", drafterPath)
+        .put("mmproj", mmprojPath)
+        .put("image_max_tokens", imageMaxTokens)
+        .put("swa_full", swaFull)
 }
 
 data class LoadedModel(
@@ -78,6 +113,11 @@ data class ChatOutcome(
     val tFirstMs: Double,
     val nDropped: Int,
     val stopReason: String,
+    val nDrafted: Int = 0,
+    val nAccepted: Int = 0,
+    val nSteps: Int = 0,
+    val nMedia: Int = 0,
+    val tMediaMs: Double = 0.0,
 ) {
     companion object {
         fun parse(json: String): ChatOutcome {
@@ -97,6 +137,11 @@ data class ChatOutcome(
                 tFirstMs = s.optDouble("t_first_ms", 0.0),
                 nDropped = s.optInt("n_dropped"),
                 stopReason = s.optString("stop_reason"),
+                nDrafted = s.optInt("n_drafted"),
+                nAccepted = s.optInt("n_accepted"),
+                nSteps = s.optInt("n_steps"),
+                nMedia = s.optInt("n_media"),
+                tMediaMs = s.optDouble("t_media_ms", 0.0),
             )
         }
 
@@ -111,6 +156,8 @@ interface ReplyListener {
     fun onPromptProgress(done: Int, total: Int)
     fun onUpdate(reasoning: String, content: String, generated: Int)
     fun onDone(outcome: ChatOutcome)
+    /** Reading attachment [index] of [total] (the slow part on a phone); -1 while the picture part loads. */
+    fun onMedia(index: Int, total: Int) {}
 }
 
 /**
@@ -197,8 +244,7 @@ class EngineController {
             val started = SystemClock.uptimeMillis()
             var lastPost = 0L
             val err = NativeEngine.nativeLoad(
-                path.toByteArray(Charsets.UTF_8), config.nCtx, config.nThreads, 512, config.nUbatch,
-                config.lowMemory, config.kvQ8,
+                path.toByteArray(Charsets.UTF_8), config.toJson().toString().toByteArray(Charsets.UTF_8),
                 object : LoadListener {
                     override fun onProgress(progress: Float): Boolean {
                         loadProgress = progress
@@ -252,6 +298,11 @@ class EngineController {
     /** Forgets the conversation held in the model's memory. */
     fun resetCache() {
         queue.put { if (loaded != null) NativeEngine.nativeResetCache() }
+    }
+
+    /** Frees the picture part of the model (it loads again with the next picture). */
+    fun releaseMedia() {
+        queue.put { if (loaded != null) NativeEngine.nativeReleaseMedia() }
     }
 
     /** Threads for the next step; takes effect between tokens, even in the middle of a reply. */
@@ -324,6 +375,10 @@ class EngineController {
                     val r = reasoning.toString(Charsets.UTF_8)
                     val c = content.toString(Charsets.UTF_8)
                     main.post { listener.onUpdate(r, c, generated) }
+                }
+
+                override fun onMedia(index: Int, total: Int) {
+                    main.post { listener.onMedia(index, total) }
                 }
             })
             activityLog?.invoke("ready:${model.key}")

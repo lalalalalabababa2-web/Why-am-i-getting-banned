@@ -91,6 +91,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
         p.n_ubatch = o.value("n_ubatch", p.n_ubatch);
         p.low_memory = o.value("low_memory", p.low_memory);
         p.kv_q8 = o.value("kv_q8", p.kv_q8);
+        p.swa_full = o.value("swa_full", p.swa_full);
         p.spec_n_max = o.value("spec_n_max", p.spec_n_max);
         p.spec_ngram = o.value("spec_ngram", p.spec_ngram);
         p.drafter_path = o.value("drafter", std::string());

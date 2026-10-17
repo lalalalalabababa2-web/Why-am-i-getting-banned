@@ -43,6 +43,52 @@ jobs:
           path: test-models
           retention-days: 7
 
+  # Real models, built without sanitizers: drafting with Qwen3.5's MTP head (same words, and how
+  # much faster), a picture and video frames, compute memory, and the Bonsai 1-bit and ternary
+  # models. Once on an x86 runner and once on an ARM one (closer to a phone, still not a phone).
+  real-models:
+    name: Real models (${{ matrix.cpu }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cpu: x86_64
+            os: ubuntu-latest
+          - cpu: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Download the models
+        run: |
+          mkdir -p real-models && cd real-models
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
+          get unsloth/Qwen3.5-0.8B-MTP-GGUF Qwen3.5-0.8B-Q4_K_M.gguf
+          get unsloth/Qwen3.5-0.8B-MTP-GGUF mmproj-F16.gguf
+          get prism-ml/Ternary-Bonsai-2-9B-gguf Ternary-Bonsai-2-9B-Q2_0.gguf
+          get prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf
+          df -h . ; free -g ; nproc
+
+      - name: Run
+        env:
+          REAL_MODELS: ${{ github.workspace }}/real-models
+        run: |
+          set -o pipefail
+          tools/host-test/real.sh 2>&1 | tee real.log
+      - name: Speeds
+        if: always()
+        run: |
+          [ -f real.log ] || exit 0
+          grep '^SPEED:' real.log | sed 's/^SPEED: /::notice title=${{ matrix.cpu }} speed::/' || true
+          grep -E 'reply ok=|loaded in' real.log | sed 's/^ */::notice title=${{ matrix.cpu }}::/' || true
+
   emulator:
     name: On-device tests (Android 14 emulator)
     needs: engine-tests

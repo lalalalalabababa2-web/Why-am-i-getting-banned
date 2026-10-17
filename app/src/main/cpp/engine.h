@@ -52,6 +52,10 @@ struct LoadParams {
     // contexts, very slightly less exact.
     bool kv_q8      = false;
     bool warmup     = true;   // touch every weight once after loading, so the first reply starts fast
+    // Keep every position of sliding-window layers (Gemma), so any tail of the memory can be
+    // dropped and drafting works. Off saves a lot of memory on big Gemma models; their memory is
+    // then handled with snapshots like a hybrid model's, and they do not draft.
+    bool swa_full   = true;
 
     // Speculative decoding. 0 turns it off. Otherwise the most tokens a drafter may propose per
     // step (the model's MTP head, or the drafter file below); 1 to 4 make sense on a phone.

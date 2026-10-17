@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- only asked for when you choose to record a sound for a model that hears -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!--
         extractNativeLibs: the engine loads its CPU variants (one library per ARM feature level)

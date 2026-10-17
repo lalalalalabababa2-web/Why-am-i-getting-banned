@@ -13,12 +13,18 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.net.Uri
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -26,9 +32,15 @@ import androidx.recyclerview.widget.RecyclerView
 import app.offlineai.chat.App
 import app.offlineai.chat.ChatController
 import app.offlineai.chat.R
+import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.Device
+import app.offlineai.chat.data.MediaImport
+import app.offlineai.chat.data.ModelStore
+import app.offlineai.chat.data.Settings
+import app.offlineai.chat.data.SoundRecorder
 import app.offlineai.chat.engine.EngineController
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity(), ChatController.Listener, EngineController.StateListener {
     private lateinit var app: App
@@ -45,6 +57,26 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var empty: LinearLayout
     private lateinit var emptyText: TextView
     private lateinit var emptyButton: TextView
+    private lateinit var attach: ImageButton
+    private lateinit var draftScroll: HorizontalScrollView
+    private lateinit var draftRow: LinearLayout
+
+    /** Attachments still being copied in (a video's frames take a moment). */
+    private var preparing = 0
+    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "attach") }
+
+    private val pickPictures = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
+        if (uris.isNotEmpty()) importMedia("image", uris)
+    }
+    private val pickVideo = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) importMedia("video", listOf(uri))
+    }
+    private val pickSound = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importMedia("audio", listOf(uri))
+    }
+    private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) record() else toast("Recording needs the microphone permission.")
+    }
 
     /** Theme, accent and text size this screen was built with; a change rebuilds it. */
     private var look = ""
@@ -159,13 +191,27 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         middle.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(middle, lp(MATCH, 0, 1f))
 
+        // attachments waiting to go with the next message
+        draftRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(6), dp(12), 0)
+        }
+        draftScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(draftRow)
+        }
+        root.addView(draftScroll, lp(MATCH, WRAP))
+
         // composer
         val composer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
-            setPadding(dp(10), dp(8), dp(8), dp(10))
+            setPadding(dp(4), dp(8), dp(8), dp(10))
             setBackgroundColor(Palette.bg)
         }
+        attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
+        composer.addView(attach, lp(dp(44), dp(44)))
         input = EditText(this).apply {
             hint = "Message"
             setHintTextColor(Palette.text3)
@@ -205,6 +251,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             showMessage(exit.title, exit.message, exit.details)
         }
         app.loadLastModel()
+        refreshDraft()
         refreshAll()
     }
 
@@ -213,7 +260,166 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         app.engine.removeListener(this)
         list.removeCallbacks(renderReply)
         scroller.detach()
+        io.shutdown()
         super.onDestroy()
+    }
+
+    private fun toast(s: String?) = Toast.makeText(this, s ?: "Something went wrong.", Toast.LENGTH_LONG).show()
+
+    // ---------------------------------------------------------------- attachments
+
+    private fun showAttachMenu(anchor: View) {
+        // picture support may have finished downloading since the model was loaded
+        runCatching { app.models.poll() }
+        if (app.needsReload() && !app.chat.generating) {
+            app.reloadIfNeeded()
+            toast("Loading the model again with its picture support. Try again in a moment.")
+            return
+        }
+        val loaded = app.engine.loaded
+        val local = loaded?.let { app.models.find(it.key) }
+        if (loaded == null || local == null) {
+            toast("Load a model first.")
+            return
+        }
+        val sees = loaded.info.vision
+        val hears = loaded.info.audio
+        val pm = PopupMenu(this, anchor)
+        if (sees) {
+            pm.menu.add(0, 1, 0, "Photo")
+            pm.menu.add(0, 2, 1, "Video")
+        }
+        if (hears) {
+            pm.menu.add(0, 3, 2, "Record sound")
+            pm.menu.add(0, 4, 3, "Sound file")
+        }
+        if (!sees && !hears) {
+            val extra = local.catalog?.pictures
+            if (extra != null && !local.hasPictures) {
+                pm.menu.add(0, 5, 0, "Add picture support (${ModelStore.formatBytes(extra.sizeBytes)})…")
+            } else {
+                pm.menu.add(0, 6, 0, "${local.displayName} cannot see pictures").isEnabled = false
+                pm.menu.add(0, 5, 1, "Models that can…")
+            }
+        }
+        pm.setOnMenuItemClickListener {
+            when (it.itemId) {
+                1 -> pickPictures.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                2 -> pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+                3 -> if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    record()
+                } else {
+                    askMic.launch(Manifest.permission.RECORD_AUDIO)
+                }
+                4 -> pickSound.launch(arrayOf("audio/*"))
+                5 -> startActivity(Intent(this, ModelsActivity::class.java))
+            }
+            true
+        }
+        pm.show()
+    }
+
+    /** Copies picked files into the chat's own storage (pictures shrunk, videos turned into frames, sound into WAV). */
+    private fun importMedia(kind: String, uris: List<Uri>) {
+        val dir = app.chat.mediaDir()
+        val detail = app.settings.pictureDetail
+        val frames = app.settings.videoFrames
+        preparing += uris.size
+        refreshDraft()
+        updateSend()
+        val ctx = applicationContext
+        io.execute {
+            for (uri in uris) {
+                val result = runCatching {
+                    when (kind) {
+                        "image" -> MediaImport.image(ctx, uri, dir, detail.maxSide)
+                        "video" -> MediaImport.video(ctx, uri, dir, frames, detail.maxSide)
+                        else -> MediaImport.audio(ctx, uri, dir, Settings.MAX_SOUND_SECONDS)
+                    }
+                }
+                runOnUiThread {
+                    preparing = (preparing - 1).coerceAtLeast(0)
+                    result.onSuccess { a ->
+                        app.chat.draftAttachments.add(a)
+                        if (a.kind == "audio" && a.durationMs >= Settings.MAX_SOUND_SECONDS * 1000L - 500) {
+                            toast("Only the first ${Settings.MAX_SOUND_SECONDS} seconds are kept; that is as much as the model hears at once.")
+                        }
+                    }.onFailure { e -> toast(e.message) }
+                    if (!isDestroyed) {
+                        refreshDraft()
+                        updateSend()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun record() {
+        val rec = SoundRecorder(Settings.MAX_SOUND_SECONDS)
+        if (!rec.start()) {
+            toast("The microphone could not be started.")
+            return
+        }
+        val label = text("Recording… 0:00", 18f).apply { gravity = Gravity.CENTER }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(16), dp(24), dp(8))
+            addView(label, lp(MATCH, WRAP))
+            addView(text("Up to ${Settings.MAX_SOUND_SECONDS} seconds. Tap Done when you have finished.", 13f, Palette.text3).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, 0)
+            }, lp(MATCH, WRAP))
+        }
+        val tick = object : Runnable {
+            override fun run() {
+                val secs = rec.seconds
+                label.text = if (rec.isRecording) "Recording… ${Thumbs.duration((secs * 1000).toLong())}"
+                else "Stopped at ${Thumbs.duration((secs * 1000).toLong())}, the longest a model hears at once"
+                if (rec.isRecording) label.postDelayed(this, 200)
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Record sound")
+            .setView(box)
+            .setCancelable(false)
+            .setPositiveButton("Done") { _, _ ->
+                label.removeCallbacks(tick)
+                val f = MediaImport.newSoundFile(app.chat.mediaDir())
+                val ms = rec.stop(f)
+                if (ms > 0) {
+                    app.chat.draftAttachments.add(Attachment("audio", listOf(f.absolutePath), durationMs = ms))
+                    refreshDraft()
+                    updateSend()
+                } else {
+                    f.delete()
+                    toast("Nothing was recorded.")
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                label.removeCallbacks(tick)
+                rec.cancel()
+            }
+            .show()
+        label.post(tick)
+    }
+
+    private fun refreshDraft() {
+        draftRow.removeAllViews()
+        for (a in app.chat.draftAttachments.toList()) {
+            draftRow.addView(Thumbs.tile(this, a, 64, onClick = { Thumbs.show(this, a) }, onRemove = {
+                app.chat.removeDraftAttachment(a)
+                refreshDraft()
+                updateSend()
+            }), lp(WRAP, WRAP).apply { marginEnd = dp(8) })
+        }
+        if (preparing > 0) {
+            draftRow.addView(text("Preparing…", 13f, Palette.text3).apply {
+                gravity = Gravity.CENTER
+                background = rounded(Palette.surface2, dp(10).toFloat(), dp(1), Palette.border)
+                setPadding(dp(10), 0, dp(10), 0)
+            }, lp(WRAP, dp(64)))
+        }
+        draftScroll.visibility = if (draftRow.childCount > 0) View.VISIBLE else View.GONE
     }
 
     override fun onResume() {
@@ -262,10 +468,17 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             return
         }
         val text = input.text.toString()
-        if (text.isBlank()) return
+        if (preparing > 0) {
+            toast("Wait a moment: the attachments are still being prepared.")
+            return
+        }
+        if (text.isBlank() && app.chat.draftAttachments.isEmpty()) return
         askForNotificationsOnce()
         scroller.follow()
-        if (app.chat.send(text)) input.setText("")
+        if (app.chat.send(text)) {
+            input.setText("")
+            refreshDraft()
+        }
     }
 
     /** The "writing a reply" notification needs permission on Android 13 and later; asked once. */
@@ -281,7 +494,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val icon = if (generating) R.drawable.ic_stop else R.drawable.ic_send
         send.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
         send.contentDescription = if (generating) "Stop" else "Send"
-        val enabled = generating || (app.engine.loaded != null && input.text.isNotBlank())
+        val hasSomething = input.text.isNotBlank() || app.chat.draftAttachments.isNotEmpty()
+        val enabled = generating || (app.engine.loaded != null && hasSomething && preparing == 0)
         send.alpha = if (enabled) 1f else 0.4f
         send.isEnabled = enabled || app.engine.loaded == null
     }
@@ -350,6 +564,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             app.nativeError != null -> "Engine unavailable"
             e.phase == EngineController.Phase.LOADING -> "Loading… ${(e.loadProgress * 100).toInt()}%"
             e.phase == EngineController.Phase.WARMING -> "Getting ready…"
+            c.generating && c.mediaIndex == -1 -> "Loading the picture part…"
+            c.generating && c.mediaIndex >= 0 && c.mediaTotal > 0 && (c.promptTotal == 0 || c.promptDone < c.promptTotal) ->
+                "Looking at attachment ${c.mediaIndex + 1} of ${c.mediaTotal}…$hot"
             c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens$hot"
             c.generating && c.generated > 1 -> String.format(Locale.US, "Writing · %.1f tok/s", c.tokensPerSecond()) + hot
             c.generating -> "Starting…$hot"
@@ -358,7 +575,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 e.lastError
             }
             loaded == null -> "No model loaded · tap to choose"
-            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") + " · tap to change"
+            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
+                (if (loaded.info.vision) " · sees pictures" else "") + " · tap to change"
         }
         val showProgress = e.isLoading || (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)
         progress.visibility = if (showProgress) View.VISIBLE else View.INVISIBLE
@@ -382,6 +600,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     override fun onConversationSwitched() {
         adapter.reset()
         scroller.jumpToBottom(smooth = false)
+        refreshDraft()
         refreshAll()
     }
 

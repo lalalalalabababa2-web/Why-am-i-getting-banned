@@ -221,7 +221,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.n_rs_seq = (recurrent && want_head) ? (uint32_t) n_draft : 0;
     // Sliding-window models keep every position, so any tail of the memory can be dropped and the
     // conversation never has to be read again from the start. Costs memory only for those models.
-    cp.swa_full = true;
+    cp.swa_full = params.swa_full;
     cp.abort_callback = abort_cb;
     cp.abort_callback_data = &stop_;
     cp.no_perf = true;

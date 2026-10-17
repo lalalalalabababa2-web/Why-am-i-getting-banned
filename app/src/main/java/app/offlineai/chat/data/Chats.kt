@@ -7,6 +7,39 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.Executors
 
+/**
+ * A picture, a sound or a video sent with a message, copied into the app's own storage. A video
+ * is kept as a few frames (pictures), each with the time it was taken from.
+ */
+class Attachment(
+    val kind: String,                       // "image", "video" or "audio"
+    val files: List<String>,                // absolute paths; a video's frames in order
+    val labels: List<String> = emptyList(), // per file: a video frame's time, e.g. "[0m4.0s]"
+    val name: String = "",                  // what it was called on the phone
+    val durationMs: Long = 0,
+) {
+    /** A picture to show for it: the picture itself, or a video's first frame. */
+    val preview: String? get() = if (kind == "audio") null else files.firstOrNull()
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("kind", kind).put("files", JSONArray(files)).put("labels", JSONArray(labels))
+        .put("name", name).put("duration_ms", durationMs)
+
+    companion object {
+        fun fromJson(j: JSONObject): Attachment {
+            val files = j.optJSONArray("files") ?: JSONArray()
+            val labels = j.optJSONArray("labels") ?: JSONArray()
+            return Attachment(
+                kind = j.optString("kind", "image"),
+                files = (0 until files.length()).map { files.getString(it) },
+                labels = (0 until labels.length()).map { labels.getString(it) },
+                name = j.optString("name"),
+                durationMs = j.optLong("duration_ms"),
+            )
+        }
+    }
+}
+
 class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: String,               // user or assistant
@@ -16,22 +49,33 @@ class ChatMessage(
     var error: Boolean = false,
     var model: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    val attachments: List<Attachment> = emptyList(),
 ) {
-    fun toJson(): JSONObject = JSONObject()
-        .put("id", id).put("role", role).put("content", content).put("reasoning", reasoning)
-        .put("stats", stats).put("error", error).put("model", model).put("created_at", createdAt)
+    fun toJson(): JSONObject {
+        val j = JSONObject()
+            .put("id", id).put("role", role).put("content", content).put("reasoning", reasoning)
+            .put("stats", stats).put("error", error).put("model", model).put("created_at", createdAt)
+        if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
+        return j
+    }
 
     companion object {
-        fun fromJson(j: JSONObject) = ChatMessage(
-            id = j.optString("id", UUID.randomUUID().toString()),
-            role = j.optString("role", "user"),
-            content = j.optString("content"),
-            reasoning = j.optString("reasoning"),
-            stats = j.optString("stats"),
-            error = j.optBoolean("error"),
-            model = j.optString("model"),
-            createdAt = j.optLong("created_at", System.currentTimeMillis()),
-        )
+        fun fromJson(j: JSONObject): ChatMessage {
+            val att = j.optJSONArray("attachments")
+            return ChatMessage(
+                id = j.optString("id", UUID.randomUUID().toString()),
+                role = j.optString("role", "user"),
+                content = j.optString("content"),
+                reasoning = j.optString("reasoning"),
+                stats = j.optString("stats"),
+                error = j.optBoolean("error"),
+                model = j.optString("model"),
+                createdAt = j.optLong("created_at", System.currentTimeMillis()),
+                attachments = if (att == null) emptyList() else (0 until att.length()).mapNotNull {
+                    runCatching { Attachment.fromJson(att.getJSONObject(it)) }.getOrNull()
+                },
+            )
+        }
     }
 }
 
@@ -69,6 +113,10 @@ data class ChatSummary(val id: String, val title: String, val updatedAt: Long, v
 /** Conversations, one JSON file each, in the app's private storage. */
 class ChatStore(context: Context) {
     private val dir = File(context.filesDir, "chats").apply { mkdirs() }
+    private val media = File(context.filesDir, "media")
+
+    /** Where the pictures, sounds and video frames of one conversation are kept. */
+    fun mediaDir(chatId: String): File = File(media, chatId).apply { mkdirs() }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "chat-io") }
 
     /** Writes a conversation now (on the calling thread). */
@@ -140,10 +188,17 @@ class ChatStore(context: Context) {
 
     fun delete(id: String) {
         File(dir, "$id.json").delete()
+        File(media, id).deleteRecursively()
     }
 
     fun deleteAll() {
         dir.listFiles()?.forEach { it.delete() }
+        media.deleteRecursively()
+    }
+
+    /** Removes the files of attachments no longer in the conversation. */
+    fun deleteFiles(attachments: List<Attachment>) {
+        attachments.flatMap { it.files }.forEach { runCatching { File(it).delete() } }
     }
 
     /** All conversations as one JSON document, for a backup. */
@@ -194,6 +249,10 @@ class ChatStore(context: Context) {
             for (m in c.messages) {
                 if (m.error) continue
                 append(if (m.role == "user") "**You:**\n\n" else "**${m.model.ifBlank { "AI" }}:**\n\n")
+                for (a in m.attachments) {
+                    val what = when (a.kind) { "video" -> "video"; "audio" -> "sound"; else -> "picture" }
+                    append("_(").append(what).append(if (a.name.isNotBlank()) ": ${a.name}" else "").append(")_\n\n")
+                }
                 append(m.content.trim()).append("\n\n")
             }
         }
