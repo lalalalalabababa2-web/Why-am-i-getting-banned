@@ -9,6 +9,9 @@
 #include "chat.h"
 #include "common.h"
 #include "llama.h"
+#include "gguf.h"
+#include "ggml-backend.h"
+#include "llama-ext.h"
 
 #include <chrono>
 #include <cmath>
@@ -16,6 +19,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
+#include <cstring>
 #include <random>
 #include <sstream>
 #include <string>
@@ -377,6 +382,363 @@ static void test_chat_smoke(const std::string & path) {
     CHECK(!r.ok && !r.error.empty(), "a huge message should fail with a message");
 }
 
+
+// ---------------------------------------------------------------- speculative decoding
+
+// Adds a multi-token-prediction layer to a random test model, the way the official "-MTP"
+// files carry one, with random weights like the rest (so its drafts are poor, but every
+// path of drafting, checking and winding back runs).
+static void fill_random(struct ggml_tensor * t, void * ud) {
+    std::hash<std::string> hasher;
+    std::mt19937 gen((size_t) (uintptr_t) ud ^ hasher(t->name));
+    std::normal_distribution<float> dis(0.0f, 0.1f);
+    const bool is_ssm_a = std::strstr(t->name, "ssm_a") != nullptr;
+    const int64_t ne = ggml_nelements(t);
+    if (t->type == GGML_TYPE_F32) {
+        std::vector<float> v(ne);
+        for (auto & x : v) { float y = dis(gen); x = is_ssm_a ? -std::fabs(y) : y; }
+        ggml_backend_tensor_set(t, v.data(), 0, ggml_nbytes(t));
+    } else if (t->type == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> v(ne);
+        for (auto & x : v) { float y = dis(gen); x = ggml_fp32_to_fp16(is_ssm_a ? -std::fabs(y) : y); }
+        ggml_backend_tensor_set(t, v.data(), 0, ggml_nbytes(t));
+    }
+}
+
+// per-layer arrays of length n get one more (zero) entry: the MTP layer is a plain attention layer
+static void extend_layer_arrays(gguf_context * g, uint32_t n) {
+    std::vector<std::string> keys;
+    for (int64_t i = 0; i < gguf_get_n_kv(g); i++) {
+        if (gguf_get_kv_type(g, i) == GGUF_TYPE_ARRAY && gguf_get_arr_n(g, i) == n) keys.push_back(gguf_get_key(g, i));
+    }
+    for (const auto & key : keys) {
+        const int64_t id = gguf_find_key(g, key.c_str());
+        const auto t = gguf_get_arr_type(g, id);
+        size_t esz = 0;
+        switch (t) {
+            case GGUF_TYPE_UINT8: case GGUF_TYPE_INT8: case GGUF_TYPE_BOOL: esz = 1; break;
+            case GGUF_TYPE_UINT16: case GGUF_TYPE_INT16: esz = 2; break;
+            case GGUF_TYPE_UINT32: case GGUF_TYPE_INT32: case GGUF_TYPE_FLOAT32: esz = 4; break;
+            case GGUF_TYPE_UINT64: case GGUF_TYPE_INT64: case GGUF_TYPE_FLOAT64: esz = 8; break;
+            default: break;
+        }
+        if (esz == 0) continue;  // strings
+        std::vector<uint8_t> v(esz * (n + 1), 0);
+        std::memcpy(v.data(), gguf_get_arr_data(g, id), esz * n);
+        gguf_set_arr_data(g, key.c_str(), t, v.data(), n + 1);
+    }
+}
+
+static bool make_mtp_model(const std::string & src, const std::string & dst) {
+    gguf_init_params gp = {true, nullptr};
+    gguf_context * g = gguf_init_from_file(src.c_str(), gp);
+    if (!g) return false;
+    const std::string arch = gguf_get_val_str(g, gguf_find_key(g, "general.architecture"));
+    const std::string kb = arch + ".block_count";
+    const uint32_t n = gguf_get_val_u32(g, gguf_find_key(g, kb.c_str()));
+    extend_layer_arrays(g, n);
+    gguf_set_val_u32(g, kb.c_str(), n + 1);
+    gguf_set_val_u32(g, (arch + ".nextn_predict_layers").c_str(), 1);
+    auto mp = llama_model_default_params();
+    mp.load_mtp = true;
+    llama_model * m = llama_model_init_from_user(g, fill_random, (void *) (uintptr_t) 42, mp);
+    if (!m) {
+        gguf_free(g);
+        return false;
+    }
+    llama_model_save_to_file(m, dst.c_str());
+    llama_model_free(m);
+    gguf_free(g);
+    // The saver writes per-layer arrays for the main layers only, and quantization scales for
+    // the MTP layer that the loader never asks for: write the file again without both problems.
+    ggml_context * data = nullptr;
+    gguf_init_params gp2 = {false, &data};
+    gguf_context * saved = gguf_init_from_file(dst.c_str(), gp2);
+    if (!saved) return false;
+    gguf_context * out = gguf_init_empty();
+    gguf_set_kv(out, saved);
+    extend_layer_arrays(out, n);
+    const std::string mtp_prefix = "blk." + std::to_string(n) + ".";
+    for (int64_t i = 0; i < gguf_get_n_tensors(saved); i++) {
+        const std::string name = gguf_get_tensor_name(saved, i);
+        if (name.rfind(mtp_prefix, 0) == 0 && name.find("scale") != std::string::npos) continue;
+        gguf_add_tensor(out, ggml_get_tensor(data, name.c_str()));
+    }
+    const std::string tmp = dst + ".tmp";
+    const bool ok = gguf_write_to_file(out, tmp.c_str(), false);
+    gguf_free(out);
+    gguf_free(saved);
+    ggml_free(data);
+    return ok && std::rename(tmp.c_str(), dst.c_str()) == 0;
+}
+
+// Every token written must be the one the model itself picks (greedy) after the ones before
+// it; a near tie may go either way, since a step that reads several tokens rounds differently.
+static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t from, int * ties) {
+    std::string err;
+    ref.reset_cache();
+    std::vector<token> head(seq.begin(), seq.begin() + from);
+    if (!ref.sync_prompt(head, 0, err, nullptr, nullptr)) return 1000;
+    int bad = 0;
+    *ties = 0;
+    for (size_t i = from; i < seq.size(); i++) {
+        auto l = ref.last_logits();
+        int best = 0;
+        for (size_t k = 1; k < l.size(); k++) if (l[k] > l[best]) best = (int) k;
+        if (best != seq[i]) {
+            const float gap = l[best] - l[seq[i]];
+            if (gap > 1e-3f * std::max(1.0f, std::fabs(l[best]))) {
+                if (bad < 3) std::printf("    token %zu: wrote %d, the model picks %d (gap %.4f)\n", i, seq[i], best, gap);
+                bad++;
+            } else {
+                (*ties)++;
+            }
+        }
+        if (!ref.push_token(seq[i], err)) return bad + 1000;
+    }
+    return bad;
+}
+
+static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0) {
+    std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp);
+    oa::LoadParams lp;
+    lp.n_ctx = 1024;
+    lp.n_threads = 2;
+    lp.n_batch = 64;
+    lp.n_ubatch = 32;
+    lp.spec_n_max = n_max;
+    lp.spec_ngram = ngram;
+    oa::Engine e, ref;
+    oa::LoadParams lr = lp;
+    lr.spec_n_max = 0;
+    std::string err;
+    if (!e.load(path, lp, err) || !ref.load(path, lr, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    const auto info = e.info();
+    std::printf("  speculative=%s n_max=%d memory=%s compute=%.1f MB\n", info.speculative.c_str(), info.spec_n_max,
+                info.memory.c_str(), e.compute_bytes() / 1e6);
+    CHECK(!info.speculative.empty(), "%s: drafting was not set up", label);
+    CHECK(ref.info().speculative.empty(), "%s: the reference must not draft", label);
+
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.sampling.temp = (float) temp;
+    req.sampling.top_k = temp > 0 ? 40 : 1;
+    req.sampling.min_p = 0.0f;
+    req.sampling.max_tokens = 200;
+    req.sampling.seed = 3;
+    req.messages.push_back({"system", "Be brief.", ""});
+    req.messages.push_back({"user", "Count with me: one two three four five six seven eight nine ten, and again.", ""});
+    oa::ChatCallbacks cb;
+    for (int turn = 0; turn < 3; turn++) {
+        auto r = e.chat(req, cb);
+        std::printf("    turn %d ok=%d reason=%s gen=%d steps=%d drafted=%d accepted=%d reused=%d snapshot=%d err=%s\n",
+                    turn, r.ok, r.stats.stop_reason.c_str(), r.stats.n_generated, r.stats.n_steps, r.stats.n_drafted,
+                    r.stats.n_accepted, r.stats.n_reused, r.stats.used_snapshot, r.error.c_str());
+        CHECK(r.ok, "%s turn %d failed: %s", label, turn, r.error.c_str());
+        CHECK(r.stats.n_steps + r.stats.n_accepted + 1 >= r.stats.n_generated, "%s: tokens written without a step", label);
+        if (n_max > 0 && !ngram) CHECK(r.stats.n_drafted > 0, "%s turn %d: nothing was drafted", label, turn);
+        if (temp == 0.0) {
+            int ties = 0;
+            const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties);
+            std::printf("    checked %zu written tokens: %d differ, %d near ties\n", e.cached().size() - r.stats.n_prompt, bad, ties);
+            CHECK(bad == 0, "%s turn %d: %d written tokens are not what the model picks", label, turn, bad);
+        }
+        if (turn > 0) CHECK(r.stats.n_reused > 0, "%s turn %d reused nothing", label, turn);
+        req.messages.push_back({"assistant", r.content, r.reasoning});
+        req.messages.push_back({"user", "And once more, the same way please.", ""});
+    }
+    // drafting can be capped per reply (the speed test) and turned off for one
+    req.spec_n_max = 0;
+    auto r0 = e.chat(req, cb);
+    CHECK(r0.ok && r0.stats.n_drafted == 0, "%s: a reply with drafting off still drafted (%d)", label, r0.stats.n_drafted);
+    // stopping while drafting leaves a usable engine
+    req.spec_n_max = -1;
+    req.sampling.max_tokens = 400;
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        e.request_stop();
+    });
+    auto rs = e.chat(req, cb);
+    stopper.join();
+    CHECK(rs.ok, "%s: a stopped reply should be ok (%s)", label, rs.error.c_str());
+    req.sampling.max_tokens = 16;
+    auto ra = e.chat(req, cb);
+    CHECK(ra.ok, "%s: the reply after a stop failed: %s", label, ra.error.c_str());
+}
+
+// ---------------------------------------------------------------- real models (CI downloads them)
+
+static bool exists(const std::string & p) {
+    std::ifstream f(p);
+    return f.good();
+}
+
+static std::string write_ppm(const std::string & path, int w, int h, unsigned char r, unsigned char g, unsigned char b) {
+    std::ofstream f(path, std::ios::binary);
+    f << "P6\n" << w << " " << h << "\n255\n";
+    for (int i = 0; i < w * h; i++) {
+        f.put((char) r);
+        f.put((char) g);
+        f.put((char) b);
+    }
+    return path;
+}
+
+static std::string lower(std::string s) {
+    for (auto & c : s) c = (char) std::tolower((unsigned char) c);
+    return s;
+}
+
+static void test_real(const std::string & dir, const std::string & tmp) {
+    const std::string model = dir + "/Qwen3.5-0.8B-Q4_K_M.gguf";
+    const std::string mmproj = dir + "/mmproj-F16.gguf";
+    if (!exists(model)) {
+        std::printf("== real model: %s not there, skipped\n", model.c_str());
+        return;
+    }
+    std::printf("== real model: %s\n", model.c_str());
+
+    // 1. memory: llama's default reserves logits for every token of a prompt step
+    {
+        auto mp = llama_model_default_params();
+        mp.n_gpu_layers = 0;
+        llama_model * m = llama_model_load_from_file(model.c_str(), mp);
+        auto cp = llama_context_default_params();
+        cp.n_ctx = 4096;
+        cp.n_batch = 512;
+        cp.n_ubatch = 256;
+        llama_context * c = llama_init_from_model(m, cp);
+        size_t def = 0;
+        for (const auto & [b, d] : llama_get_memory_breakdown(c)) def += d.compute;
+        llama_free(c);
+        llama_model_free(m);
+        oa::LoadParams lp;
+        lp.n_ctx = 4096;
+        lp.n_batch = 512;
+        lp.n_ubatch = 256;
+        lp.spec_n_max = 0;
+        oa::Engine e;
+        std::string err;
+        CHECK(e.load(model, lp, err), "load: %s", err.c_str());
+        std::printf("SPEED: compute memory, llama default %.0f MB, this engine %.0f MB (context 4096, prompt step 256)\n",
+                    def / 1e6, e.compute_bytes() / 1e6);
+        CHECK(e.compute_bytes() < def, "the engine should reserve less compute memory than llama's default");
+    }
+
+    // 2. drafting with the model's MTP head: same words, how much faster
+    oa::LoadParams lp;
+    lp.n_ctx = 4096;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 3;
+    lp.spec_ngram = false;
+    lp.mmproj_path = mmproj;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(model, lp, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    const auto info = e.info();
+    std::printf("  speculative=%s vision=%d audio=%d memory=%s threads=%d\n", info.speculative.c_str(), info.vision,
+                info.audio, info.memory.c_str(), lp.n_threads);
+    CHECK(info.speculative == "mtp", "the MTP file should draft with its own head (%s)", info.speculative.c_str());
+    CHECK(info.vision, "the projector should read pictures");
+
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = false;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 160;
+    req.messages.push_back({"user", "Write a short story about a lighthouse keeper who finds a message in a bottle.", ""});
+    oa::ChatCallbacks cb;
+    std::string base_text;
+    for (int n : {0, 1, 2, 3, 0}) {
+        req.spec_n_max = n;
+        auto r = e.chat(req, cb);
+        const double tps = r.stats.n_generated * 1000.0 / std::max(1.0, r.stats.t_gen_ms);
+        const double acc = r.stats.n_drafted ? 100.0 * r.stats.n_accepted / r.stats.n_drafted : 0.0;
+        std::printf("SPEED: Qwen3.5 0.8B Q4_K_M, %d threads, drafts %d: %.1f tokens/s (%d tokens in %d steps, %d of %d drafts accepted, %.0f%%)\n",
+                    lp.n_threads, n, tps, r.stats.n_generated, r.stats.n_steps, r.stats.n_accepted, r.stats.n_drafted, acc);
+        CHECK(r.ok, "reply with %d drafts failed: %s", n, r.error.c_str());
+        if (n == 0 && base_text.empty()) base_text = r.content;
+        if (n > 0) {
+            // greedy: the same words with and without drafting (a near tie could differ; report it)
+            size_t same = 0;
+            while (same < base_text.size() && same < r.content.size() && base_text[same] == r.content[same]) same++;
+            std::printf("    same text as without drafts for %zu of %zu characters\n", same, base_text.size());
+            CHECK(same >= std::min(base_text.size(), r.content.size()) * 9 / 10,
+                  "drafting changed the reply early (%zu of %zu characters the same)", same, base_text.size());
+        }
+    }
+
+    // 3. a picture: the colour must be seen, and the next turn must not read it again
+    const std::string red = write_ppm(tmp + "/red.ppm", 128, 96, 220, 20, 20);
+    oa::ChatRequest pic;
+    pic.now_ms = 1760000000000LL;
+    pic.enable_thinking = false;
+    pic.sampling.temp = 0.0f;
+    pic.sampling.top_k = 1;
+    pic.sampling.max_tokens = 24;
+    oa::Message m{"user", "What colour fills this picture? Answer with one word.", ""};
+    m.media.push_back({red, "", false});
+    pic.messages.push_back(m);
+    int media_calls = 0;
+    oa::ChatCallbacks pcb;
+    pcb.on_media = [&](int, int) { media_calls++; };
+    auto r1 = e.chat(pic, pcb);
+    std::printf("  picture: ok=%d media=%d media_ms=%.0f prompt=%d reply=[%s] err=%s\n", r1.ok, r1.stats.n_media,
+                r1.stats.t_media_ms, r1.stats.n_prompt, r1.content.c_str(), r1.error.c_str());
+    std::printf("SPEED: one 128x96 picture read in %.0f ms on %d threads\n", r1.stats.t_media_ms, lp.n_threads);
+    CHECK(r1.ok && r1.stats.n_media == 1, "the picture was not read");
+    CHECK(lower(r1.content).find("red") != std::string::npos, "the model did not see red: %s", r1.content.c_str());
+    pic.messages.push_back({"assistant", r1.content, r1.reasoning});
+    pic.messages.push_back({"user", "Is it a photo of a person? Answer yes or no.", ""});
+    auto r2 = e.chat(pic, pcb);
+    std::printf("  follow-up: ok=%d media=%d reused=%d of %d reply=[%s]\n", r2.ok, r2.stats.n_media, r2.stats.n_reused,
+                r2.stats.n_prompt, r2.content.c_str());
+    CHECK(r2.ok && r2.stats.n_media == 0, "the follow-up read the picture again");
+    CHECK(r2.stats.n_reused > r1.stats.n_prompt / 2, "the follow-up did not reuse the picture in memory");
+
+    // 4. video: frames with their times
+    const std::string f1 = write_ppm(tmp + "/f1.ppm", 96, 96, 20, 20, 220);
+    const std::string f2 = write_ppm(tmp + "/f2.ppm", 96, 96, 20, 200, 20);
+    oa::ChatRequest vid = pic;
+    vid.messages.clear();
+    oa::Message vm{"user", "These are two frames of a video. What colour is the first frame, and the second?", ""};
+    vm.media.push_back({f1, "[0m0.0s]", true});
+    vm.media.push_back({f2, "[0m2.0s]", true});
+    vid.messages.push_back(vm);
+    vid.sampling.max_tokens = 40;
+    auto r3 = e.chat(vid, pcb);
+    std::printf("  video frames: ok=%d media=%d reply=[%s] err=%s\n", r3.ok, r3.stats.n_media, r3.content.c_str(), r3.error.c_str());
+    CHECK(r3.ok && r3.stats.n_media == 2, "the frames were not read");
+    const std::string lr3 = lower(r3.content);
+    CHECK(lr3.find("blue") != std::string::npos || lr3.find("green") != std::string::npos,
+          "the model saw neither frame's colour: %s", r3.content.c_str());
+
+    // a damaged attachment fails with a message instead of crashing
+    {
+        std::ofstream bad(tmp + "/bad.jpg");
+        bad << "not a picture";
+    }
+    oa::ChatRequest broken = pic;
+    broken.messages.clear();
+    oa::Message bm{"user", "What is this?", ""};
+    bm.media.push_back({tmp + "/bad.jpg", "", false});
+    broken.messages.push_back(bm);
+    auto r4 = e.chat(broken, pcb);
+    std::printf("  damaged picture: ok=%d err=%s\n", r4.ok, r4.error.c_str());
+    CHECK(!r4.ok && !r4.error.empty(), "a damaged picture should fail with a message");
+    auto r5 = e.chat(pic, pcb);
+    CHECK(r5.ok, "the engine should work again after a damaged picture: %s", r5.error.c_str());
+}
+
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <models dir> <llama.cpp dir>\n", argv[0]);
@@ -409,6 +771,21 @@ int main(int argc, char ** argv) {
     test_template(src + "/models/ggml-vocab-gemma-4.gguf", src + "/models/templates/google-gemma-4-31B-it.jinja", gemma_reply, true);
     test_template(src + "/models/ggml-vocab-gemma-4.gguf", src + "/models/templates/google-gemma-4-31B-it.jinja",
                   "Hello! How can I help?<turn|>", false);
+
+    // drafting: copying from the conversation (attention models), the model's own MTP head
+    // (a Qwen3.5-style hybrid with an MTP layer added), greedy and sampled
+    test_spec(dir + "/llama-dense.gguf", "ngram", 2, true);
+    test_spec(dir + "/gemma3-dense.gguf", "ngram", 2, true);
+    const std::string mtp = dir + "/qwen35-mtp.gguf";
+    if (!exists(mtp)) CHECK(make_mtp_model(dir + "/qwen35-dense.gguf", mtp), "could not make the MTP test model");
+    if (exists(mtp)) {
+        test_spec(mtp, "mtp", 2, false);
+        test_spec(mtp, "mtp", 3, false, 0.8);
+        test_cache(mtp);
+        test_chat_smoke(mtp);
+    }
+
+    if (argc >= 4) test_real(argv[3], dir);
 
     std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
     return g_failures ? 1 : 0;

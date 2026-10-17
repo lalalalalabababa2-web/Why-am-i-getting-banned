@@ -78,18 +78,27 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeSystemInfo(JNIEnv * env, jclas
     return env->NewStringUTF(oa::Engine::system_info().c_str());
 }
 
-// Returns null on success, or the reason it failed (UTF-8).
+// Returns null on success, or the reason it failed (UTF-8). The options are JSON (UTF-8).
 JNIEXPORT jbyteArray JNICALL
-Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jpath, jint n_ctx,
-                                                       jint n_threads, jint n_batch, jint n_ubatch,
-                                                       jboolean low_memory, jboolean kv_q8, jobject listener) {
+Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jpath, jbyteArray joptions,
+                                                       jobject listener) {
     oa::LoadParams p;
-    p.n_ctx = n_ctx;
-    p.n_threads = n_threads;
-    p.n_batch = n_batch;
-    p.n_ubatch = n_ubatch;
-    p.low_memory = low_memory;
-    p.kv_q8 = kv_q8;
+    try {
+        const json o = json::parse(from_bytes(env, joptions));
+        p.n_ctx = o.value("n_ctx", p.n_ctx);
+        p.n_threads = o.value("n_threads", p.n_threads);
+        p.n_batch = o.value("n_batch", p.n_batch);
+        p.n_ubatch = o.value("n_ubatch", p.n_ubatch);
+        p.low_memory = o.value("low_memory", p.low_memory);
+        p.kv_q8 = o.value("kv_q8", p.kv_q8);
+        p.spec_n_max = o.value("spec_n_max", p.spec_n_max);
+        p.spec_ngram = o.value("spec_ngram", p.spec_ngram);
+        p.drafter_path = o.value("drafter", std::string());
+        p.mmproj_path = o.value("mmproj", std::string());
+        p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
+    } catch (const std::exception & e) {
+        return to_bytes(env, std::string("Bad load options: ") + e.what());
+    }
 
     jmethodID on_progress = nullptr, on_warmup_id = nullptr;
     if (listener) {
@@ -139,6 +148,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"supports_thinking", mi.supports_thinking},
         {"has_template", mi.has_template},
         {"memory", mi.memory},
+        {"speculative", mi.speculative},
+        {"spec_n_max", mi.spec_n_max},
+        {"vision", mi.vision},
+        {"audio", mi.audio},
+        {"compute_bytes", engine().compute_bytes()},
     };
     return to_bytes(env, dump(j));
 }
@@ -151,6 +165,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeStop(JNIEnv *, jclass) {
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeResetCache(JNIEnv *, jclass) {
     engine().reset_cache();
+}
+
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeReleaseMedia(JNIEnv *, jclass) {
+    engine().release_media();
 }
 
 JNIEXPORT void JNICALL
@@ -177,10 +196,18 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
     try {
         const json j = json::parse(from_bytes(env, jrequest));
         for (const auto & m : j.at("messages")) {
-            req.messages.push_back({m.value("role", std::string("user")), m.value("content", std::string()),
-                                    m.value("reasoning", std::string())});
+            oa::Message msg{m.value("role", std::string("user")), m.value("content", std::string()),
+                            m.value("reasoning", std::string())};
+            if (m.contains("media")) {
+                for (const auto & md : m.at("media")) {
+                    msg.media.push_back({md.value("path", std::string()), md.value("label", std::string()),
+                                         md.value("frame", false)});
+                }
+            }
+            req.messages.push_back(std::move(msg));
         }
         req.enable_thinking = j.value("thinking", true);
+        req.spec_n_max = j.value("spec_n_max", -1);
         req.now_ms = j.value("now_ms", (int64_t) 0);
         if (j.contains("sampling")) {
             const auto & s = j.at("sampling");
@@ -199,13 +226,16 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
         return to_bytes(env, dump(r));
     }
 
-    jmethodID on_prompt = nullptr, on_update = nullptr;
+    jmethodID on_prompt = nullptr, on_update = nullptr, on_media = nullptr;
     if (listener) {
         jclass cls = env->GetObjectClass(listener);
         on_prompt = env->GetMethodID(cls, "onPromptProgress", "(II)V");
-        on_update = env->GetMethodID(cls, "onUpdate", "([B[BI)V");
-        env->DeleteLocalRef(cls);
         take_exception(env);
+        on_update = env->GetMethodID(cls, "onUpdate", "([B[BI)V");
+        take_exception(env);
+        on_media = env->GetMethodID(cls, "onMedia", "(II)V");
+        take_exception(env);
+        env->DeleteLocalRef(cls);
     }
 
     oa::ChatCallbacks cb;
@@ -227,6 +257,13 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
         };
     }
 
+    if (on_media) {
+        cb.on_media = [&](int index, int total) {
+            env->CallVoidMethod(listener, on_media, (jint) index, (jint) total);
+            if (take_exception(env)) engine().request_stop();
+        };
+    }
+
     const auto res = engine().chat(req, cb);
     json r = {
         {"ok", res.ok},
@@ -243,6 +280,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"n_dropped", res.stats.n_dropped},
             {"t_first_ms", res.stats.t_first_ms},
             {"used_snapshot", res.stats.used_snapshot},
+            {"n_drafted", res.stats.n_drafted},
+            {"n_accepted", res.stats.n_accepted},
+            {"n_steps", res.stats.n_steps},
+            {"n_media", res.stats.n_media},
+            {"t_media_ms", res.stats.t_media_ms},
             {"stop_reason", res.stats.stop_reason},
         }},
     };

@@ -7,11 +7,23 @@
 // (Qwen3.5 and everything built on it) carry a recurrent state that cannot be wound back, so
 // for those the engine keeps snapshots of the whole state at the start of each reply and
 // restores the nearest one instead of reading the conversation from the beginning.
+//
+// Pictures, audio and video frames go through the model's multimodal projector (mtmd). In the
+// cache each one stands for as many positions as it fills, written as negative "virtual
+// tokens" derived from the file's hash, so the same comparison finds what is already in memory.
+//
+// Replies can be written faster by drafting a few tokens ahead and checking them all in one
+// step (speculative decoding): with the model's own multi-token-prediction head (Qwen3.5 "MTP"
+// files), with a small drafter that shares the model's memory (Gemma 4), or by copying from
+// what is already in the conversation (n-gram, attention models only). Every accepted token is
+// one the model would have sampled itself, so replies read the same either way.
 #pragma once
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19,6 +31,9 @@ struct llama_model;
 struct llama_context;
 struct llama_vocab;
 struct common_chat_templates;
+struct common_speculative;
+struct mtmd_context;
+struct mtmd_input_chunks;
 
 namespace oa {
 
@@ -37,6 +52,19 @@ struct LoadParams {
     // contexts, very slightly less exact.
     bool kv_q8      = false;
     bool warmup     = true;   // touch every weight once after loading, so the first reply starts fast
+
+    // Speculative decoding. 0 turns it off. Otherwise the most tokens a drafter may propose per
+    // step (the model's MTP head, or the drafter file below); 1 to 4 make sense on a phone.
+    int  spec_n_max    = 2;
+    // Also draft by copying spans that already appear in the conversation (only for models
+    // whose memory can be wound back token by token).
+    bool spec_ngram    = true;
+    std::string drafter_path;  // Gemma 4 "mtp-*.gguf" assistant, or empty
+
+    // The multimodal projector for pictures and audio, or empty. Loaded the first time a
+    // message holds a picture or a sound, not before.
+    std::string mmproj_path;
+    int  image_max_tokens = 0;   // cap on tokens per picture for models that scale with size; 0 = model's own
 };
 
 struct SamplingParams {
@@ -50,10 +78,18 @@ struct SamplingParams {
     uint32_t seed             = 0xFFFFFFFFu;  // random
 };
 
+// A picture, a sound or one frame of a video attached to a message.
+struct Media {
+    std::string path;       // a file the app copied into its own storage (jpg/png, wav/mp3/flac)
+    std::string label;      // text placed right before it, e.g. a video frame's time "[0m4.0s]"
+    bool        frame = false;  // a video frame: consecutive frames may be merged by the model
+};
+
 struct Message {
     std::string role;       // system, user or assistant
     std::string content;
     std::string reasoning;  // the assistant's thinking, kept apart from what it said
+    std::vector<Media> media;  // shown to the model before the text
 };
 
 struct ChatRequest {
@@ -61,10 +97,11 @@ struct ChatRequest {
     bool                 enable_thinking = true;
     int64_t              now_ms          = 0;  // fixed per conversation, so dated templates render the same every turn
     SamplingParams       sampling;
+    int                  spec_n_max      = -1; // -1: as loaded; 0: no drafting this reply; n: at most n
 };
 
 struct ChatStats {
-    int         n_prompt       = 0;  // tokens in the rendered conversation
+    int         n_prompt       = 0;  // positions in the rendered conversation
     int         n_reused       = 0;  // of those, already in memory
     int         n_evaluated    = 0;  // of those, evaluated this turn
     int         n_generated    = 0;
@@ -73,6 +110,11 @@ struct ChatStats {
     int         n_dropped      = 0;  // oldest messages left out to fit the context
     double      t_first_ms     = 0;  // from the request to the first word of the reply
     bool        used_snapshot  = false;
+    int         n_drafted      = 0;  // tokens proposed by the drafter
+    int         n_accepted     = 0;  // of those, the ones the model agreed with
+    int         n_steps        = 0;  // model evaluations while writing
+    int         n_media        = 0;  // pictures/sounds encoded this turn
+    double      t_media_ms     = 0;
     std::string stop_reason;         // eos, length, context, stopped, error
 };
 
@@ -85,10 +127,12 @@ struct ChatResult {
 };
 
 struct ChatCallbacks {
-    // Prompt evaluation progress, in tokens.
+    // Prompt evaluation progress, in positions.
     std::function<void(int done, int total)> on_prompt_progress;
     // The reply so far, split into thinking and answer. Always whole UTF-8.
     std::function<void(const std::string & reasoning, const std::string & content, int n_generated)> on_update;
+    // Pictures/sounds: about to encode number `index` of `total` (the slow part on a phone).
+    std::function<void(int index, int total)> on_media;
 };
 
 struct ModelInfo {
@@ -102,7 +146,11 @@ struct ModelInfo {
     int         n_threads         = 0;
     bool        supports_thinking = false;
     bool        has_template      = false;
-    std::string memory;  // "attention" (any tail can be dropped) or "snapshots"
+    std::string memory;       // "attention" (any tail can be dropped) or "snapshots"
+    std::string speculative;  // "", "mtp", "drafter", "ngram", or two of them joined by "+"
+    int         spec_n_max        = 0;
+    bool        vision            = false;
+    bool        audio             = false;
 };
 
 struct BenchResult {
@@ -139,6 +187,9 @@ public:
     // Forget everything in memory.
     void reset_cache();
 
+    // Free the multimodal projector (it loads again when the next picture comes).
+    void release_media();
+
     // Threads for the next evaluation step. Safe from any thread; takes effect between tokens,
     // so a reply can slow down (or speed up again) as the phone heats and cools.
     void set_threads(int n) { want_threads_.store(n); }
@@ -163,41 +214,97 @@ public:
     bool rollback_supported() const { return can_rm_part_; }
     std::vector<float> last_logits() const;
 
+    // Tokens of `text` with the model's vocabulary (tests).
+    std::vector<token> tokenize(const std::string & text, bool add_special) const;
+
+    // Bytes of compute memory the last load reserved (llama's own report; tests and the app's log).
+    size_t compute_bytes() const { return compute_bytes_; }
+
 private:
     // The whole state of the model's memory after `tokens`. Checked against the prompt by its
     // tokens, so it stays usable even after the memory itself was cleared.
     struct Snapshot {
         std::vector<token>   tokens;
         std::vector<uint8_t> data;
+        std::vector<uint8_t> data_dft;   // the drafter's own memory, when it has one
+        std::vector<uint8_t> data_spec;  // the drafter's carried-over state
+        int                  extra_cells = 0;
     };
 
-    bool decode_range(const std::vector<token> & tokens, size_t from, size_t to, bool logits_last,
-                      std::string & err, const std::function<void(int, int)> & progress, int total);
+    // A rendered conversation: its units (tokens, and virtual tokens for media) and where each
+    // stretch of text or media lies among them.
+    struct Segment {
+        bool   media    = false;
+        size_t start    = 0;   // first unit
+        size_t len      = 0;   // units (positions)
+        int    n_tokens = 0;   // memory cells it fills (more than len for some picture models)
+        size_t chunk    = 0;   // index into the mtmd chunks
+    };
+    struct Prompt {
+        std::vector<token>   units;
+        std::vector<Segment> segs;
+        std::vector<Media>   media;   // in order of appearance
+        std::string          text;    // with media markers
+        int                  extra_cells = 0;
+        bool has_media() const { return !media.empty(); }
+    };
+
+    bool build_prompt(const std::string & text, const std::vector<Media> & media, Prompt & out, std::string & err);
+    bool sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
+              const std::function<void(int, int)> & progress, const std::function<void(int, int)> & on_media,
+              ChatStats * stats);
+    bool decode_text(const std::vector<token> & tokens, size_t from, size_t to, bool logits_last,
+                     std::string & err, const std::function<void(int, int)> & progress, int total, size_t reused);
+    bool decode_media(const Prompt & prompt, const Segment & seg, mtmd_input_chunks * chunks, std::string & err);
+    bool ensure_mtmd(std::string & err);
     void save_snapshot();
     const Snapshot * best_snapshot(const std::vector<token> & prompt, size_t max_tokens) const;
     bool restore_snapshot(const Snapshot & s);
     void clear_memory();
+    void trim_draft(size_t n_tokens);
     void apply_threads();
     bool memory_truncate(size_t n_tokens);
+    int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
+    void free_spec();
 
     llama_model *          model_ = nullptr;
     llama_context *        ctx_   = nullptr;
     const llama_vocab *    vocab_ = nullptr;
     common_chat_templates *tmpls_ = nullptr;
 
+    // speculative decoding
+    llama_model *          model_dft_ = nullptr;   // a separate drafter file (Gemma 4)
+    llama_context *        ctx_dft_   = nullptr;   // the drafter's context (MTP head or drafter file)
+    common_speculative *   spec_      = nullptr;
+    std::string            spec_kind_;
+    int                    spec_n_max_ = 0;        // drafter tokens per step
+    int                    spec_n_out_ = 1;        // outputs per step the context was made for
+    bool                   ngram_      = false;
+
+    // pictures and sound
+    mtmd_context *         mtmd_ = nullptr;
+    bool                   mm_vision_ = false;
+    bool                   mm_audio_  = false;
+
     LoadParams            params_;
     std::vector<token>    cache_;
+    int                   cache_extra_cells_ = 0;   // cells beyond one per position (pictures)
     std::vector<Snapshot> snapshots_;
     bool                  can_rm_part_ = true;
     bool                  is_swa_      = false;
     std::atomic<bool>     stop_{false};
     std::atomic<int>      want_threads_{0};
     int                   cur_threads_ = 0;
+    size_t                compute_bytes_ = 0;
 
     static constexpr size_t kMaxSnapshots = 2;
 };
 
 // Length of the longest prefix of `s` made of complete UTF-8 sequences.
 size_t utf8_complete_prefix(const std::string & s);
+
+// Units that stand for a picture or sound in the prompt cache: `n` negative values derived from
+// its id, so equal media compare equal and different media differ at their first unit.
+std::vector<token> virtual_tokens(const std::string & id, size_t n);
 
 }  // namespace oa

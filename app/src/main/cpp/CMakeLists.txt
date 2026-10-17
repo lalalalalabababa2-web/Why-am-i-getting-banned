@@ -30,6 +30,10 @@ set(LLAMA_BUILD_APP OFF)
 set(LLAMA_OPENSSL OFF)
 set(LLAMA_SUBPROCESS OFF)
 set(LLAMA_BUILD_UI OFF)
+# pictures and sound: the multimodal library, without its command-line tools and without video
+# (its video path runs ffmpeg as a separate program; the app extracts frames itself)
+set(LLAMA_BUILD_MTMD ON)
+set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_SRC} llama-build)
 
@@ -42,10 +46,13 @@ target_include_directories(offlineai PRIVATE
         ${LLAMA_SRC}/include
         ${LLAMA_SRC}/common
         ${LLAMA_SRC}/ggml/include
+        ${LLAMA_SRC}/src
+        ${LLAMA_SRC}/tools/mtmd
         ${LLAMA_SRC}/vendor)
 
 target_link_libraries(offlineai
         llama
         llama-common
+        mtmd
         android
         log)
