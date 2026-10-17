@@ -97,7 +97,20 @@ by the test), greedy replies must be the same tokens as without drafting.
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
 pictures and video frames through its projector, and both Bonsai models answering a question.
-The speeds it prints are for those runners, not for a phone.
+The speeds it prints are for those runners, not for a phone. From GitHub's ARM runner (4 server-class ARM
+cores; tokens per second while writing, greedy, the same words in every column):
+
+| Model | Plain | Copying, reply repeats a note | MTP / drafter, 1-3 words |
+|---|---|---|---|
+| Qwen3.5 0.8B Q4_K_M | 40 | 75 | 20-26 |
+| Qwen3.5 4B Q4_K_M | 10.3 | 19.7 | 6.2-10.1 |
+| Gemma 4 E2B Q4_K_M | 19.6 | 31.5 | 12.9-15.4 |
+| Llama 3.2 1B Q4_K_M | 37 | 58 | - |
+| Ternary Bonsai 2 9B Q2_0 | 4.7 | | |
+| Bonsai 27B Q1_0 | 3.1 | | |
+
+A phone's CPU has more and differently sized cores and less memory bandwidth, so expect other
+numbers there; Settings has a drafting test that measures the phone itself.
 
 ## Building
 

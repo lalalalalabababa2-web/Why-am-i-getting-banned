@@ -148,18 +148,18 @@ class SettingsActivity : AppCompatActivity() {
                 s.draftTokens = Settings.DRAFT_TOKENS[it]
             }
         }
-        val loaded = app.engine.loaded
-        if (loaded != null) {
-            val how = loaded.info.speculative
+        val current = app.engine.loaded
+        if (current != null) {
+            val how = current.info.speculative
             val desc = when {
-                how.isEmpty() -> "${loaded.displayName} is not drafting with these settings."
-                else -> "${loaded.displayName} drafts by " + how.split("+").joinToString(" and ") {
+                how.isEmpty() -> "${current.displayName} is not drafting with these settings."
+                else -> "${current.displayName} drafts by " + how.split("+").joinToString(" and ") {
                     when (it) {
                         "mtp" -> "its own MTP head"
                         "drafter" -> "its drafter"
                         else -> "copying from the conversation"
                     }
-                } + (if (loaded.info.specNMax > 0) ", up to ${loaded.info.specNMax} words per step." else ".")
+                } + (if (current.info.specNMax > 0) ", up to ${current.info.specNMax} words per step." else ".")
             }
             content.addView(note(desc))
         }
