@@ -117,8 +117,14 @@ cores; tokens per second while writing, greedy, the same words in every column):
 | Qwen3.5 4B Q4_K_M | 10.3 | 19.7 | 6.2-10.1 |
 | Gemma 4 E2B Q4_K_M | 19.6 | 31.5 | 12.9-15.4 |
 | Llama 3.2 1B Q4_K_M | 37 | 58 | - |
-| Ternary Bonsai 2 9B Q2_0 | 4.7 | | |
-| Bonsai 27B Q1_0 | 3.1 | | |
+| Ternary Bonsai 2 9B Q2_0 | 6.0 (was 4.7 before this repository's kernels) | | |
+| Bonsai 27B Q1_0, fast mode | 3.0 | | |
+| Bonsai 27B Q1_0, low memory | 2.4 | | |
+| Bonsai 27B Q1_0, low memory, only 3 GB of memory | 0.2 | | |
+
+Reading a 425-token message on the same runner: Ternary Bonsai 2 9B 17.7 tokens/s (was 11.0),
+Bonsai 27B 8.3 in fast mode, 4.9 in low memory (was 3.4), 2.2 with only 3 GB. The last row is
+what a phone without enough free memory sees: the model is read from storage again and again.
 
 A phone's CPU has more and differently sized cores and less memory bandwidth, so expect other
 numbers there; Settings has a drafting test that measures the phone itself.
