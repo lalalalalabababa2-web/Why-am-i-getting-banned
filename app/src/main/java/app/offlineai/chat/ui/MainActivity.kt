@@ -598,7 +598,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 "Looking at attachment ${c.mediaIndex + 1} of ${c.mediaTotal}…$hot"
             c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens${c.promptEtaLabel()}$hot"
             c.generating && c.generated > 1 -> c.writingLabel() + hot
-            c.generating -> "Starting…${c.firstWordLabel()}$hot"
+            c.generating -> c.startingLabel() + hot
             loaded == null && e.lastError != null -> {
                 subtitle.setTextColor(Palette.danger)
                 e.lastError

@@ -220,7 +220,7 @@ void Engine::release_media() {
 
 void Engine::unload() {
     // the pager reads and hands back pages of the model's mapping: stop it before the mapping goes
-    pager_.reset();
+    set_pager(nullptr);
     attach_pool(nullptr);
     helper_free();
     free_spec();
@@ -287,8 +287,8 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // Low memory: the pager decides which layers stay in memory and streams the rest, so llama
     // must not read the whole file while loading (it would push out what loaded first)
     if (params.low_memory && params.use_mmap && params.pager) {
-        pager_ = std::make_unique<Pager>();
-        if (!pager_->open(path, file_mtp)) pager_.reset();
+        auto p = std::make_shared<Pager>();
+        if (p->open(path, file_mtp)) set_pager(std::move(p));
     }
 
     auto mp = llama_model_default_params();
@@ -318,7 +318,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     }
     model_ = llama_model_load_from_file(path.c_str(), mp);
     if (!model_) {
-        pager_.reset();
+        set_pager(nullptr);
         err = "The model could not be loaded. The file may be incomplete or damaged, or it is a kind of "
               "model this version of the app cannot run.";
         return false;
@@ -329,7 +329,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // whether part of the model will be read from storage on every step (decided for good once
     // the contexts exist): drafting is then nearly free, since checking several guessed tokens
     // costs the same one read of the model as writing one
-    const bool will_stream = pager_ && llama_model_size(model_) > budget_now();
+    const bool will_stream = pager_ && llama_model_size(model_) + (256ull << 20) > budget_now();
     {
         char desc[256] = {0};
         llama_model_desc(model_, desc, sizeof desc);
@@ -347,7 +347,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     const int  ngram_n_max = recurrent ? kRsNgram : 31;
     const bool want_head = file_mtp || use_drafter;
     // a helper model guesses only while part of the model streams from storage (see LoadParams)
-    const int  helper_n = !params.helper_path.empty() && params.low_memory && !file_mtp
+    const int  helper_n = !params.helper_path.empty() && params.low_memory && !file_mtp && will_stream
                               ? std::clamp(params.helper_n_max, 0, 8) : 0;
     // Room for the logits of one token plus a draft. llama would otherwise reserve logits for
     // every token of a prompt step, hundreds of MB for vocabularies of 250k words, never used.
@@ -388,7 +388,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         ctx_ = llama_init_from_model(model_, cp);
     }
     if (!ctx_) {
-        pager_.reset();
+        set_pager(nullptr);
         llama_model_free(model_);
         model_ = nullptr;
         vocab_ = nullptr;
@@ -525,7 +525,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
             return false;
         }
     }
-    compute_bytes_ = compute_bytes_of(ctx_) + compute_bytes_of(ctx_dft_);
+    compute_bytes_ = compute_bytes_of(ctx_) + compute_bytes_of(ctx_dft_) + compute_bytes_of(helper_ctx_);
     cache_.clear();
     cache_extra_cells_ = 0;
     snapshots_.clear();
@@ -533,7 +533,10 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     if (pager_) {
         // Now that the contexts hold their memory: which layers stay, then read those in big
         // pieces with a few threads (much faster than the page faults of a warm-up step).
-        pager_->plan(budget_now());
+        // what the contexts reserved for their working memory is not in use yet, so the system
+        // still counts it as available: it will be
+        const uint64_t avail = budget_now();
+        pager_->plan(avail > compute_bytes_ ? avail - compute_bytes_ : 0);
         pager_->set_io_cpus(fast_cpus_);
         if (on_warmup && !progress) on_warmup();
         std::function<bool(float)> warm_progress;
@@ -546,6 +549,18 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         pager_->start();
     }
     return true;
+}
+
+void Engine::set_pager(std::shared_ptr<Pager> p) {
+    std::shared_ptr<Pager> old;
+    {
+        std::lock_guard<std::mutex> lk(pager_mu_);
+        old = std::move(pager_);
+        pager_ = std::move(p);
+    }
+    // its threads stop now, before the mapping they work on goes away, even if another thread
+    // still holds a copy for a moment (that copy can only read its numbers)
+    if (old) old->stop();
 }
 
 uint64_t Engine::budget_now() const {
@@ -787,6 +802,7 @@ bool Engine::helper_load(const LoadParams & params, uint32_t n_ctx, int n_thread
     cp.n_batch = llama_n_batch(ctx_);
     cp.n_ubatch = llama_n_ubatch(ctx_);
     cp.n_seq_max = 2;  // the conversation, and a copy of it to guess on
+    cp.kv_unified = true;  // both see the whole context (the copy shares the conversation's cells)
     cp.n_threads = cp.n_threads_batch = std::max(1, n_threads);
     cp.n_outputs_max = 2;  // one guess at a time, per sequence
     cp.n_outputs_max_per_seq = 1;
@@ -910,6 +926,8 @@ void Engine::helper_draft(token last, int n_max, std::vector<token> & out) {
     llama_memory_seq_rm(mem, 1, -1, -1);
     llama_memory_seq_cp(mem, 0, 1, -1, -1);
     const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(helper_model_));
+    // the model's vocabulary can be a little smaller than the helper's: never guess past it
+    const int n_vocab_model = llama_vocab_n_tokens(vocab_);
     common_batch batch(helper_ctx_);
     token cur = last;
     for (int i = 0; i < n_max; i++) {
@@ -925,6 +943,7 @@ void Engine::helper_draft(token last, int n_max, std::vector<token> & out) {
         // how sure: the top token's share after softmax
         double sum = 0;
         for (int k = 0; k < n_vocab; k++) sum += std::exp((double) (logits[k] - logits[best]));
+        if (best >= n_vocab_model) break;
         out.push_back(best);
         if (1.0 / sum < 0.3) break;  // unlikely to be kept; checking more would cost compute for nothing
         cur = best;

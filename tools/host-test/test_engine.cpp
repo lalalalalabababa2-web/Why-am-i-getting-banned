@@ -13,6 +13,7 @@
 #include "ggml-backend.h"
 #include "llama-ext.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -220,6 +221,42 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
                   "(%llu bytes for %llu streamed)", (unsigned long long) ps.bytes_read, (unsigned long long) info.streamed_bytes);
         }
     }
+}
+
+// The status line asks the pager how it is doing from the app's main thread while the engine
+// thread may be loading a model (which replaces the pager): that must never touch a freed one.
+static void test_pager_threads(const std::string & path) {
+    std::printf("== pager from another thread while models load: %s\n", path.c_str());
+    oa::Engine e;
+    std::atomic<bool> done{false};
+    std::atomic<long> asked{0};
+    std::thread asker([&] {
+        while (!done.load()) {
+            const auto ps = e.pager_stats();
+            (void) ps;
+            e.trim_memory();
+            e.memory_changed();
+            asked++;
+        }
+    });
+    oa::LoadParams lp;
+    lp.n_ctx = 512;
+    lp.n_threads = 2;
+    lp.low_memory = true;
+    lp.mem_budget_mb = 1;
+    std::string err;
+    int loads = 0;
+    for (int i = 0; i < 6; i++) {
+        if (e.load(path, lp, err)) loads++;
+        std::vector<token> p = {1, 2, 3, 4, 5, 6, 7, 8};
+        if (i % 2 == 0) e.sync_prompt(p, 0, err, nullptr, nullptr);
+        if (i % 3 == 2) e.unload();
+    }
+    e.unload();
+    done.store(true);
+    asker.join();
+    std::printf("    %d loads, the other thread asked %ld times\n", loads, asked.load());
+    CHECK(loads == 6, "loading failed: %s", err.c_str());
 }
 
 static void test_bench(const std::string & path) {
@@ -1205,6 +1242,7 @@ int main(int argc, char ** argv) {
     const std::string deep = dir + "/llama-deep.gguf";
     if (!exists(deep)) CHECK(make_deep_model(dir + "/llama-dense.gguf", deep, 10), "could not make the deep test model");
     if (exists(deep)) {
+        test_pager_threads(deep);
         test_cache(deep, false, true, 1);
         // the same with the mapping not found by name: the pager learns it from the first step
         oa::Pager::skip_maps_for_tests(true);

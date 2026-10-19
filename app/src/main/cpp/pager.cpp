@@ -242,7 +242,7 @@ bool Pager::open(const std::string & path, bool mtp_used) {
 
     const uint64_t data = gguf_get_data_offset(g);
     std::map<int, int> layer_group;
-    int embd = -1, out = -1, other = -1, mtp = -1;
+    int embd = -1, ple = -1, out = -1, other = -1, mtp = -1;
     bool has_output = false;
     auto group_of = [&](int & idx, Kind kind, int order) {
         if (idx < 0) {
@@ -273,9 +273,12 @@ bool Pager::open(const std::string & path, bool mtp_used) {
                     gi = it->second;
                 }
             }
-        } else if (name.find("token_embd") != std::string::npos) {
+        } else if (name == "token_embd.weight") {
             // only the rows of the tokens read are touched, so it is never streamed
             gi = group_of(embd, Kind::EMBD, -1);
+        } else if (name.find("token_embd") != std::string::npos) {
+            // Gemma's per-layer embeddings: also read a row per token, and never the output
+            gi = group_of(ple, Kind::EMBD, -1);
         } else if (name.compare(0, 6, "output") == 0) {
             has_output = has_output || name == "output.weight";
             gi = group_of(out, Kind::OUT, (int) n_main);
@@ -407,7 +410,9 @@ void Pager::plan_locked(uint64_t budget) {
         // room to read ahead: two of the biggest layers, so the next one is already coming in
         // while the model computes this one
         window = std::min<uint64_t>(2 * biggest, std::max<uint64_t>(512 * kMB, biggest));
-        uint64_t room = budget > fixed + window ? budget - fixed - window : 0;
+        // and the layer being computed stays while it is computed
+        const uint64_t streaming_room = window + biggest;
+        uint64_t room = budget > fixed + streaming_room ? budget - fixed - streaming_room : 0;
         // the MTP head writes its guesses with the output layer, several times a step
         const int out = pass_.back();
         if (mtp_used_ && groups_[out].bytes <= room) {
@@ -623,7 +628,7 @@ double Pager::check_resident() {
             const uint64_t lo = r.off / page_ * page_;
             const uint64_t hi = std::min<uint64_t>((r.off + r.len + page_ - 1) / page_ * page_, file_size_);
             if (hi <= lo) continue;
-            const size_t np = (size_t) ((hi - lo) / page_);
+            const size_t np = (size_t) ((hi - lo + page_ - 1) / page_);  // the file's last page may be partial
             vec.resize(np);
             if (mincore((void *) (base + lo), hi - lo, vec.data()) != 0) return 1.0;
             pages += np;
@@ -644,9 +649,9 @@ void Pager::step(int pos) {
     }
     std::vector<char> want(groups_.size(), 0);
     if (cur >= 0) {
-        // the layer being computed, and the one before it (its last results may still be in use)
+        // the layer being computed (the graph stops at a layer's first node only once every node
+        // before it has run, so the one before is free to go)
         want[pass_[cur]] = 1;
-        want[pass_[(cur + n - 1) % n]] = 1;
     }
     std::vector<int> order;
     uint64_t ahead = 0;
@@ -800,6 +805,7 @@ void Pager::loop() {
     uint64_t seen_epoch = ~0ull;
     auto last_check = std::chrono::steady_clock::now();
     auto last_avail = last_check;
+    auto last_shrink = last_check - std::chrono::minutes(5);
     while (true) {
         uint64_t new_budget = 0;
         bool trim = false;
@@ -836,12 +842,16 @@ void Pager::loop() {
         const uint64_t full = st_.pass_bytes + fixed_bytes();
         if (present < 0.85) {
             // other apps took memory and the kernel took it from the model: keep less, so the
-            // layers still kept stay whole instead of all of them going missing a little
+            // layers still kept stay whole instead of all of them going missing a little; by
+            // what went missing and a little more, so this does not come back every few seconds
             if (++low_checks_ >= 2) {
                 low_checks_ = 0;
                 const uint64_t res = st_.resident_bytes + fixed_bytes();
-                plan_locked((uint64_t) ((double) res * present * 0.95) + st_.window_bytes);
+                const uint64_t missing = (uint64_t) ((double) res * (1.0 - present));
+                const uint64_t budget = st_.budget_bytes;
+                plan_locked(budget > missing + 128 * kMB ? budget - missing - 128 * kMB : 0);
                 st_.n_replans++;
+                last_shrink = now;
             }
             continue;
         }
@@ -850,12 +860,16 @@ void Pager::loop() {
         last_avail = now;
         const uint64_t avail = memory_for_model();
         const uint64_t budget = st_.budget_bytes;
-        if (avail > budget + std::max<uint64_t>(256 * kMB, budget / 16) && budget < full && present > 0.97) {
-            plan_locked(std::min(avail, full));  // other apps closed: keep more
+        const uint64_t step = std::max<uint64_t>(256 * kMB, budget / 16);
+        if (avail > budget + step && budget < full && present > 0.97 && ms_between(last_shrink, now) > 60000) {
+            // other apps closed: keep more, half the new room at a time (the kernel had a reason
+            // to take pages if it did so lately)
+            plan_locked(std::min(budget + (avail - budget) / 2, full));
             st_.n_replans++;
-        } else if (avail + std::max<uint64_t>(128 * kMB, budget / 8) < budget) {
+        } else if (avail + step < budget) {
             plan_locked(avail);  // memory is getting short: keep less before the kernel takes it
             st_.n_replans++;
+            last_shrink = now;
         }
     }
 }

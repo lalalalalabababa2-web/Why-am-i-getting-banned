@@ -104,10 +104,17 @@ class ChatController(private val app: App) {
         return if (s < 0) "" else " · about ${duration(s)} left"
     }
 
-    /** Before the first word, while nothing is reported: " · first word in about 12 s", else "". */
-    fun firstWordLabel(): String {
-        val s = promptSecondsLeft()
-        return if (s < 0) "" else " · first word in about ${duration(s)}"
+    /**
+     * Before there is a speed to show: "Starting…", or for a model streamed from storage (where
+     * the second word can be seconds away) how long each step through the model takes.
+     */
+    fun startingLabel(): String {
+        val model = app.engine.loaded
+        val pager = if (model?.info?.streaming == true) app.engine.pagerStats() else null
+        if (generated >= 1 && pager != null && pager.active && pager.passMs > 0) {
+            return "Writing · about ${seconds(pager.passMs / 1000.0)} a step"
+        }
+        return "Starting…"
     }
 
     /** Tokens per second over the last several seconds (or the whole reply while it is short). */
@@ -367,7 +374,8 @@ class ChatController(private val app: App) {
     /** What the next estimates go by: how fast this model read, and how long its reply was. */
     private fun learn(model: LoadedModel, o: ChatOutcome) {
         if (!o.ok) return
-        if (o.nEvaluated >= 16 && o.tPromptMs > 0) readSpeed[model.key] = o.nEvaluated * 1000.0 / o.tPromptMs
+        // a short message says more about the fixed cost of a step than about reading speed
+        if (o.nEvaluated >= 128 && o.tPromptMs > 0) readSpeed[model.key] = o.nEvaluated * 1000.0 / o.tPromptMs
         // only replies that ended by themselves say how long replies are
         if (o.stopReason == "eos" && o.nGenerated > 0) app.settings.addReplyLength(model.key, thinkingNow, o.nGenerated)
     }

@@ -24,6 +24,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -263,12 +264,19 @@ public:
     // Bytes of compute memory the last load reserved (llama's own report; tests and the app's log).
     size_t compute_bytes() const { return compute_bytes_; }
 
-    // The pager (low memory), or an empty report without one.
-    PagerStats pager_stats() const { return pager_ ? pager_->stats() : PagerStats(); }
+    // The pager (low memory), or an empty report without one. Any thread.
+    PagerStats pager_stats() const {
+        auto p = shared_pager();
+        return p ? p->stats() : PagerStats();
+    }
     // Android asked the app for memory back: keep fewer layers of a paged model. Any thread.
-    void trim_memory() { if (pager_) pager_->trim(); }
+    void trim_memory() {
+        if (auto p = shared_pager()) p->trim();
+    }
     // Memory there is now, after other apps were closed or opened: the pager plans again. Any thread.
-    void memory_changed() { if (pager_) pager_->set_budget(budget_now()); }
+    void memory_changed() {
+        if (auto p = shared_pager()) p->set_budget(budget_now());
+    }
 
 private:
     // The whole state of the model's memory after `tokens`. Checked against the prompt by its
@@ -320,6 +328,13 @@ private:
     int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
     uint64_t budget_now() const;
     bool streaming() const { return pager_ && pager_->active(); }
+    // The pager for the calls other threads make (the status line asks while a model may be
+    // loading, which replaces it): a copy taken under the lock stays valid however long it is used.
+    std::shared_ptr<Pager> shared_pager() const {
+        std::lock_guard<std::mutex> lk(pager_mu_);
+        return pager_;
+    }
+    void set_pager(std::shared_ptr<Pager> p);
     void free_spec();
 
     // the helper drafter (LoadParams::helper_path)
@@ -384,7 +399,8 @@ private:
     bool                  self_bg_   = false;
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
-    std::unique_ptr<Pager> pager_;
+    std::shared_ptr<Pager> pager_;   // written on the engine thread only, under pager_mu_
+    mutable std::mutex     pager_mu_;
 
     static constexpr size_t kMaxSnapshots = 2;
 };

@@ -177,7 +177,8 @@ class App : Application() {
             imageMaxTokens = settings.pictureDetail.maxTokens,
             // big Gemma models: a compact sliding-window cache (much less memory, no drafting)
             swaFull = !low,
-            pager = settings.streaming,
+            // only low-memory mode has the pager: the switch must not reload a model in fast mode
+            pager = !low || settings.streaming,
             helperPath = helperFor(model, low)?.file?.absolutePath ?: "",
         )
     }
@@ -201,6 +202,9 @@ class App : Application() {
             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
         ) {
             engine.trimMemory()
+        } else if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            // newer Android versions send few of the levels above: look again at what is free
+            engine.memoryChanged()
         }
     }
 
