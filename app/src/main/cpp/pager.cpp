@@ -617,7 +617,8 @@ double Pager::check_resident() {
     uint64_t pages = 0, present = 0;
     std::vector<unsigned char> vec;
     for (const auto & g : groups_) {
-        if (!g.resident || g.kind == Kind::EMBD) continue;
+        // layers still being read in (just made resident) are not missing yet
+        if (!g.resident || g.kind == Kind::EMBD || g.state != IN_MEMORY) continue;
         for (const auto & r : g.ranges) {
             const uint64_t lo = r.off / page_ * page_;
             const uint64_t hi = std::min<uint64_t>((r.off + r.len + page_ - 1) / page_ * page_, file_size_);
