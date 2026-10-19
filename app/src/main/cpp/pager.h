@@ -88,6 +88,14 @@ public:
     // cgroup's limit, whichever is less), less some room for everything else.
     static uint64_t memory_for_model();
 
+    // Fast mode: reads a whole file into the page cache with a few threads at once (much faster
+    // from phone storage than the one-page-at-a-time faults of a single reader), unless most of
+    // it is there already. progress gets 0..1 and returns false to cancel (then this does too).
+    static bool preread(const std::string & path, const std::function<bool(float)> & progress, int n_threads);
+    // Hands the file's cached pages that nothing maps any more back to the system (fast mode,
+    // after the weights were copied into their own memory).
+    static void release_unmapped(const std::string & path);
+
     // ---- for tests
     // attach() pretends the mapping is not in /proc/self/maps, so the pager has to learn it
     static void skip_maps_for_tests(bool on) { skip_maps_ = on; }

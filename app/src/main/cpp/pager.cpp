@@ -128,6 +128,79 @@ uint64_t Pager::memory_for_model() {
     return avail > room ? avail - room : 0;
 }
 
+bool Pager::preread(const std::string & path, const std::function<bool(float)> & progress, int n_threads) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return true;
+    struct stat sb;
+    if (fstat(fd, &sb) != 0 || sb.st_size <= 0) {
+        ::close(fd);
+        return true;
+    }
+    const uint64_t size = (uint64_t) sb.st_size;
+    // already cached (loaded a moment ago, or reloaded with other settings): nothing to gain
+    {
+        void * m = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        if (m != MAP_FAILED) {
+            const size_t page = (size_t) std::max(4096L, sysconf(_SC_PAGESIZE));
+            std::vector<unsigned char> vec((size + page - 1) / page);
+            uint64_t in = 0;
+            if (mincore(m, size, vec.data()) == 0) {
+                for (unsigned char c : vec) in += c & 1;
+            }
+            munmap(m, size);
+            if (in * 10 >= vec.size() * 9) {
+                ::close(fd);
+                return true;
+            }
+        }
+    }
+    constexpr uint64_t kChunk = 8 * kMB;
+    const size_t n_pieces = (size_t) ((size + kChunk - 1) / kChunk);
+    std::atomic<size_t> next{0};
+    std::atomic<uint64_t> done{0};
+    std::atomic<bool> cancel{false};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < std::clamp(n_threads, 1, 4); t++) {
+        threads.emplace_back([&]() {
+            std::vector<uint8_t> buf(kChunk);
+            while (!cancel.load()) {
+                const size_t i = next.fetch_add(1);
+                if (i >= n_pieces) break;
+                const uint64_t off = i * kChunk, len = std::min(kChunk, size - off);
+                for (uint64_t got = 0; got < len;) {
+                    const ssize_t r = pread(fd, buf.data(), (size_t) (len - got), (off_t) (off + got));
+                    if (r <= 0) {
+                        if (r < 0 && errno == EINTR) continue;
+                        break;
+                    }
+                    got += (uint64_t) r;
+                }
+                done.fetch_add(len);
+            }
+        });
+    }
+    bool ok = true;
+    while (done.load() < size) {
+        if (progress && !progress((float) ((double) done.load() / (double) size))) {
+            cancel.store(true);
+            ok = false;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    for (auto & th : threads) th.join();
+    ::close(fd);
+    return ok;
+}
+
+void Pager::release_unmapped(const std::string & path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    // pages still mapped (weights used straight from the file) are left alone by the kernel
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+    ::close(fd);
+}
+
 Pager::~Pager() {
     stop();
     if (fd_ >= 0) ::close(fd_);

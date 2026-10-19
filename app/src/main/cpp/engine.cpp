@@ -304,6 +304,18 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     mp.progress_callback = load_progress;
     mp.progress_callback_user_data = &bridge;
 
+    // Fast mode: the file is read first with a few threads at once, and llama then copies the
+    // weights out of the page cache instead of faulting them in one page at a time.
+    const bool preread = !pager_ && params.use_mmap && !params.low_memory;
+    if (preread) {
+        std::function<bool(float)> pre_progress;
+        if (progress) pre_progress = [&](float p) { return progress(p * 0.6f); };
+        if (!Pager::preread(path, pre_progress, std::max(2, params.n_threads))) {
+            err = "Loading was cancelled.";
+            return false;
+        }
+        if (progress) load_progress_fn = [&](float p) { return progress(0.6f + p * 0.4f); };
+    }
     model_ = llama_model_load_from_file(path.c_str(), mp);
     if (!model_) {
         pager_.reset();
@@ -405,6 +417,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         llama_memory_clear(llama_get_memory(ctx_), true);
         llama_synchronize(ctx_);
     }
+    // the weights now live in their own memory: the file's copy in the page cache only crowds
+    // out the rest of the phone (the pages still in use are mapped, and stay)
+    if (preread && params.warmup) Pager::release_unmapped(path);
 
     const auto rm_type = common_context_can_seq_rm(ctx_);
     can_rm_part_ = rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART;
