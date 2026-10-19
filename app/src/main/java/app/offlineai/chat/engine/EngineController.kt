@@ -27,6 +27,8 @@ data class ModelInfo(
     val vision: Boolean,
     val audio: Boolean,
     val computeBytes: Long,
+    /** A helper model guesses the next few tokens while the model streams from storage. */
+    val helper: Boolean = false,
     /** Low memory with the pager: it decides which layers stay in memory. */
     val pager: Boolean = false,
     /** Part of the model is read from storage on every step (it is bigger than the memory there is). */
@@ -57,6 +59,7 @@ data class ModelInfo(
                 vision = j.optBoolean("vision"),
                 audio = j.optBoolean("audio"),
                 computeBytes = j.optLong("compute_bytes"),
+                helper = j.optBoolean("helper"),
                 pager = j.optBoolean("pager"),
                 streaming = j.optBoolean("streaming"),
                 residentBytes = j.optLong("resident_bytes"),
@@ -86,6 +89,8 @@ data class LoadConfig(
     val swaFull: Boolean = true,
     /** Low memory: keep the layers that fit and stream the rest (see app/src/main/cpp/pager.h). */
     val pager: Boolean = true,
+    /** A small model of the same family that guesses ahead while the model streams, or empty. */
+    val helperPath: String = "",
 ) {
     fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
 
@@ -103,6 +108,7 @@ data class LoadConfig(
         .put("image_max_tokens", imageMaxTokens)
         .put("swa_full", swaFull)
         .put("pager", pager)
+        .put("helper", helperPath)
 }
 
 data class LoadedModel(

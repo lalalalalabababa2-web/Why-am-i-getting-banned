@@ -344,7 +344,6 @@ class ChatController(private val app: App) {
                 reply.content = content
                 replyUpdated()
                 // kept every few seconds, so a reply cut off by Android is not lost
-                val now = SystemClock.uptimeMillis()
                 if (now - lastPartialSave > 3000) {
                     lastPartialSave = now
                     save()

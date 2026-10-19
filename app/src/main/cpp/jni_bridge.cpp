@@ -98,6 +98,8 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
         p.mmproj_path = o.value("mmproj", std::string());
         p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
         p.pager = o.value("pager", p.pager);
+        p.helper_path = o.value("helper", std::string());
+        p.helper_n_max = o.value("helper_n_max", p.helper_n_max);
         p.mem_budget_mb = o.value("mem_budget_mb", p.mem_budget_mb);
     } catch (const std::exception & e) {
         return to_bytes(env, std::string("Bad load options: ") + e.what());
@@ -170,6 +172,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"vision", mi.vision},
         {"audio", mi.audio},
         {"compute_bytes", engine().compute_bytes()},
+        {"helper", mi.helper},
         {"pager", mi.pager},
         {"streaming", mi.streaming},
         {"resident_bytes", mi.resident_bytes},

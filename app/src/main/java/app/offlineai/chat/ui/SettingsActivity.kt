@@ -89,6 +89,11 @@ class SettingsActivity : AppCompatActivity() {
                 "before it is needed, a few times faster than leaving it to Android. Adjusts by itself when other apps " +
                 "take or give back memory.$reloadNote",
             s.streaming) { s.streaming = it }
+        switch("Guess ahead with a helper",
+            "When a Qwen3.5 model is too big for memory, Qwen3.5 0.8B (download it from Models; 0.55 GB) guesses the next " +
+                "few words and the big model checks them all in the one read of itself it makes for every word anyway. " +
+                "Often about twice as fast; the replies are the same.$reloadNote",
+            s.helperDrafts) { s.helperDrafts = it }
         switch("Compact conversation memory",
             "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact.$reloadNote",
             s.kvQ8) { s.kvQ8 = it }

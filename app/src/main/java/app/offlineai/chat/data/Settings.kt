@@ -84,6 +84,10 @@ class Settings(context: Context) {
     var streaming: Boolean
         get() = bool("streaming", true)
         set(v) = put("streaming", v)
+    /** While a Qwen3.5 model streams from storage, Qwen3.5 0.8B (if downloaded) guesses ahead for it. */
+    var helperDrafts: Boolean
+        get() = bool("helper_drafts", true)
+        set(v) = put("helper_drafts", v)
 
     // ---- performance
     var perfMode: PerfMode

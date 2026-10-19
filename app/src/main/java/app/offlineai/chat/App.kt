@@ -6,6 +6,7 @@ import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.PowerManager
 import app.offlineai.chat.data.ChatStore
+import app.offlineai.chat.data.Family
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.BackgroundSpeed
 import app.offlineai.chat.data.MemoryMode
@@ -148,6 +149,17 @@ class App : Application() {
         MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.45
     }
 
+    /**
+     * The small model that guesses ahead for [model] while it streams from storage: Qwen3.5 0.8B
+     * for the bigger Qwen3.5 models (same words, so its guesses can be checked), when it is on the
+     * phone. The engine uses it only if the model really is bigger than the memory there is.
+     */
+    fun helperFor(model: LocalModel, low: Boolean): LocalModel? {
+        if (!low || !settings.streaming || !settings.helperDrafts || model.family != Family.QWEN) return null
+        if (model.sizeBytes < 2_000_000_000L) return null
+        return models.find(HELPER_FILE)?.takeIf { it.file != model.file }
+    }
+
     fun configFor(model: LocalModel): LoadConfig {
         val low = lowMemoryFor(model)
         val drafts = settings.draftsFor(model.file.name, low && settings.streaming && model.catalog?.mtp == true)
@@ -166,6 +178,7 @@ class App : Application() {
             // big Gemma models: a compact sliding-window cache (much less memory, no drafting)
             swaFull = !low,
             pager = settings.streaming,
+            helperPath = helperFor(model, low)?.file?.absolutePath ?: "",
         )
     }
 
@@ -340,6 +353,9 @@ class App : Application() {
     }
 
     companion object {
+        /** Qwen3.5 0.8B: the helper that guesses ahead for the bigger Qwen3.5 models. */
+        const val HELPER_FILE = "Qwen3.5-0.8B-Q4_K_M.gguf"
+
         fun of(context: Context): App = context.applicationContext as App
     }
 }

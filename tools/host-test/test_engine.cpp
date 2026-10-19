@@ -588,8 +588,11 @@ static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t
     return bad;
 }
 
-static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0) {
-    std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp);
+// helper: a helper model's file, given to a model streamed by the pager (every layer, 1 MB)
+static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0,
+                      const std::string & helper = "") {
+    std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f%s)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp,
+                helper.empty() ? "" : ", helper, streamed");
     oa::LoadParams lp;
     lp.n_ctx = 1024;
     lp.n_threads = 2;
@@ -597,8 +600,15 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
     lp.n_ubatch = 32;
     lp.spec_n_max = n_max;
     lp.spec_ngram = ngram;
-    oa::Engine e, ref;
     oa::LoadParams lr = lp;
+    if (!helper.empty()) {
+        lp.low_memory = true;
+        lp.mem_budget_mb = 1;
+        lp.helper_path = helper;
+        lr.low_memory = true;
+        lr.pager = false;
+    }
+    oa::Engine e, ref;
     lr.spec_n_max = 0;
     lr.spec_ngram = false;
     std::string err;
@@ -612,6 +622,7 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
                 info.memory.c_str(), e.compute_bytes() / 1e6);
     CHECK(!info.speculative.empty(), "%s: drafting was not set up", label);
     CHECK(ref.info().speculative.empty(), "%s: the reference must not draft", label);
+    if (!helper.empty()) CHECK(info.helper && info.streaming, "%s: the helper should be drafting for a streamed model", label);
 
     oa::ChatRequest req;
     req.now_ms = 1760000000000LL;
@@ -630,7 +641,7 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
                     r.stats.n_accepted, r.stats.n_reused, r.stats.used_snapshot, r.error.c_str());
         CHECK(r.ok, "%s turn %d failed: %s", label, turn, r.error.c_str());
         CHECK(r.stats.n_steps + r.stats.n_accepted + 1 >= r.stats.n_generated, "%s: tokens written without a step", label);
-        if (n_max > 0 && !ngram) CHECK(r.stats.n_drafted > 0, "%s turn %d: nothing was drafted", label, turn);
+        if ((n_max > 0 && !ngram) || !helper.empty()) CHECK(r.stats.n_drafted > 0, "%s turn %d: nothing was drafted", label, turn);
         if (temp == 0.0) {
             int ties = 0;
             const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties);
@@ -1060,7 +1071,7 @@ static void profile_writing(const std::string & path, const char * label, bool l
 // A model bigger than the memory it is given (CI runs this in a 3 GB memory cgroup with Qwen3.5
 // 9B, the way an 8 GB phone with other apps open has it): with the pager or without, with or
 // without drafting. It must answer right either way; the speeds say what the pager is worth.
-static void test_streaming(const std::string & path, const char * label, bool pager, int drafts) {
+static void test_streaming(const std::string & path, const char * label, bool pager, int drafts, const std::string & helper = "") {
     if (!exists(path)) {
         std::printf("== %s: %s not there, skipped\n", label, path.c_str());
         return;
@@ -1075,6 +1086,7 @@ static void test_streaming(const std::string & path, const char * label, bool pa
     lp.pager = pager;
     lp.spec_n_max = drafts;
     lp.spec_ngram = true;
+    lp.helper_path = helper;
     oa::Engine e;
     std::string err;
     const auto t0 = std::chrono::steady_clock::now();
@@ -1138,9 +1150,9 @@ int main(int argc, char ** argv) {
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }
-    // test_engine <tiny dir> <llama.cpp dir> <real dir> --stream <model> <label> <pager 0/1> <drafts>
+    // test_engine <tiny dir> <llama.cpp dir> <real dir> --stream <model> <label> <pager 0/1> <drafts> [helper]
     if (argc >= 9 && std::string(argv[4]) == "--stream") {
-        test_streaming(argv[5], argv[6], std::atoi(argv[7]) != 0, std::atoi(argv[8]));
+        test_streaming(argv[5], argv[6], std::atoi(argv[7]) != 0, std::atoi(argv[8]), argc >= 10 ? argv[9] : "");
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }
@@ -1214,6 +1226,11 @@ int main(int argc, char ** argv) {
     test_spec(dir + "/llama-dense.gguf", "ngram only", 0, true);
     const std::string mtp = dir + "/qwen35-mtp.gguf";
     if (!exists(mtp)) CHECK(make_mtp_model(dir + "/qwen35-dense.gguf", mtp), "could not make the MTP test model");
+    // a helper model drafting while the model streams: the same file as its own helper, so its
+    // greedy guesses are the model's own and nearly all are kept; a hybrid and plain attention
+    test_spec(dir + "/qwen35-dense.gguf", "helper", 0, false, 0.0, dir + "/qwen35-dense.gguf");
+    test_spec(dir + "/qwen35-dense.gguf", "helper and ngram, sampled", 0, true, 0.8, dir + "/qwen35-dense.gguf");
+    if (exists(deep)) test_spec(deep, "helper", 0, false, 0.0, deep);
     if (exists(mtp)) {
         test_spec(mtp, "mtp", 2, false);
         test_spec(mtp, "mtp", 3, false, 0.8);

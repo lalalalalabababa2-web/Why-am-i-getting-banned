@@ -73,6 +73,11 @@ struct LoadParams {
     // whose memory can be wound back token by token).
     bool spec_ngram    = true;
     std::string drafter_path;  // Gemma 4 "mtp-*.gguf" assistant, or empty
+    // A small model of the same family with its own memory (Qwen3.5 0.8B for a Qwen3.5 9B) that
+    // guesses the next few tokens while part of the model streams from storage, or empty. Used
+    // only then: checking its guesses costs the model one read of what streams, like one token.
+    std::string helper_path;
+    int  helper_n_max  = 4;    // most tokens it guesses per step
 
     // The multimodal projector for pictures and audio, or empty. Loaded the first time a
     // message holds a picture or a sound, not before.
@@ -176,6 +181,7 @@ struct ModelInfo {
     bool        has_mtp           = false;  // the file carries an MTP head (loaded only when drafting with it)
     bool        vision            = false;
     bool        audio             = false;
+    bool        helper            = false;  // a helper model drafts while the model streams
     bool        pager             = false;  // low memory, with the pager looking after the model's pages
     bool        streaming         = false;  // part of the model is read from storage on every step
     uint64_t    resident_bytes    = 0;
@@ -316,6 +322,13 @@ private:
     bool streaming() const { return pager_ && pager_->active(); }
     void free_spec();
 
+    // the helper drafter (LoadParams::helper_path)
+    bool helper_load(const LoadParams & params, uint32_t n_ctx, int n_threads);
+    void helper_free();
+    bool helper_feed(const token * toks, size_t n);
+    bool helper_sync(const std::vector<token> & want, size_t snap_at);
+    void helper_draft(token last, int n_max, std::vector<token> & out);
+
     llama_model *          model_ = nullptr;
     llama_context *        ctx_   = nullptr;
     const llama_vocab *    vocab_ = nullptr;
@@ -330,6 +343,19 @@ private:
     int                    spec_n_max_ = 0;        // drafter tokens per step
     int                    spec_n_out_ = 1;        // outputs per step the context was made for
     bool                   ngram_      = false;
+
+    // the helper drafter: its memory holds the conversation's text (seq 0); it guesses on a
+    // copy of that (seq 1), since a hybrid model's memory cannot be wound back token by token
+    llama_model *          helper_model_ = nullptr;
+    llama_context *        helper_ctx_   = nullptr;
+    std::vector<token>     helper_cache_;          // what seq 0 holds
+    bool                   helper_rm_    = false;  // its memory can drop any tail (attention only)
+    int                    helper_n_max_ = 0;
+    struct HelperSnap {
+        std::vector<token>   tokens;
+        std::vector<uint8_t> data;
+    };
+    std::vector<HelperSnap> helper_snaps_;
 
     // pictures and sound
     mtmd_context *         mtmd_ = nullptr;

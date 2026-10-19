@@ -12,6 +12,7 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <sched.h>
@@ -221,6 +222,7 @@ void Engine::unload() {
     // the pager reads and hands back pages of the model's mapping: stop it before the mapping goes
     pager_.reset();
     attach_pool(nullptr);
+    helper_free();
     free_spec();
     release_media();
     if (tmpls_) {
@@ -332,9 +334,12 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     const bool want_ngram = params.spec_ngram && (!recurrent || small_hybrid);
     const int  ngram_n_max = recurrent ? kRsNgram : 31;
     const bool want_head = file_mtp || use_drafter;
+    // a helper model guesses only while part of the model streams from storage (see LoadParams)
+    const int  helper_n = !params.helper_path.empty() && params.low_memory && !file_mtp
+                              ? std::clamp(params.helper_n_max, 0, 8) : 0;
     // Room for the logits of one token plus a draft. llama would otherwise reserve logits for
     // every token of a prompt step, hundreds of MB for vocabularies of 250k words, never used.
-    spec_n_out_ = 1 + std::max(want_head ? n_draft : 0, want_ngram ? ngram_n_max : 0);
+    spec_n_out_ = 1 + std::max({want_head ? n_draft : 0, want_ngram ? ngram_n_max : 0, helper_n});
 
     auto cp = llama_context_default_params();
     cp.n_ctx = (uint32_t) std::max(512, params.n_ctx);
@@ -346,7 +351,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.n_outputs_max = (uint32_t) spec_n_out_;
     cp.n_outputs_max_per_seq = (uint32_t) spec_n_out_;
     // a recurrent state can be wound back only as far as it keeps copies: one per draft token
-    cp.n_rs_seq = recurrent ? (uint32_t) std::max(want_head ? n_draft : 0, want_ngram ? kRsNgram : 0) : 0;
+    cp.n_rs_seq = recurrent ? (uint32_t) std::max({want_head ? n_draft : 0, want_ngram ? kRsNgram : 0, helper_n}) : 0;
     // Sliding-window models keep every position, so any tail of the memory can be dropped and the
     // conversation never has to be read again from the start. Costs memory only for those models.
     cp.swa_full = params.swa_full;
@@ -405,6 +410,14 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     can_rm_part_ = rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART;
     const bool can_draft = rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
                            (rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && llama_n_rs_seq(ctx_) > 0);
+
+    // the helper loads before the pager plans, so the memory it takes is counted
+    if (helper_n > 0 && can_draft && will_stream) {
+        if (helper_load(params, llama_n_ctx(ctx_), cp.n_threads)) {
+            helper_n_max_ = can_rm_part_ ? helper_n : std::min(helper_n, (int) llama_n_rs_seq(ctx_));
+            if (pool_cur_) llama_attach_threadpool(helper_ctx_, pool_cur_, pool_cur_);
+        }
+    }
 
     // ---- speculative decoding ----
     if ((n_draft > 0 || want_ngram) && can_draft) {
@@ -543,6 +556,8 @@ ModelInfo Engine::info() const {
     }
     mi.memory = can_rm_part_ ? "attention" : "snapshots";
     mi.speculative = spec_kind_;
+    if (helper_ctx_) mi.speculative += mi.speculative.empty() ? "helper" : "+helper";
+    mi.helper = helper_ctx_ != nullptr;
     mi.spec_n_max = spec_n_max_;
     mi.has_mtp = has_mtp_;
     mi.vision = mm_vision_;
@@ -597,6 +612,7 @@ void Engine::attach_pool(::ggml_threadpool * pool) {
     if (pool == pool_cur_) return;
     if (ctx_) llama_attach_threadpool(ctx_, pool, pool);
     if (ctx_dft_) llama_attach_threadpool(ctx_dft_, pool, pool);
+    if (helper_ctx_) llama_attach_threadpool(helper_ctx_, pool, pool);
     pool_cur_ = pool;
 }
 
@@ -665,6 +681,7 @@ void Engine::apply_threads() {
     if (want != cur_threads_) {
         llama_set_n_threads(ctx_, want, want);
         if (ctx_dft_) llama_set_n_threads(ctx_dft_, want, want);
+        if (helper_ctx_) llama_set_n_threads(helper_ctx_, want, want);
         cur_threads_ = want;
     }
 }
@@ -735,6 +752,170 @@ bool Engine::restore_snapshot(const Snapshot & s) {
     cache_ = s.tokens;
     cache_extra_cells_ = s.extra_cells;
     return true;
+}
+
+// ---------------------------------------------------------------- the helper drafter
+
+bool Engine::helper_load(const LoadParams & params, uint32_t n_ctx, int n_threads) {
+    auto mp = llama_model_default_params();
+    mp.n_gpu_layers = 0;
+    mp.load_mode = LLAMA_LOAD_MODE_MMAP;
+    mp.use_extra_bufts = true;  // small: in memory, in the layout computed with fastest
+    helper_model_ = llama_model_load_from_file(params.helper_path.c_str(), mp);
+    if (!helper_model_) return false;
+    if (!common_speculative_are_compatible(model_, helper_model_)) {
+        helper_free();
+        return false;
+    }
+    auto cp = llama_context_default_params();
+    cp.n_ctx = n_ctx;
+    cp.n_batch = llama_n_batch(ctx_);
+    cp.n_ubatch = llama_n_ubatch(ctx_);
+    cp.n_seq_max = 2;  // the conversation, and a copy of it to guess on
+    cp.n_threads = cp.n_threads_batch = std::max(1, n_threads);
+    cp.n_outputs_max = 2;  // one guess at a time, per sequence
+    cp.n_outputs_max_per_seq = 1;
+    cp.abort_callback = abort_cb;
+    cp.abort_callback_data = &stop_;
+    cp.no_perf = true;
+    if (params.kv_q8) {
+        cp.type_k = GGML_TYPE_Q8_0;
+        cp.type_v = GGML_TYPE_Q8_0;
+        cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    }
+    try {
+        helper_ctx_ = llama_init_from_model(helper_model_, cp);
+    } catch (...) {
+        helper_ctx_ = nullptr;
+    }
+    if (!helper_ctx_) {
+        helper_free();
+        return false;
+    }
+    helper_rm_ = common_context_can_seq_rm(helper_ctx_) == COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+    helper_cache_.clear();
+    helper_snaps_.clear();
+    return true;
+}
+
+void Engine::helper_free() {
+    if (helper_ctx_) {
+        llama_free(helper_ctx_);
+        helper_ctx_ = nullptr;
+    }
+    if (helper_model_) {
+        llama_model_free(helper_model_);
+        helper_model_ = nullptr;
+    }
+    helper_cache_.clear();
+    helper_snaps_.clear();
+    helper_n_max_ = 0;
+}
+
+// Appends tokens to the helper's conversation (seq 0). On failure its memory is cleared, and the
+// next sync reads the conversation again.
+bool Engine::helper_feed(const token * toks, size_t n) {
+    if (n == 0) return true;
+    const int n_batch = (int) llama_n_batch(helper_ctx_);
+    common_batch batch(helper_ctx_);
+    for (size_t i = 0; i < n;) {
+        const size_t m = std::min<size_t>(n_batch, n - i);
+        batch.clear();
+        for (size_t j = 0; j < m; j++) batch.add(toks[i + j], (llama_pos) (helper_cache_.size() + j), 0, false);
+        if (llama_process(helper_ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
+            llama_memory_seq_rm(llama_get_memory(helper_ctx_), 0, -1, -1);
+            helper_cache_.clear();
+            return false;
+        }
+        helper_cache_.insert(helper_cache_.end(), toks + i, toks + i + m);
+        i += m;
+    }
+    return true;
+}
+
+// Makes the helper's conversation the text of `want`. Like the model's own memory: whatever
+// matches stays, a hybrid helper goes back to a snapshot where the reply started (templates
+// rewrite earlier replies), and only the rest is read.
+bool Engine::helper_sync(const std::vector<token> & want, size_t snap_at) {
+    if (!helper_ctx_) return false;
+    if (want.size() + 8 >= llama_n_ctx(helper_ctx_)) return false;
+    auto * mem = llama_get_memory(helper_ctx_);
+    llama_memory_seq_rm(mem, 1, -1, -1);
+    size_t keep = common_prefix(helper_cache_, want);
+    if (keep < helper_cache_.size()) {
+        bool cut = helper_rm_ && llama_memory_seq_rm(mem, 0, (llama_pos) keep, -1);
+        if (cut) {
+            helper_cache_.resize(keep);
+        } else {
+            const HelperSnap * best = nullptr;
+            for (const auto & sn : helper_snaps_) {
+                if (sn.tokens.size() <= want.size() && (!best || sn.tokens.size() > best->tokens.size()) &&
+                    std::equal(sn.tokens.begin(), sn.tokens.end(), want.begin())) {
+                    best = &sn;
+                }
+            }
+            llama_memory_seq_rm(mem, 0, -1, -1);
+            helper_cache_.clear();
+            if (best && llama_state_seq_set_data(helper_ctx_, best->data.data(), best->data.size(), 0) > 0) {
+                helper_cache_ = best->tokens;
+            } else {
+                llama_memory_seq_rm(mem, 0, -1, -1);
+            }
+        }
+        keep = helper_cache_.size();
+    }
+    if (!helper_rm_ && snap_at > keep && snap_at < want.size()) {
+        if (!helper_feed(want.data() + keep, snap_at - keep)) return false;
+        HelperSnap sn;
+        try {
+            sn.data.resize(llama_state_seq_get_size(helper_ctx_, 0));
+            sn.data.resize(llama_state_seq_get_data(helper_ctx_, sn.data.data(), sn.data.size(), 0));
+            sn.tokens = helper_cache_;
+            if (!sn.data.empty()) {
+                helper_snaps_.erase(std::remove_if(helper_snaps_.begin(), helper_snaps_.end(),
+                                                   [&](const HelperSnap & o) { return o.tokens == sn.tokens; }),
+                                    helper_snaps_.end());
+                while (helper_snaps_.size() >= kMaxSnapshots) helper_snaps_.erase(helper_snaps_.begin());
+                helper_snaps_.push_back(std::move(sn));
+            }
+        } catch (const std::bad_alloc &) {
+            // no room for a snapshot: the next turn reads more
+        }
+        keep = helper_cache_.size();
+    }
+    return helper_feed(want.data() + keep, want.size() - keep);
+}
+
+// Up to n_max guesses after `last`, each the helper's most likely next token, on a copy of its
+// conversation so its own stays as it was. Stops at the first guess it is unsure of.
+void Engine::helper_draft(token last, int n_max, std::vector<token> & out) {
+    out.clear();
+    if (!helper_ctx_ || n_max <= 0) return;
+    auto * mem = llama_get_memory(helper_ctx_);
+    llama_memory_seq_rm(mem, 1, -1, -1);
+    llama_memory_seq_cp(mem, 0, 1, -1, -1);
+    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(helper_model_));
+    common_batch batch(helper_ctx_);
+    token cur = last;
+    for (int i = 0; i < n_max; i++) {
+        batch.clear();
+        batch.add(cur, (llama_pos) (helper_cache_.size() + i), 1, true);
+        if (llama_process(helper_ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) break;
+        const float * logits = llama_get_logits_ith(helper_ctx_, -1);
+        if (!logits) break;
+        int best = 0;
+        for (int k = 1; k < n_vocab; k++) {
+            if (logits[k] > logits[best]) best = k;
+        }
+        // how sure: the top token's share after softmax
+        double sum = 0;
+        for (int k = 0; k < n_vocab; k++) sum += std::exp((double) (logits[k] - logits[best]));
+        out.push_back(best);
+        if (1.0 / sum < 0.3) break;  // unlikely to be kept; checking more would cost compute for nothing
+        cur = best;
+        if (stop_.load()) break;
+    }
+    llama_memory_seq_rm(mem, 1, -1, -1);
 }
 
 bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t to, bool logits_last,
@@ -1416,7 +1597,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     // there lets the next turn skip straight to the new part even when the template rewrites
     // this reply (most thinking models drop old thinking from the history).
     size_t snapshot_at = 0;
-    if (!can_rm_part_) {
+    if (!can_rm_part_ || (helper_ctx_ && !helper_rm_)) {
         try {
             auto plain = common_chat_templates_apply(tmpls_, make_inputs(drop, false));
             Prompt pp;
@@ -1470,6 +1651,17 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     if (spec_on) {
         text_only(cache_, spec_prompt);
         common_speculative_begin(spec_, 0, spec_prompt);
+    }
+    // the helper guesses only while part of the model is read from storage on every step
+    bool helper_on = helper_ctx_ && helper_n_max_ > 0 && streaming() && req.spec_n_max != 0;
+    if (helper_on) {
+        std::vector<token> text;
+        text_only(cache_, text);
+        size_t snap_text = 0;  // the reply's start, counted in text tokens
+        for (size_t i = 0; i < std::min(snapshot_at, cache_.size()); i++) snap_text += cache_[i] >= 0;
+        const auto t_h = std::chrono::steady_clock::now();
+        helper_on = helper_sync(text, snap_text);
+        res.stats.t_sync_ms += ms_since(t_h);
     }
 
     std::string raw;
@@ -1545,6 +1737,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         // propose the next few tokens
         draft.clear();
         draft_q.clear();
+        bool from_helper = false;
         if (spec_on) {
             int cap = spec_cap;
             cap = std::min(cap, n_ctx - cells_used() - 3);
@@ -1581,6 +1774,18 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 // the drafter wrote its guesses into its own memory; the check below starts clean
                 trim_draft((size_t) pos);
             }
+        }
+        if (draft.empty() && helper_on) {
+            int cap = helper_n_max_;
+            cap = std::min(cap, n_ctx - cells_used() - 3);
+            cap = std::min(cap, max_tokens - n_gen - 1);
+            cap = std::min(cap, spec_n_out_ - 1);
+            if (rs_limited) cap = std::min(cap, (int) llama_n_rs_seq(ctx_));
+            const auto t_d = std::chrono::steady_clock::now();
+            if (cap > 0) helper_draft(last, cap, draft);
+            res.stats.t_draft_ms += ms_since(t_d);
+            draft_q.clear();  // its guesses are greedy: checked by sampling and matching
+            from_helper = !draft.empty();
         }
 
         // the model reads the last token and the draft in one step
@@ -1637,7 +1842,16 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         if (spec_on) {
             spec_prompt.push_back(last);
             spec_prompt.insert(spec_prompt.end(), draft.begin(), draft.begin() + accepted);
-            common_speculative_accept(spec_, 0, (uint16_t) accepted);
+            // guesses from the helper were not common_speculative's own
+            common_speculative_accept(spec_, 0, from_helper ? 0 : (uint16_t) accepted);
+        }
+        if (helper_on) {
+            // the helper's conversation gets what was written, whoever guessed it
+            const auto t_h = std::chrono::steady_clock::now();
+            std::vector<token> written(1, last);
+            written.insert(written.end(), draft.begin(), draft.begin() + accepted);
+            helper_on = helper_feed(written.data(), written.size());
+            res.stats.t_sync_ms += ms_since(t_h);
         }
         res.stats.n_drafted += (int) draft.size();
         res.stats.n_accepted += (int) accepted;
