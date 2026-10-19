@@ -1057,6 +1057,68 @@ static void profile_writing(const std::string & path, const char * label, bool l
     llama_model_free(m);
 }
 
+// A model bigger than the memory it is given (CI runs this in a 3 GB memory cgroup with Qwen3.5
+// 9B, the way an 8 GB phone with other apps open has it): with the pager or without, with or
+// without drafting. It must answer right either way; the speeds say what the pager is worth.
+static void test_streaming(const std::string & path, const char * label, bool pager, int drafts) {
+    if (!exists(path)) {
+        std::printf("== %s: %s not there, skipped\n", label, path.c_str());
+        return;
+    }
+    std::printf("== %s: %s\n", label, path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 2048;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.low_memory = true;
+    lp.kv_q8 = true;
+    lp.swa_full = false;
+    lp.pager = pager;
+    lp.spec_n_max = drafts;
+    lp.spec_ngram = true;
+    oa::Engine e;
+    std::string err;
+    const auto t0 = std::chrono::steady_clock::now();
+    float last_progress = 0;
+    if (!e.load(path, lp, err, [&](float p) { last_progress = p; return true; })) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    const double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const auto info = e.info();
+    std::printf("  %s, %.2f GB, loaded in %.1fs, pager=%d streaming=%d: %.2f GB kept, %.2f GB streamed per step, "
+                "storage %.0f MB/s, drafting=%s\n", info.desc.c_str(), info.size_bytes / 1e9, load_s, info.pager,
+                info.streaming, info.resident_bytes / 1e9, info.streamed_bytes / 1e9, info.read_mbps,
+                info.speculative.c_str());
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = false;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 24;
+    req.messages.push_back({"user", "What is the capital of France? Answer with one word.", ""});
+    oa::ChatCallbacks cb;
+    auto r = e.chat(req, cb);
+    std::printf("  reply ok=%d [%s] err=%s first word %.1fs\n", r.ok, r.content.c_str(), r.error.c_str(), r.stats.t_first_ms / 1000.0);
+    CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
+    CHECK(lower(r.content).find("paris") != std::string::npos, "%s: not a sensible answer: %s", label, r.content.c_str());
+
+    oa::ChatRequest story = req;
+    story.messages.clear();
+    story.messages.push_back({"user", kStoryPrompt, ""});
+    story.sampling.max_tokens = 64;
+    e.reset_cache();
+    auto rs = e.chat(story, cb);
+    const double tps = rs.stats.n_generated > 1 ? (rs.stats.n_generated - 1) * 1000.0 / std::max(1.0, rs.stats.t_gen_ms) : 0.0;
+    std::printf("  story ok=%d: %d tokens in %d steps (%d of %d drafts kept), first word %.1fs, %.2f GB read from storage, "
+                "a step through the model %.0f ms, storage page reads %ld\n", rs.ok, rs.stats.n_generated, rs.stats.n_steps,
+                rs.stats.n_accepted, rs.stats.n_drafted, rs.stats.t_first_ms / 1000.0, rs.stats.read_gb, rs.stats.t_pass_ms,
+                rs.stats.n_majflt);
+    std::printf("SPEED: %s on %d threads: %.2f tokens/s writing, first word after %.1fs, loaded in %.1fs\n", label,
+                lp.n_threads, tps, rs.stats.t_first_ms / 1000.0, load_s);
+    CHECK(rs.ok && rs.stats.n_generated > 8, "%s: the story failed: %s", label, rs.error.c_str());
+}
+
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <models dir> <llama.cpp dir>\n", argv[0]);
@@ -1073,6 +1135,12 @@ int main(int argc, char ** argv) {
     // one model on its own (CI runs Bonsai 27B again under a memory limit, the way a phone has it)
     if (argc >= 6 && std::string(argv[4]) == "--one") {
         test_bonsai(argv[5], "Bonsai 27B Q1_0, low memory", 2048, true);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+    // test_engine <tiny dir> <llama.cpp dir> <real dir> --stream <model> <label> <pager 0/1> <drafts>
+    if (argc >= 9 && std::string(argv[4]) == "--stream") {
+        test_streaming(argv[5], argv[6], std::atoi(argv[7]) != 0, std::atoi(argv[8]));
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }

@@ -123,6 +123,57 @@ jobs:
         if: always()
         run: python3 ci/real_report.py real.log ${{ matrix.cpu }}
 
+  # A model bigger than the memory it gets, the way an 8 GB phone with other apps open has it:
+  # Qwen3.5 9B (4.7 GB) in a 3 GB memory cgroup on the ARM runner, read cold from storage each
+  # time. Without the pager (the kernel decides what stays), with it, and with it and the MTP
+  # head drafting (checking guesses costs the same read of the model as writing one token).
+  streaming:
+    name: Models bigger than memory (arm64, 3 GB)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Download the models
+        run: |
+          mkdir -p real-models && cd real-models
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
+          get unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q3_K_M.gguf
+          get unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-UD-IQ3_XXS.gguf
+          df -h . ; free -g ; nproc
+
+      - name: Build
+        env:
+          REAL_MODELS: ${{ github.workspace }}/real-models
+          REAL_BUILD_ONLY: '1'
+        run: tools/host-test/real.sh
+
+      - name: Run in 3 GB
+        run: |
+          OUT=build/host-test
+          run() {
+            echo "== $2 (memory limited to 3 GB, cold)" | tee -a real.log
+            # pages already cached count against whoever read them first, so start cold
+            sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+            sudo systemd-run --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
+              timeout 1200 "$OUT/test_engine_real" "$OUT/models" third_party/llama.cpp real-models --stream "real-models/$1" "$2" "$3" "$4" 2>&1 \
+              | grep -v '^graph_compute\|^process_ubatch' | tee -a real.log || echo "  (stopped or failed: $?)" | tee -a real.log
+          }
+          run Qwen3.5-9B-Q3_K_M.gguf "Qwen3.5 9B Q3_K_M, no pager" 0 0
+          run Qwen3.5-9B-Q3_K_M.gguf "Qwen3.5 9B Q3_K_M, pager" 1 0
+          run Qwen3.5-9B-UD-IQ3_XXS.gguf "Qwen3.5 9B IQ3_XXS, pager" 1 0
+          run Qwen3.5-9B-UD-IQ3_XXS.gguf "Qwen3.5 9B IQ3_XXS, pager, MTP drafting 3" 1 3
+          ! grep -q "FAIL" real.log
+
+      - name: Results
+        if: always()
+        run: python3 ci/real_report.py real.log "arm64 streaming"
+
   emulator:
     name: On-device tests (Android 14 emulator)
     needs: engine-tests

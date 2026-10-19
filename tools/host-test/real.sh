@@ -27,4 +27,6 @@ g++ -std=c++17 -O2 -DNDEBUG \
   -L "$OUT/llama/bin" -lllama-common -lmtmd -lllama -lggml -lggml-base -lpthread \
   -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/test_engine_real"
 
+# REAL_BUILD_ONLY=1: only build (CI's streaming job runs single models under a memory limit)
+[ -n "${REAL_BUILD_ONLY:-}" ] && exit 0
 "$OUT/test_engine_real" "$OUT/models" "$SRC" "$REAL_MODELS" --real-only
