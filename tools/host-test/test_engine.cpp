@@ -99,8 +99,11 @@ static void generate(oa::Engine & e, int n) {
     }
 }
 
-static void test_cache(const std::string & path, bool kv_q8 = false, bool low_memory = false) {
-    std::printf("== cache: %s%s%s\n", path.c_str(), kv_q8 ? " (kv q8)" : "", low_memory ? " (low memory)" : "");
+// budget_mb > 0: low memory with the pager given that little memory, so every layer is streamed
+// from the file and handed back again on every step; the answers must not change.
+static void test_cache(const std::string & path, bool kv_q8 = false, bool low_memory = false, int budget_mb = 0) {
+    std::printf("== cache: %s%s%s%s\n", path.c_str(), kv_q8 ? " (kv q8)" : "", low_memory ? " (low memory)" : "",
+                budget_mb > 0 ? " (streamed by the pager)" : "");
     oa::LoadParams lp;
     lp.n_ctx = 1024;
     lp.n_threads = 2;
@@ -108,17 +111,25 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     lp.n_ubatch = 32;
     lp.kv_q8 = kv_q8;
     lp.low_memory = low_memory;
+    oa::LoadParams lp_ref = lp;
+    lp_ref.pager = false;
+    lp.mem_budget_mb = budget_mb;
 
     oa::Engine e;
     Ref ref;
     std::string err;
-    if (!e.load(path, lp, err) || !ref.e.load(path, lp, err)) {
+    if (!e.load(path, lp, err) || !ref.e.load(path, lp_ref, err)) {
         std::fprintf(stderr, "  load failed: %s\n", err.c_str());
         g_failures++;
         return;
     }
     auto info = e.info();
-    std::printf("  arch=%s memory=%s\n", info.arch.c_str(), info.memory.c_str());
+    std::printf("  arch=%s memory=%s pager=%d streaming=%d resident=%llu streamed=%llu\n", info.arch.c_str(),
+                info.memory.c_str(), info.pager, info.streaming, (unsigned long long) info.resident_bytes,
+                (unsigned long long) info.streamed_bytes);
+    if (budget_mb > 0) {
+        CHECK(info.pager && info.streaming, "the pager should stream this model with %d MB", budget_mb);
+    }
 
     std::mt19937 rng(1234);
     const int V = 100;  // the test models have tiny vocabularies; stay inside them
@@ -141,6 +152,8 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     CHECK(st.n_reused == (int) p2.size() - 40, "turn2 should reuse all of memory (reused %d)", st.n_reused);
     compare("turn 2 (append)", e, ref, p2);
     generate(e, 10);
+    // memory got tight in the middle of a conversation: the pager plans again, answers stay the same
+    e.trim_memory();
 
     // Turn 3: the template rewrote the last reply (e.g. dropped its thinking), so the prompt
     // diverges a few tokens after where that reply started.
@@ -195,6 +208,18 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     CHECK(e.sync_prompt(p6, 0, err, nullptr, &st), "after-stop sync: %s", err.c_str());
     std::printf("    after stop reused=%d evaluated=%d\n", st.n_reused, st.n_evaluated);
     compare("after a stopped prompt", e, ref, p6);
+    if (budget_mb > 0) {
+        const auto ps = e.pager_stats();
+        std::printf("    pager: read %.1f MB, %d replans, resident present %.0f%%, a step through the model %.1f ms\n",
+                    ps.bytes_read / 1e6, ps.n_replans, ps.resident_present * 100, ps.pass_ms);
+        CHECK(ps.bytes_read >= info.streamed_bytes, "the pager should have read the streamed layers (%llu bytes)",
+              (unsigned long long) ps.bytes_read);
+        // with layers enough to hand some back, they are read again step after step
+        if (path.find("deep") != std::string::npos) {
+            CHECK(ps.bytes_read > 3 * info.streamed_bytes, "the pager should read streamed layers again on every step "
+                  "(%llu bytes for %llu streamed)", (unsigned long long) ps.bytes_read, (unsigned long long) info.streamed_bytes);
+        }
+    }
 }
 
 static void test_bench(const std::string & path) {
@@ -465,6 +490,26 @@ static void extend_layer_arrays(gguf_context * g, uint32_t n) {
         std::memcpy(v.data(), gguf_get_arr_data(g, id), esz * n);
         gguf_set_arr_data(g, key.c_str(), t, v.data(), n + 1);
     }
+}
+
+// The same kind of random model with more layers, so the pager has layers to hand back and read
+// again on every step (the tiny models have two, which its read-ahead covers whole).
+static bool make_deep_model(const std::string & src, const std::string & dst, uint32_t layers) {
+    gguf_init_params gp = {true, nullptr};
+    gguf_context * g = gguf_init_from_file(src.c_str(), gp);
+    if (!g) return false;
+    const std::string arch = gguf_get_val_str(g, gguf_find_key(g, "general.architecture"));
+    const std::string kb = arch + ".block_count";
+    for (uint32_t n = gguf_get_val_u32(g, gguf_find_key(g, kb.c_str())); n < layers; n++) extend_layer_arrays(g, n);
+    gguf_set_val_u32(g, kb.c_str(), layers);
+    auto mp = llama_model_default_params();
+    llama_model * m = llama_model_init_from_user(g, fill_random, (void *) (uintptr_t) 7, mp);
+    if (m) {
+        llama_model_save_to_file(m, dst.c_str());
+        llama_model_free(m);
+    }
+    gguf_free(g);
+    return m != nullptr;
 }
 
 static bool make_mtp_model(const std::string & src, const std::string & dst) {
@@ -1062,6 +1107,14 @@ int main(int argc, char ** argv) {
 
     test_cache(dir + "/qwen35-dense.gguf", true, false);
     test_cache(dir + "/llama-dense.gguf", true, true);
+    // the pager streaming every layer: plain attention (with enough layers that some are handed
+    // back and read again on every step), a hybrid, sliding window, experts
+    const std::string deep = dir + "/llama-deep.gguf";
+    if (!exists(deep)) CHECK(make_deep_model(dir + "/llama-dense.gguf", deep, 10), "could not make the deep test model");
+    if (exists(deep)) test_cache(deep, false, true, 1);
+    test_cache(dir + "/qwen35-dense.gguf", false, true, 1);
+    test_cache(dir + "/gemma3-dense.gguf", false, true, 1);
+    test_cache(dir + "/mistral3-moe.gguf", false, true, 1);
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");

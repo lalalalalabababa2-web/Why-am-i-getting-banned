@@ -218,6 +218,8 @@ void Engine::release_media() {
 }
 
 void Engine::unload() {
+    // the pager reads and hands back pages of the model's mapping: stop it before the mapping goes
+    pager_.reset();
     attach_pool(nullptr);
     free_spec();
     release_media();
@@ -280,12 +282,23 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     const bool file_mtp = n_draft > 0 && has_mtp_;
     const bool use_drafter = n_draft > 0 && !file_mtp && !params.drafter_path.empty();
 
+    // Low memory: the pager decides which layers stay in memory and streams the rest, so llama
+    // must not read the whole file while loading (it would push out what loaded first)
+    if (params.low_memory && params.use_mmap && params.pager) {
+        pager_ = std::make_unique<Pager>();
+        if (!pager_->open(path, file_mtp)) pager_.reset();
+    }
+
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
     mp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
     mp.use_extra_bufts = !params.low_memory;
     mp.load_mtp = file_mtp;
-    ProgressBridge bridge{&progress};
+    mp.no_populate = pager_ != nullptr;
+    // with the pager, loading is the quick part and reading the kept layers the slow one
+    std::function<bool(float)> load_progress_fn = progress;
+    if (pager_ && progress) load_progress_fn = [&](float p) { return progress(p * 0.1f); };
+    ProgressBridge bridge{&load_progress_fn};
     mp.progress_callback = load_progress;
     mp.progress_callback_user_data = &bridge;
 
@@ -297,6 +310,11 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     }
     vocab_ = llama_model_get_vocab(model_);
     is_swa_ = llama_model_n_swa(model_) > 0;
+    if (pager_ && !pager_->attach()) pager_.reset();
+    // whether part of the model will be read from storage on every step (decided for good once
+    // the contexts exist): drafting is then nearly free, since checking several guessed tokens
+    // costs the same one read of the model as writing one
+    const bool will_stream = pager_ && llama_model_size(model_) > budget_now();
     {
         char desc[256] = {0};
         llama_model_desc(model_, desc, sizeof desc);
@@ -309,7 +327,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // models can drop any number of rejected tokens, so their copies can be long; hybrids keep a copy
     // of their recurrent state per drafted token, so they copy 3 at a time, and only while those
     // copies stay small (models under 10B, not in low-memory mode).
-    const bool small_hybrid = recurrent && llama_model_n_params(model_) < 10000000000ULL && !params.low_memory;
+    const bool small_hybrid = recurrent && llama_model_n_params(model_) < 10000000000ULL && (!params.low_memory || will_stream);
     const bool want_ngram = params.spec_ngram && (!recurrent || small_hybrid);
     const int  ngram_n_max = recurrent ? kRsNgram : 31;
     const bool want_head = file_mtp || use_drafter;
@@ -333,6 +351,10 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.swa_full = params.swa_full;
     cp.abort_callback = abort_cb;
     cp.abort_callback_data = &stop_;
+    if (pager_) {
+        cp.cb_eval = Pager::eval_cb;
+        cp.cb_eval_user_data = pager_.get();
+    }
     cp.no_perf = true;
     if (params.kv_q8) {
         // A quantized V cache needs flash attention, which the CPU backend has.
@@ -348,6 +370,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         ctx_ = llama_init_from_model(model_, cp);
     }
     if (!ctx_) {
+        pager_.reset();
         llama_model_free(model_);
         model_ = nullptr;
         vocab_ = nullptr;
@@ -362,7 +385,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     place_this_thread(fast_cpus_, false);
     self_bg_ = false;
 
-    if (params.warmup) {
+    if (params.warmup && !pager_) {
         // One evaluation step reads every weight, so it is paid for here, while the progress bar
         // is showing, instead of on the first message.
         if (on_warmup) on_warmup();
@@ -389,6 +412,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         dcp.n_rs_seq = 0;
         dcp.ctx_other = ctx_;
         dcp.n_ctx = llama_n_ctx(ctx_);
+        // the drafter's steps do not move through the model's layers: no pager callback there
+        dcp.cb_eval = nullptr;
+        dcp.cb_eval_user_data = nullptr;
         if (file_mtp) {
             ctx_dft_ = llama_init_from_model(model_, dcp);
         } else if (use_drafter) {
@@ -474,7 +500,28 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cache_.clear();
     cache_extra_cells_ = 0;
     snapshots_.clear();
+
+    if (pager_) {
+        // Now that the contexts hold their memory: which layers stay, then read those in big
+        // pieces with a few threads (much faster than the page faults of a warm-up step).
+        pager_->plan(budget_now());
+        pager_->set_io_cpus(fast_cpus_);
+        if (on_warmup && !progress) on_warmup();
+        std::function<bool(float)> warm_progress;
+        if (progress) warm_progress = [&](float p) { return progress(0.1f + 0.9f * p); };
+        if (!pager_->warm(warm_progress, std::max(2, params.n_threads))) {
+            err = "Loading was cancelled.";
+            unload();
+            return false;
+        }
+        pager_->start();
+    }
     return true;
+}
+
+uint64_t Engine::budget_now() const {
+    if (params_.mem_budget_mb > 0) return (uint64_t) params_.mem_budget_mb * 1024 * 1024;
+    return Pager::memory_for_model();
 }
 
 ModelInfo Engine::info() const {
@@ -499,6 +546,14 @@ ModelInfo Engine::info() const {
     mi.has_mtp = has_mtp_;
     mi.vision = mm_vision_;
     mi.audio = mm_audio_;
+    if (pager_) {
+        const auto ps = pager_->stats();
+        mi.pager = true;
+        mi.streaming = ps.active;
+        mi.resident_bytes = ps.resident_bytes;
+        mi.streamed_bytes = ps.streamed_bytes;
+        mi.read_mbps = ps.read_mbps;
+    }
     return mi;
 }
 
@@ -689,7 +744,9 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
     common_batch batch(ctx_);
     // While someone watches the progress, steps are sized to take about a second each (a big model
     // reading a long message would otherwise sit at 0% for the whole first step of 256 tokens).
-    int step = progress ? std::min(n_batch, 32) : n_batch;
+    // Streaming from storage, every step reads the streamed layers once whatever its size, so
+    // steps are as big as they go from the start.
+    int step = progress && !streaming() ? std::min(n_batch, 32) : n_batch;
     for (size_t i = from; i < to;) {
         size_t n = std::min<size_t>(step, to - i);
         // 1- and 2-bit weights (Bonsai) are read four tokens at a time (third_party/patches); a step
@@ -730,7 +787,7 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
             err = "stopped";
             return false;
         }
-        if (progress && n >= 8) {
+        if (progress && n >= 8 && !streaming()) {
             const double ms = std::max(1.0, ms_since(t_step));
             // tokens in about a second and a half, a multiple of 4, at least 8
             int want = (int) (n * 1500.0 / ms);
@@ -1212,13 +1269,28 @@ static void text_only(const std::vector<token> & units, std::vector<token> & out
 
 ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     const long faults0 = major_faults();
+    const uint64_t read0 = pager_ ? pager_->stats().bytes_read : 0;
+    // what every way out of here reports: storage reads, and the pager's view of them
+    auto finish = [&](ChatResult & r) -> ChatResult & {
+        with_faults(r, faults0);
+        if (pager_) {
+            const auto ps = pager_->stats();
+            r.stats.streaming = ps.active;
+            r.stats.resident_gb = ps.resident_bytes / 1e9;
+            r.stats.streamed_gb = ps.streamed_bytes / 1e9;
+            r.stats.read_gb = (ps.bytes_read - read0) / 1e9;
+            r.stats.read_mbps = ps.read_mbps;
+            r.stats.t_pass_ms = ps.pass_ms;
+        }
+        return r;
+    };
     ChatResult res;
     stop_.store(false);
     const auto t_start = std::chrono::steady_clock::now();
     if (!ctx_ || !tmpls_) {
         res.error = "No model is loaded.";
         res.stats.stop_reason = "error";
-        return with_faults(res, faults0);
+        return finish(res);
     }
 
     const bool can_see = !params_.mmproj_path.empty() && mm_vision_;
@@ -1266,7 +1338,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     if (all.empty() || all.back().role != "user") {
         res.error = "The last message has to be yours.";
         res.stats.stop_reason = "error";
-        return with_faults(res, faults0);
+        return finish(res);
     }
 
     const size_t first = all[0].role == "system" ? 1 : 0;
@@ -1305,7 +1377,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         if (!ensure_mtmd(err)) {
             res.error = err;
             res.stats.stop_reason = "error";
-            return with_faults(res, faults0);
+            return finish(res);
         }
     }
     while (true) {
@@ -1314,12 +1386,12 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         } catch (const std::exception & e) {
             res.error = std::string("The model's chat template failed: ") + e.what();
             res.stats.stop_reason = "error";
-            return with_faults(res, faults0);
+            return finish(res);
         }
         if (!build_prompt(session->prompt().str(), media_of(drop), prompt, err)) {
             res.error = err;
             res.stats.stop_reason = "error";
-            return with_faults(res, faults0);
+            return finish(res);
         }
         const size_t remaining = all.size() - first - drop;
         const int cells = (int) prompt.units.size() + prompt.extra_cells;
@@ -1336,7 +1408,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         res.error = "This message is too long for the context size (" + std::to_string(prompt_cells) +
                     " tokens, the limit is " + std::to_string(n_ctx) + "). Raise the context size in Settings or shorten it.";
         res.stats.stop_reason = "error";
-        return with_faults(res, faults0);
+        return finish(res);
     }
 
     // Where the reply starts: the conversation rendered without the generation prompt. A snapshot
@@ -1366,7 +1438,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             res.error = err;
             res.stats.stop_reason = "error";
         }
-        return with_faults(res, faults0);
+        return finish(res);
     }
     res.stats.t_prompt_ms = ms_since(t_prompt0);
 
@@ -1383,7 +1455,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     if (!smpl) {
         res.error = "Could not set up sampling.";
         res.stats.stop_reason = "error";
-        return with_faults(res, faults0);
+        return finish(res);
     }
     const auto & preserved = sp.preserved_tokens;
     const auto & stops = session->additional_stops();
@@ -1501,7 +1573,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 // once more for each token left over, so a step of 4 costs little more than 1 while
                 // a step of 2 or 3 costs 2 or 3 (measured on an ARM server CPU in CI). Checking
                 // 4k tokens (the last one plus 4k-1 drafted) keeps every step on the fast path.
-                if (draft.size() >= 3) draft.resize((draft.size() + 1) / 4 * 4 - 1);
+                // Streaming from storage, the read of the model costs the same for any size of
+                // step, so every guess is kept.
+                if (draft.size() >= 3 && !streaming()) draft.resize((draft.size() + 1) / 4 * 4 - 1);
                 if (draft_q.size() > draft.size()) draft_q.resize(draft.size());
                 // the drafter wrote its guesses into its own memory; the check below starts clean
                 trim_draft((size_t) pos);
@@ -1590,7 +1664,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     res.stats.stop_reason = reason;
     res.ok = reason != "error";
     if (cb.on_update) cb.on_update(res.reasoning, res.content, n_gen);
-    return with_faults(res, faults0);
+    return finish(res);
 }
 
 }  // namespace oa

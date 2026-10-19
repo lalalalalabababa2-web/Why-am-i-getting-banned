@@ -3,6 +3,8 @@
 # from two builds at once (the Android build configures each ABI separately).
 #
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
+#   0002-no-populate.patch: a model parameter to map the file without reading all of it at load
+#     (low-memory mode reads only the layers it keeps; see app/src/main/cpp/pager.h)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../llama.cpp"

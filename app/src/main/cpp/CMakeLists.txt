@@ -45,7 +45,8 @@ add_subdirectory(${LLAMA_SRC} llama-build)
 
 add_library(offlineai SHARED
         jni_bridge.cpp
-        engine.cpp)
+        engine.cpp
+        pager.cpp)
 
 target_include_directories(offlineai PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}

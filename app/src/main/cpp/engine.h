@@ -27,6 +27,8 @@
 #include <string>
 #include <vector>
 
+#include "pager.h"
+
 struct llama_model;
 struct llama_context;
 struct llama_vocab;
@@ -54,6 +56,11 @@ struct LoadParams {
     // contexts, very slightly less exact.
     bool kv_q8      = false;
     bool warmup     = true;   // touch every weight once after loading, so the first reply starts fast
+    // Low memory only: keep as many layers in memory as fit and stream the rest from storage in
+    // big reads just ahead of the model (see pager.h), instead of leaving it to the kernel.
+    bool pager      = true;
+    // Memory the model's pages may use, in MB; 0 works it out from what the phone has free.
+    int  mem_budget_mb = 0;
     // Keep every position of sliding-window layers (Gemma), so any tail of the memory can be
     // dropped and drafting works. Off saves a lot of memory on big Gemma models; their memory is
     // then handled with snapshots like a hybrid model's, and they do not draft.
@@ -125,6 +132,13 @@ struct ChatStats {
     double      t_verify_ms    = 0;  //   ... in the model's steps (one per draft check)
     double      t_sync_ms      = 0;  //   ... keeping the drafter's memory in step with the model
     long        n_majflt       = 0;  // pages read back from storage during the turn (the model does not fit)
+    // low memory with the pager: part of the model is read from storage on every step
+    bool        streaming      = false;
+    double      resident_gb    = 0;  // of the model, kept in memory
+    double      streamed_gb    = 0;  // read from storage on every step
+    double      read_gb        = 0;  // read from storage during the turn
+    double      read_mbps      = 0;  // how fast the storage reads
+    double      t_pass_ms      = 0;  // one step through all layers, the last one measured
     std::string stop_reason;         // eos, length, context, stopped, error
 };
 
@@ -162,6 +176,11 @@ struct ModelInfo {
     bool        has_mtp           = false;  // the file carries an MTP head (loaded only when drafting with it)
     bool        vision            = false;
     bool        audio             = false;
+    bool        pager             = false;  // low memory, with the pager looking after the model's pages
+    bool        streaming         = false;  // part of the model is read from storage on every step
+    uint64_t    resident_bytes    = 0;
+    uint64_t    streamed_bytes    = 0;
+    double      read_mbps         = 0;      // storage speed measured while loading
 };
 
 struct BenchResult {
@@ -238,6 +257,13 @@ public:
     // Bytes of compute memory the last load reserved (llama's own report; tests and the app's log).
     size_t compute_bytes() const { return compute_bytes_; }
 
+    // The pager (low memory), or an empty report without one.
+    PagerStats pager_stats() const { return pager_ ? pager_->stats() : PagerStats(); }
+    // Android asked the app for memory back: keep fewer layers of a paged model. Any thread.
+    void trim_memory() { if (pager_) pager_->trim(); }
+    // Memory there is now, after other apps were closed or opened: the pager plans again. Any thread.
+    void memory_changed() { if (pager_) pager_->set_budget(budget_now()); }
+
 private:
     // The whole state of the model's memory after `tokens`. Checked against the prompt by its
     // tokens, so it stays usable even after the memory itself was cleared.
@@ -286,6 +312,8 @@ private:
     void attach_pool(::ggml_threadpool * pool);
     bool memory_truncate(size_t n_tokens);
     int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
+    uint64_t budget_now() const;
+    bool streaming() const { return pager_ && pager_->active(); }
     void free_spec();
 
     llama_model *          model_ = nullptr;
@@ -330,6 +358,7 @@ private:
     bool                  self_bg_   = false;
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
+    std::unique_ptr<Pager> pager_;
 
     static constexpr size_t kMaxSnapshots = 2;
 };
