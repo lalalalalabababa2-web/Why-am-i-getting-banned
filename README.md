@@ -52,7 +52,8 @@ browser when Android asks. New builds install over old ones and keep models and 
   another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
   priority while another app is in front, so the phone stays smooth. A reply is saved every few
   seconds while it is written, so if Android closes the app anyway, what was written is kept.
-- **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
+- **Settings**: context size, CPU threads, thinking (automatic: off for a model streaming from
+  storage, where it could take minutes before the answer starts), reply length, system prompt,
   sampling (each model's recommended values by default), drafting, picture detail.
 
 | Group | Models |
@@ -110,7 +111,10 @@ time. The pager takes that decision away from the kernel:
 
 - It reads the file's tensor layout, groups the weights by layer, and keeps as many layers as fit
   in the memory there is (what Android reports available, less some room for everything else),
-  spread evenly through the model so reading never stops for long.
+  spread evenly through the model so reading never stops for long. The output layer is kept
+  first: with Qwen3.5's 248k-word vocabulary it is 0.83 GB, eight times a layer, read on every
+  step (and several times a step by an MTP head). The room for streaming is two layers read
+  ahead and the one being computed.
 - Three reader threads read each streamed layer in 8 MB pieces just before the model reaches it
   (`MADV_POPULATE_READ` straight into the model's mapping, or ordinary reads on older kernels;
   asking the kernel to read ahead is not enough, it reads only a little of what it is asked
