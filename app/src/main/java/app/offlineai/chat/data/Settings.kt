@@ -25,6 +25,13 @@ enum class MemoryMode(val label: String, val help: String) {
         "streams the rest from storage, so even 9B models run on an 8 GB phone."),
 }
 
+enum class ThinkingMode(val label: String, val help: String) {
+    AUTO("Automatic", "On, except for a model too big for memory: there every word is a read from storage, and " +
+        "thinking first can take minutes before the answer starts."),
+    ON("On", "Models that can think work through the problem before answering. Slower, often better."),
+    OFF("Off", "Answers straight away."),
+}
+
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Same as the phone") }
 
 /** How closely pictures are looked at: pixels kept, and tokens a picture may take for models that scale with size. */
@@ -176,9 +183,18 @@ class Settings(context: Context) {
         set(v) = put("video_frames", v)
 
     // ---- replies
-    var thinking: Boolean
-        get() = bool("thinking", true)
-        set(v) = put("thinking", v)
+    /** Whether models that can think do so (see [thinkingFor]). Thinking switched off before is kept off. */
+    var thinkingMode: ThinkingMode
+        get() = runCatching { ThinkingMode.valueOf(str("thinking_mode", "")) }.getOrNull()
+            ?: if (prefs.contains("thinking") && !bool("thinking", true)) ThinkingMode.OFF else ThinkingMode.AUTO
+        set(v) = put("thinking_mode", v.name)
+
+    /** Thinking for a reply from a model that does or does not stream part of itself from storage. */
+    fun thinkingFor(streaming: Boolean): Boolean = when (thinkingMode) {
+        ThinkingMode.ON -> true
+        ThinkingMode.OFF -> false
+        ThinkingMode.AUTO -> !streaming
+    }
     var expandThinking: Boolean
         get() = bool("expand_thinking", false)
         set(v) = put("expand_thinking", v)

@@ -19,6 +19,7 @@ import app.offlineai.chat.data.Accent
 import app.offlineai.chat.data.BackgroundSpeed
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.MemoryMode
+import app.offlineai.chat.data.ThinkingMode
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.PerfMode
 import app.offlineai.chat.data.PictureDetail
@@ -216,8 +217,9 @@ class SettingsActivity : AppCompatActivity() {
             "seconds, Gemma 4 models only."))
 
         content.addView(sectionTitle("Replies"))
-        switch("Thinking", "Models that can think work through the problem before answering. Slower, often better.",
-            s.thinking) { s.thinking = it }
+        choice("Thinking", s.thinkingMode.help, ThinkingMode.values().map { it.label }, s.thinkingMode.ordinal) {
+            s.thinkingMode = ThinkingMode.values()[it]
+        }
         switch("Show thinking open", "Keep the thinking unfolded after the answer starts.", s.expandThinking) {
             s.expandThinking = it
         }

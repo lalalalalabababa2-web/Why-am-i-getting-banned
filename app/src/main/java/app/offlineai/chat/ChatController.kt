@@ -319,7 +319,7 @@ class ChatController(private val app: App) {
         generated = 0
         genStartedAt = 0L
         genSamples.clear()
-        thinkingNow = app.settings.thinking && model.info.supportsThinking
+        thinkingNow = app.settings.thinkingFor(streamsNow(model)) && model.info.supportsThinking
         mediaIndex = -2
         mediaTotal = 0
         changed()
@@ -442,6 +442,10 @@ class ChatController(private val app: App) {
         return parts.joinToString(" · ")
     }
 
+    /** Part of the model is read from storage on every step right now. */
+    private fun streamsNow(model: LoadedModel): Boolean =
+        model.info.streaming || app.engine.pagerStats()?.active == true
+
     private fun familyOf(model: LoadedModel): Family = app.models.find(model.key)?.family ?: Family.OTHER
 
     private fun buildRequest(model: LoadedModel): JSONObject {
@@ -485,7 +489,7 @@ class ChatController(private val app: App) {
 
         return JSONObject()
             .put("messages", messages)
-            .put("thinking", s.thinking)
+            .put("thinking", s.thinkingFor(streamsNow(model)))
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
     }
