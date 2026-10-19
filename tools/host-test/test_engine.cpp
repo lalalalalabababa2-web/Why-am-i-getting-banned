@@ -1128,6 +1128,19 @@ static void test_streaming(const std::string & path, const char * label, bool pa
                 rs.stats.n_majflt);
     std::printf("SPEED: %s on %d threads: %.2f tokens/s writing, first word after %.1fs, loaded in %.1fs\n", label,
                 lp.n_threads, tps, rs.stats.t_first_ms / 1000.0, load_s);
+    // where the memory went: the engine's own (compute buffers, conversation memory) against what the pager kept
+    long anon_kb = 0;
+    if (FILE * f = std::fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            if (std::strncmp(line, "RssAnon:", 8) == 0) anon_kb = std::atol(line + 8);
+        }
+        std::fclose(f);
+    }
+    const auto ps = e.pager_stats();
+    std::printf("  memory: engine's own %.2f GB (compute buffers %.2f GB), pager budget %.2f GB, kept %.2f GB, %.0f%% of it "
+                "present, %d replans\n", anon_kb / 1048576.0, e.compute_bytes() / 1e9, ps.budget_bytes / 1e9,
+                ps.resident_bytes / 1e9, ps.resident_present * 100, ps.n_replans);
     CHECK(rs.ok && rs.stats.n_generated > 8, "%s: the story failed: %s", label, rs.error.c_str());
 }
 
