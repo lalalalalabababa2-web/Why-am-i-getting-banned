@@ -36,6 +36,17 @@ browser when Android asks. New builds install over old ones and keep models and 
   Gemma 4's drafter) is off until the drafting test in Settings finds it faster on the phone: on
   the CI machines it was slower or no faster (see Tests), because a CPU pays for most of each
   extra word it checks.
+- **Models bigger than the free memory**: a 9B model (4.7 GB) on an 8 GB phone with other apps
+  open used to read nearly all of itself from storage for every word (0.1 words a second). Now
+  it keeps as many of its layers in memory as fit and streams the rest from storage in big
+  reads just before they are needed, a few times faster (see *The pager* below). Qwen3.5 0.8B,
+  if it is on the phone, guesses a few words ahead for the bigger Qwen3.5 models while they
+  stream, and the big model checks all of them in the one read of itself it makes anyway.
+- **How long it will take**: while a message is read, the time left; while a reply is written,
+  the speed over the last ten seconds, the tokens so far and about how long the reply still
+  takes (from how much longer this model's earlier replies went on). The stats under a reply
+  give the speed with the digits that matter (0.43 tok/s), the total time, and for a streamed
+  model how much of it stayed in memory and how much was read per step.
 - **In the background**: a reply keeps going when you switch apps or turn the screen off (a
   foreground service with a wake lock), with a notification showing how far it has got and
   another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
@@ -90,10 +101,62 @@ thread.
 - Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
   Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
 
+### The pager
+
+`app/src/main/cpp/pager.cpp`, for low-memory mode. The weights stay in the model file, mapped
+into memory, and when the model does not fit, the kernel's least-recently-used rule throws out
+exactly the layers needed next: every step reads almost the whole file again, a page fault at a
+time. The pager takes that decision away from the kernel:
+
+- It reads the file's tensor layout, groups the weights by layer, and keeps as many layers as fit
+  in the memory there is (what Android reports available, less some room for everything else),
+  spread evenly through the model so reading never stops for long.
+- Three reader threads read each streamed layer in 8 MB pieces just before the model reaches it
+  (`MADV_POPULATE_READ` straight into the model's mapping, or ordinary reads on older kernels;
+  asking the kernel to read ahead is not enough, it reads only a little of what it is asked
+  for), two layers ahead, on the cores the model does not compute on. It follows the model
+  through llama's graph callback, which tells it when each layer starts.
+- Once the model is past a streamed layer its pages are handed back (`MADV_DONTNEED` and
+  `POSIX_FADV_DONTNEED`), so streamed layers never push out the ones that stay.
+- Every few seconds it checks (`mincore`) that the kept layers are still all in memory and how
+  much memory there is: other apps taking memory make it keep fewer, apps closing more. Android's
+  trim-memory calls reach it too.
+- llama.cpp does not read the whole file while loading (patch 0002); the pager reads the kept
+  layers with four threads instead, which is also faster than the warm-up step it replaces.
+
+Everything it does is advice to the kernel, so whatever it gets wrong costs speed, never a wrong
+answer. While a model streams, the read of the model costs the same for a step of one token or
+five, so drafting gets much cheaper: copying from the conversation is on for hybrid models too,
+a model with an MTP head drafts 3 tokens at a time, prompt steps are as big as they go, and a
+helper model (below) can guess ahead.
+
+On this repository's test machine (4 cores, storage around 3 GB/s), a random 1.8 GB model with
+only 1.2 GB of memory (tools/host-test/make_big_model.py, bench_stream.cpp):
+
+| | Without the pager | With it |
+|---|---|---|
+| Writing, tokens/s | 0.55 | 2.3-2.5 (2-3 compute threads) |
+| Writing with drafts the model agrees with | 1.5 | 5.6 |
+| Loading | 4.3 s | 1.4 s |
+
+CI's *Models bigger than memory* job runs Qwen3.5 9B the same way in a 3 GB memory cgroup.
+
+### The helper
+
+For a streamed Qwen3.5 model, Qwen3.5 0.8B (same vocabulary, its own memory, in fast mode) guesses
+up to 4 tokens per step, stopping at the first one it is unsure of. A hybrid model's memory cannot
+be wound back token by token, so it guesses on a copy of its conversation and afterwards reads what
+the big model kept in one batch; like the big model it keeps a snapshot where each reply starts.
+Every kept token is one the big model would have written itself, so replies read the same.
+
+Fast mode reads the file with four threads before llama copies the weights out of it, and hands
+the file's pages back afterwards: about twice as fast to load.
+
 ## Changes to llama.cpp
 
 `third_party/patches/` holds the app's own changes, applied to the submodule at build time by
-`apply.sh` (the Android build and the test scripts run it): faster ARM NEON dot products for the
+`apply.sh` (the Android build and the test scripts run it): a model parameter that maps the
+file without reading all of it while loading (`no_populate`, for the pager), and faster ARM NEON dot products for the
 Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
 the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
 lets it call a 4x4 one. They matter most in low-memory mode, where the weights stay in the file
@@ -110,7 +173,13 @@ match those of a fresh engine that read the whole prompt from the start. It also
 real Qwen3.5 and Gemma 4 templates over their real vocabularies and streams replies through the
 parser. Runs under AddressSanitizer and UBSan. CI runs it on every push.
 
-It also checks drafting: with n-gram drafts and with an MTP head (a random model with one added
+The pager is checked the same way: five test models, one of them with ten layers so layers are
+handed back and read again on every step, are streamed whole (a 1 MB budget) and their logits
+must match an engine without the pager, also when the pager has to learn where the model is
+mapped from the first step.
+
+It also checks drafting: with a helper model (the model as its own helper, so the tokens must be
+the same as without drafting), with n-gram drafts and with an MTP head (a random model with one added
 by the test), greedy replies must be the same tokens as without drafting.
 
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
@@ -151,7 +220,9 @@ git submodule update --init
 
 ## Not done yet
 
-- Never run on a real phone by its author: built and tested on desktop and in CI only.
+- Built and tested on desktop and in CI. On the phone, Qwen3.5 9B Q3_K_M wrote 0.1 tokens/s
+  before the pager (reading itself from storage for every word); the pager's numbers above are
+  from the test machine and CI, not yet from the phone.
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
