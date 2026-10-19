@@ -128,7 +128,11 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     std::printf("  arch=%s memory=%s pager=%d streaming=%d resident=%llu streamed=%llu\n", info.arch.c_str(),
                 info.memory.c_str(), info.pager, info.streaming, (unsigned long long) info.resident_bytes,
                 (unsigned long long) info.streamed_bytes);
-    if (budget_mb > 0) {
+    // a mixture of experts is left to the kernel: streaming whole layers would read every expert
+    const bool moe = path.find("moe") != std::string::npos;
+    if (budget_mb > 0 && moe) {
+        CHECK(!info.pager && !info.streaming, "the pager should leave a mixture of experts alone");
+    } else if (budget_mb > 0) {
         CHECK(info.pager && info.streaming, "the pager should stream this model with %d MB", budget_mb);
     }
 
@@ -209,7 +213,7 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     CHECK(e.sync_prompt(p6, 0, err, nullptr, &st), "after-stop sync: %s", err.c_str());
     std::printf("    after stop reused=%d evaluated=%d\n", st.n_reused, st.n_evaluated);
     compare("after a stopped prompt", e, ref, p6);
-    if (budget_mb > 0) {
+    if (budget_mb > 0 && !moe) {
         const auto ps = e.pager_stats();
         std::printf("    pager: read %.1f MB, %d replans, resident present %.0f%%, a step through the model %.1f ms\n",
                     ps.bytes_read / 1e6, ps.n_replans, ps.resident_present * 100, ps.pass_ms);
@@ -1299,7 +1303,7 @@ int main(int argc, char ** argv) {
     }
     test_cache(dir + "/qwen35-dense.gguf", false, true, 1);
     test_cache(dir + "/gemma3-dense.gguf", false, true, 1);
-    test_cache(dir + "/mistral3-moe.gguf", false, true, 1);
+    test_cache(dir + "/mistral3-moe.gguf", false, true, 1);  // the pager stays out of it
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");

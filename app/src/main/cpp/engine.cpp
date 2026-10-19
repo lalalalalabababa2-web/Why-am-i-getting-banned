@@ -536,7 +536,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         // what the contexts reserved for their working memory is not in use yet, so the system
         // still counts it as available: it will be
         const uint64_t avail = budget_now();
-        pager_->plan(avail > compute_bytes_ ? avail - compute_bytes_ : 0);
+        const uint64_t budget = avail > compute_bytes_ ? avail - compute_bytes_ : 0;
+        pager_->plan(budget);
+        if (params.mem_budget_mb > 0) pager_->set_cap(std::max<uint64_t>(budget, 1));  // set by hand: stays the limit
         pager_->set_io_cpus(fast_cpus_);
         if (on_warmup && !progress) on_warmup();
         std::function<bool(float)> warm_progress;

@@ -115,11 +115,13 @@ time. The pager takes that decision away from the kernel:
   first: with Qwen3.5's 248k-word vocabulary it is 0.83 GB, eight times a layer, read on every
   step (and several times a step by an MTP head). The room for streaming is two layers read
   ahead and the one being computed.
-- Three reader threads read each streamed layer in 8 MB pieces just before the model reaches it
+- Six reader threads read each streamed layer in 8 MB pieces just before the model reaches it
   (`MADV_POPULATE_READ` straight into the model's mapping, or ordinary reads on older kernels;
   asking the kernel to read ahead is not enough, it reads only a little of what it is asked
-  for), two layers ahead, on the cores the model does not compute on. It follows the model
-  through llama's graph callback, which tells it when each layer starts.
+  for), two layers ahead, on the cores the model does not compute on. Each has one read in
+  flight at a time, so more readers keep the storage busier: six were about 15% faster than three
+  (more than six gained nothing). It follows the model through llama's graph callback, which
+  tells it when each layer starts.
 - Once the model is past a streamed layer its pages are handed back (`MADV_DONTNEED` and
   `POSIX_FADV_DONTNEED`), so streamed layers never push out the ones that stay.
 - Every few seconds it checks (`mincore`) that the kept layers are still all in memory and how
@@ -127,6 +129,8 @@ time. The pager takes that decision away from the kernel:
   trim-memory calls reach it too.
 - llama.cpp does not read the whole file while loading (patch 0002); the pager reads the kept
   layers with four threads instead, which is also faster than the warm-up step it replaces.
+- A mixture of experts is left to the kernel: a token reads only the experts it picks, so
+  streaming whole layers would read many times what the model uses.
 
 Everything it does is advice to the kernel, so whatever it gets wrong costs speed, never a wrong
 answer. While a model streams, the read of the model costs the same for a step of one token or
@@ -143,7 +147,19 @@ only 1.2 GB of memory (tools/host-test/make_big_model.py, bench_stream.cpp):
 | Writing with drafts the model agrees with | 1.5 | 5.6 |
 | Loading | 4.3 s | 1.4 s |
 
-CI's *Models bigger than memory* job runs Qwen3.5 9B the same way in a 3 GB memory cgroup.
+CI's *Models bigger than memory* job runs Qwen3.5 9B the same way in a 3 GB memory cgroup, from
+storage that reads about 430 MB/s:
+
+| Qwen3.5 9B, 3 GB of memory | Kept / read per step | Writing, tokens/s |
+|---|---|---|
+| Q3_K_M (4.66 GB), no pager | - | 0.14 |
+| Q3_K_M, pager | 2.21 / 2.02 GB | 0.20 |
+| UD-IQ3_XXS (4.28 GB), pager | 2.23 / 1.49 GB | 0.28 |
+| UD-IQ3_XXS, pager, MTP drafting 3 | 2.07 / 1.65 GB | 0.48 |
+| Q3_K_M, pager, Qwen3.5 0.8B helper | 1.46 / 2.76 GB | 0.30 |
+
+A step there is the read of what is streamed, at the storage's speed (2.02 GB in 4.9 s). A
+phone's UFS storage reads 1.5-4 GB/s, so the same steps take a third to a tenth of that.
 
 ### The helper
 

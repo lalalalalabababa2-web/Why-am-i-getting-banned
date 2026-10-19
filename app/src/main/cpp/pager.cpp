@@ -26,9 +26,21 @@ namespace oa {
 namespace {
 
 constexpr uint64_t kMB = 1024ull * 1024;
+constexpr int      kReaders = 6;  // threads reading streamed layers in (3 was about 15% slower)
 
 double ms_between(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
     return std::chrono::duration<double, std::milli>(b - a).count();
+}
+
+// Up to n threads running body; fewer (maybe none) when the system has no more to give.
+void start_threads(std::vector<std::thread> & threads, int n, const std::function<void()> & body) {
+    for (int t = 0; t < n; t++) {
+        try {
+            threads.emplace_back(body);
+        } catch (...) {
+            break;
+        }
+    }
 }
 
 // A value from /proc/meminfo, in bytes; 0 when it is not there.
@@ -159,9 +171,13 @@ bool Pager::preread(const std::string & path, const std::function<bool(float)> &
     std::atomic<size_t> next{0};
     std::atomic<uint64_t> done{0};
     std::atomic<bool> cancel{false};
-    std::vector<std::thread> threads;
-    for (int t = 0; t < std::clamp(n_threads, 1, 4); t++) {
-        threads.emplace_back([&]() {
+    std::atomic<int> live{0};  // readers still at it (one that cannot get its buffer stops early)
+    auto read_pieces = [&]() {
+        struct Leave {
+            std::atomic<int> & n;
+            ~Leave() { n.fetch_sub(1); }
+        } leave{live};
+        try {
             std::vector<uint8_t> buf(kChunk);
             while (!cancel.load()) {
                 const size_t i = next.fetch_add(1);
@@ -177,10 +193,21 @@ bool Pager::preread(const std::string & path, const std::function<bool(float)> &
                 }
                 done.fetch_add(len);
             }
-        });
+        } catch (...) {
+        }
+    };
+    const int nt = std::clamp(n_threads, 1, 4);
+    live.store(nt);
+    std::vector<std::thread> threads;
+    start_threads(threads, nt, read_pieces);
+    live.fetch_sub(nt - (int) threads.size());
+    if (threads.empty()) {
+        // no thread to spare: not worth reading it all from here, the model reads what it needs
+        ::close(fd);
+        return true;
     }
     bool ok = true;
-    while (done.load() < size) {
+    while (done.load() < size && live.load() > 0) {
         if (progress && !progress((float) ((double) done.load() / (double) size))) {
             cancel.store(true);
             ok = false;
@@ -236,6 +263,9 @@ bool Pager::open(const std::string & path, bool mtp_used) {
         const int64_t k = gguf_find_key(g, "general.architecture");
         if (k >= 0 && gguf_get_kv_type(g, k) == GGUF_TYPE_STRING) arch = gguf_get_val_str(g, k);
     }
+    // a mixture of experts reads only the experts each token picks: streaming whole layers would
+    // read many times what the model uses, so the kernel's page-by-page faults do better
+    if (u32(arch + ".expert_count", 0) > 0) return false;
     const uint32_t n_block = u32(arch + ".block_count", 0);
     const uint32_t n_nextn = u32(arch + ".nextn_predict_layers", 0);
     const uint32_t n_main = n_block > n_nextn ? n_block - n_nextn : n_block;
@@ -510,19 +540,22 @@ bool Pager::warm(const std::function<bool(float)> & progress, int n_threads) {
     std::atomic<bool> cancel{false};
     const int nt = std::clamp(n_threads, 1, 4);
     const auto t0 = std::chrono::steady_clock::now();
-    std::vector<std::thread> threads;
-    for (int t = 0; t < nt; t++) {
-        threads.emplace_back([&]() {
-            place_io_thread();
-            std::vector<uint8_t> buf;
-            while (!cancel.load()) {
-                const size_t i = next.fetch_add(1);
-                if (i >= pieces.size()) break;
+    auto read_pieces = [&](bool own_thread) {
+        if (own_thread) place_io_thread();
+        std::vector<uint8_t> buf;
+        while (!cancel.load()) {
+            const size_t i = next.fetch_add(1);
+            if (i >= pieces.size()) break;
+            try {
                 load_range(pieces[i].off, pieces[i].len, buf);
-                done.fetch_add(pieces[i].len);
+            } catch (...) {
             }
-        });
-    }
+            done.fetch_add(pieces[i].len);
+        }
+    };
+    std::vector<std::thread> threads;
+    start_threads(threads, nt, [&]() { read_pieces(true); });
+    if (threads.empty()) read_pieces(false);  // no thread to spare: read them from here
     bool ok = true;
     // every piece counts as done once tried, even if its read failed, so this ends
     while (done.load() < total) {
@@ -561,8 +594,9 @@ void Pager::load_range(uint64_t off, uint64_t len, std::vector<uint8_t> & buf) {
         if (errno == EINVAL || errno == ENOSYS || errno == EPERM) populate_ok_.store(false);  // older kernel
         else return;
     }
-    // older kernels: an ordinary read puts the pages in the cache the mapping reads from
-    buf.resize((size_t) std::min<uint64_t>(hi - lo, 8 * kMB));
+    // older kernels: an ordinary read puts the pages in the cache the mapping reads from (1 MB
+    // at a time: every reader has a buffer)
+    buf.resize((size_t) std::min<uint64_t>(hi - lo, 1 * kMB));
     for (uint64_t o = lo; o < hi;) {
         const ssize_t r = pread(fd_, buf.data(), (size_t) std::min<uint64_t>(buf.size(), hi - o), (off_t) o);
         if (r <= 0) {
@@ -617,7 +651,11 @@ void Pager::worker() {
         const Piece p = queue_.front();
         queue_.pop_front();
         lk.unlock();
-        load_range(p.off, p.len, buf);
+        try {
+            load_range(p.off, p.len, buf);
+        } catch (...) {
+            // a piece not read is faulted in by the model when it gets there
+        }
         lk.lock();
         st_.bytes_read += p.len;
         Group & g = groups_[p.group];
@@ -772,15 +810,30 @@ void Pager::start() {
     if (thread_.joinable()) return;
     quit_ = false;
     quit_workers_ = false;
-    thread_ = std::thread([this]() {
-        place_io_thread();
-        loop();
-    });
-    for (int i = 0; i < 3; i++) {
-        workers_.emplace_back([this]() {
+    // no thread may end the process: whatever goes wrong in one only stops the help it gives
+    // (pages it does not read are faulted in by the model as usual)
+    try {
+        thread_ = std::thread([this]() {
             place_io_thread();
-            worker();
+            try {
+                loop();
+            } catch (...) {
+                broken_.store(true);
+            }
         });
+        // each reader has one read in flight at a time (a page fault's read-ahead): storage is
+        // fastest with several queued, and readers waiting on it cost nothing
+        for (int i = 0; i < kReaders; i++) {
+            workers_.emplace_back([this]() {
+                place_io_thread();
+                try {
+                    worker();
+                } catch (...) {
+                }
+            });
+        }
+    } catch (...) {
+        // out of threads: carry on with the ones there are
     }
 }
 
@@ -817,6 +870,11 @@ void Pager::trim() {
     wake_.notify_one();
 }
 
+void Pager::set_cap(uint64_t cap) {
+    std::lock_guard<std::mutex> lk(mu_);
+    cap_ = cap;
+}
+
 PagerStats Pager::stats() const {
     std::lock_guard<std::mutex> lk(mu_);
     PagerStats s = st_;
@@ -849,9 +907,10 @@ void Pager::loop() {
         if (trim) {
             plan_locked(st_.budget_bytes / 4 * 3);
             st_.n_replans++;
+            last_shrink = std::chrono::steady_clock::now();  // and no growing back for a while
         }
         if (new_budget) {
-            plan_locked(new_budget);
+            plan_locked(cap_ ? std::min(new_budget, cap_) : new_budget);
             st_.n_replans++;
         }
         seen_epoch = epoch_.load();
@@ -863,7 +922,8 @@ void Pager::loop() {
         last_check = now;
         const double present = check_resident();
         st_.resident_present = present;
-        const uint64_t full = st_.pass_bytes + fixed_bytes();
+        uint64_t full = st_.pass_bytes + fixed_bytes();
+        if (cap_) full = std::min(full, cap_);
         if (present < 0.85) {
             // other apps took memory and the kernel took it from the model: keep less, so the
             // layers still kept stay whole instead of all of them going missing a little; by

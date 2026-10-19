@@ -78,6 +78,8 @@ public:
     void set_budget(uint64_t budget);
     // Android asked the app to give back memory: keep fewer layers now. Safe from any thread.
     void trim();
+    // The most it may ever plan with, however much memory frees up (a budget set by hand). 0: no limit.
+    void set_cap(uint64_t cap);
     PagerStats stats() const;
     bool active() const { return track_.load(); }
 
@@ -174,10 +176,11 @@ private:
     std::thread              thread_;
     PagerStats               st_;
     uint64_t                 window_ = 0;
+    uint64_t                 cap_ = 0;
     bool                     warmed_ = false;
     int                      low_checks_ = 0;
 
-    // reading: a few threads take 8 MB pieces of the layers wanted next, nearest first, and read
+    // reading: six threads take 8 MB pieces of the layers wanted next, nearest first, and read
     // them for real (asking the kernel to read ahead is not enough: it reads only a little of
     // what it is asked for)
     struct Piece {
