@@ -223,6 +223,53 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     }
 }
 
+// What the pager keeps for a Qwen3.5 9B-shaped model: 32 layers of 106 MB, an output layer of
+// 830 MB (a 248k-word vocabulary), input embeddings of 430 MB.
+static void test_pager_plan() {
+    std::printf("== pager plan, Qwen3.5 9B shape\n");
+    using G = oa::Pager::Group;
+    const uint64_t MB = 1ull << 20;
+    std::vector<G> gs;
+    auto add = [&](oa::Pager::Kind k, int order, uint64_t bytes) {
+        G g;
+        g.kind = k;
+        g.order = order;
+        g.bytes = bytes;
+        g.ranges.push_back({gs.empty() ? 0 : gs.back().ranges[0].off + gs.back().bytes, bytes});
+        gs.push_back(g);
+    };
+    add(oa::Pager::Kind::EMBD, -1, 430 * MB);
+    for (int i = 0; i < 32; i++) add(oa::Pager::Kind::LAYER, i, 106 * MB);
+    add(oa::Pager::Kind::OUT, 32, 830 * MB);
+    for (uint64_t budget_mb : {2400ull, 1200ull, 600ull, 5000ull}) {
+        oa::Pager p;
+        p.set_layout_for_tests(gs);
+        p.plan(budget_mb * MB);
+        const auto st = p.stats();
+        bool out_kept = false;
+        for (const auto & g : p.groups()) if (g.kind == oa::Pager::Kind::OUT) out_kept = g.resident;
+        std::printf("    budget %llu MB: kept %.0f MB, streamed %.0f MB, read-ahead %.0f MB, output layer %s\n",
+                    (unsigned long long) budget_mb, st.resident_bytes / (double) MB, st.streamed_bytes / (double) MB,
+                    st.window_bytes / (double) MB, out_kept ? "kept" : "streamed");
+        const uint64_t pass = 32 * 106 * MB + 830 * MB;
+        CHECK(st.resident_bytes + st.streamed_bytes == pass, "plan: kept and streamed should add up to the model");
+        if (budget_mb >= 5000) {
+            CHECK(!st.active, "plan: a budget above the model streams nothing");
+        } else {
+            // never more kept than the budget leaves after read-ahead and the layer being computed
+            CHECK(st.resident_bytes + st.window_bytes + 106 * MB <= budget_mb * MB || st.resident_bytes == 0,
+                  "plan: kept %llu + read-ahead %llu is over the budget", (unsigned long long) st.resident_bytes,
+                  (unsigned long long) st.window_bytes);
+        }
+        if (budget_mb == 2400) {
+            CHECK(out_kept, "plan: the output layer should stay in memory with 2.4 GB");
+            CHECK(st.window_bytes <= 2 * 106 * MB, "plan: read-ahead should be two layers, not the output layer");
+            CHECK(st.resident_bytes >= 1900 * MB, "plan: 2.4 GB should keep about 2 GB (kept %llu MB)",
+                  (unsigned long long) (st.resident_bytes / MB));
+        }
+    }
+}
+
 // The status line asks the pager how it is doing from the app's main thread while the engine
 // thread may be loading a model (which replaces the pager): that must never touch a freed one.
 static void test_pager_threads(const std::string & path) {
@@ -1241,6 +1288,7 @@ int main(int argc, char ** argv) {
     // back and read again on every step), a hybrid, sliding window, experts
     const std::string deep = dir + "/llama-deep.gguf";
     if (!exists(deep)) CHECK(make_deep_model(dir + "/llama-dense.gguf", deep, 10), "could not make the deep test model");
+    test_pager_plan();
     if (exists(deep)) {
         test_pager_threads(deep);
         test_cache(deep, false, true, 1);

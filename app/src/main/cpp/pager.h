@@ -115,6 +115,8 @@ public:
         uint32_t           gen      = 0;              // bumped when handed back: late reads are ignored
     };
     const std::vector<Group> & groups() const { return groups_; }
+    // a made-up layout, to check what plan() keeps
+    void set_layout_for_tests(std::vector<Group> groups);
 
 private:
     int  group_at(uintptr_t addr) const;

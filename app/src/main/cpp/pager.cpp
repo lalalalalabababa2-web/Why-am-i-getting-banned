@@ -377,6 +377,16 @@ void Pager::set_base(uintptr_t base) {
     base_.store(base, std::memory_order_release);
 }
 
+void Pager::set_layout_for_tests(std::vector<Group> groups) {
+    std::lock_guard<std::mutex> lk(mu_);
+    groups_ = std::move(groups);
+    pass_.clear();
+    for (size_t i = 0; i < groups_.size(); i++) {
+        if (groups_[i].kind == Kind::LAYER || groups_[i].kind == Kind::OUT) pass_.push_back((int) i);
+    }
+    std::sort(pass_.begin(), pass_.end(), [&](int a, int b) { return groups_[a].order < groups_[b].order; });
+}
+
 int Pager::group_at(uintptr_t addr) const {
     auto it = std::upper_bound(spans_.begin(), spans_.end(), addr, [](uintptr_t a, const Span & s) { return a < s.lo; });
     if (it == spans_.begin()) return -1;
@@ -407,20 +417,34 @@ void Pager::plan_locked(uint64_t budget) {
     if (budget >= pass + fixed) {
         for (int gi : pass_) groups_[gi].resident = true;
     } else {
-        // room to read ahead: two of the biggest layers, so the next one is already coming in
-        // while the model computes this one
-        window = std::min<uint64_t>(2 * biggest, std::max<uint64_t>(512 * kMB, biggest));
-        // and the layer being computed stays while it is computed
-        const uint64_t streaming_room = window + biggest;
-        uint64_t room = budget > fixed + streaming_room ? budget - fixed - streaming_room : 0;
-        // the MTP head writes its guesses with the output layer, several times a step
-        const int out = pass_.back();
-        if (mtp_used_ && groups_[out].bytes <= room) {
+        // Room for streaming, sized by the layers: two read ahead, so the next one is already
+        // coming in while the model computes this one, and the one being computed. Not by the
+        // output layer: with a big vocabulary it can be eight times a layer (0.83 GB in Qwen3.5
+        // 9B), and it stays in memory whenever it fits, read on every step as it is (and several
+        // times a step by an MTP head).
+        uint64_t layer = 0;
+        int out = -1;
+        for (int gi : pass_) {
+            if (groups_[gi].kind == Kind::LAYER) layer = std::max(layer, groups_[gi].bytes);
+            if (groups_[gi].kind == Kind::OUT) out = gi;
+        }
+        if (layer == 0) layer = biggest;
+        window = std::min<uint64_t>(2 * layer, std::max<uint64_t>(512 * kMB, layer));
+        uint64_t streaming = window + layer;
+        auto room_after = [&](uint64_t s) { return budget > fixed + s ? budget - fixed - s : 0; };
+        uint64_t room = room_after(streaming);
+        if (out >= 0 && groups_[out].bytes <= room) {
             groups_[out].resident = true;
             room -= groups_[out].bytes;
+        } else if (out >= 0) {
+            // too little memory even for the output layer: it streams too, and needs the room
+            // to come in while the last layer is computed
+            window = std::max(window, groups_[out].bytes);
+            streaming = std::max(streaming, groups_[out].bytes + layer);
+            room = room_after(streaming);
         }
-        // the rest spread evenly, so reading never stops for long: while the CPU computes a few
-        // layers already in memory, the next streamed one comes in
+        // the layers, spread evenly, so reading never stops for long: while the CPU computes a
+        // few layers already in memory, the next streamed one comes in
         uint64_t rest = 0;
         for (int gi : pass_) if (!groups_[gi].resident) rest += groups_[gi].bytes;
         const double share = rest > 0 ? std::min(1.0, (double) room / (double) rest) : 0.0;
