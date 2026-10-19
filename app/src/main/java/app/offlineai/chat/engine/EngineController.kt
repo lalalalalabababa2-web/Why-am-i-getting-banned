@@ -27,6 +27,14 @@ data class ModelInfo(
     val vision: Boolean,
     val audio: Boolean,
     val computeBytes: Long,
+    /** Low memory with the pager: it decides which layers stay in memory. */
+    val pager: Boolean = false,
+    /** Part of the model is read from storage on every step (it is bigger than the memory there is). */
+    val streaming: Boolean = false,
+    val residentBytes: Long = 0,
+    val streamedBytes: Long = 0,
+    /** How fast this phone's storage read the model while loading, MB/s. */
+    val readMbps: Double = 0.0,
 ) {
     companion object {
         fun parse(json: String): ModelInfo {
@@ -49,6 +57,11 @@ data class ModelInfo(
                 vision = j.optBoolean("vision"),
                 audio = j.optBoolean("audio"),
                 computeBytes = j.optLong("compute_bytes"),
+                pager = j.optBoolean("pager"),
+                streaming = j.optBoolean("streaming"),
+                residentBytes = j.optLong("resident_bytes"),
+                streamedBytes = j.optLong("streamed_bytes"),
+                readMbps = j.optDouble("read_mbps", 0.0),
             )
         }
     }
@@ -71,6 +84,8 @@ data class LoadConfig(
     val imageMaxTokens: Int = 0,
     /** Full sliding-window cache (drafting and cheap rollbacks) or a compact one (less memory). */
     val swaFull: Boolean = true,
+    /** Low memory: keep the layers that fit and stream the rest (see app/src/main/cpp/pager.h). */
+    val pager: Boolean = true,
 ) {
     fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
 
@@ -87,6 +102,7 @@ data class LoadConfig(
         .put("mmproj", mmprojPath)
         .put("image_max_tokens", imageMaxTokens)
         .put("swa_full", swaFull)
+        .put("pager", pager)
 }
 
 data class LoadedModel(
@@ -122,6 +138,14 @@ data class ChatOutcome(
     val tMediaMs: Double = 0.0,
     /** Pages read back from storage during the turn: many means the model did not fit in free memory. */
     val nMajflt: Long = 0,
+    /** The pager streamed part of the model from storage on every step. */
+    val streaming: Boolean = false,
+    val residentGb: Double = 0.0,
+    val streamedGb: Double = 0.0,
+    val readGb: Double = 0.0,
+    val readMbps: Double = 0.0,
+    /** One step through all the model's layers, the last one measured. */
+    val tPassMs: Double = 0.0,
 ) {
     companion object {
         fun parse(json: String): ChatOutcome {
@@ -147,6 +171,12 @@ data class ChatOutcome(
                 nMedia = s.optInt("n_media"),
                 tMediaMs = s.optDouble("t_media_ms", 0.0),
                 nMajflt = s.optLong("n_majflt"),
+                streaming = s.optBoolean("streaming"),
+                residentGb = s.optDouble("resident_gb", 0.0),
+                streamedGb = s.optDouble("streamed_gb", 0.0),
+                readGb = s.optDouble("read_gb", 0.0),
+                readMbps = s.optDouble("read_mbps", 0.0),
+                tPassMs = s.optDouble("t_pass_ms", 0.0),
             )
         }
 
@@ -155,6 +185,34 @@ data class ChatOutcome(
 }
 
 data class BenchRow(val threads: Int, val readTps: Double, val writeTps: Double)
+
+/** The pager right now (see app/src/main/cpp/pager.h). */
+data class PagerStats(
+    val active: Boolean = false,
+    val passBytes: Long = 0,
+    val residentBytes: Long = 0,
+    val streamedBytes: Long = 0,
+    val readMbps: Double = 0.0,
+    /** Part of the layers meant to stay in memory that are still there. */
+    val residentPresent: Double = 1.0,
+    /** One step through all layers, the last one measured; 0 until there is one. */
+    val passMs: Double = 0.0,
+) {
+    companion object {
+        fun parse(json: String): PagerStats {
+            val j = JSONObject(json)
+            return PagerStats(
+                active = j.optBoolean("active"),
+                passBytes = j.optLong("pass_bytes"),
+                residentBytes = j.optLong("resident_bytes"),
+                streamedBytes = j.optLong("streamed_bytes"),
+                readMbps = j.optDouble("read_mbps", 0.0),
+                residentPresent = j.optDouble("resident_present", 1.0),
+                passMs = j.optDouble("pass_ms", 0.0),
+            )
+        }
+    }
+}
 
 /** Callbacks for one reply, always delivered on the main thread. */
 interface ReplyListener {
@@ -318,6 +376,22 @@ class EngineController {
 
     fun setThreads(n: Int) {
         if (n > 0) NativeEngine.nativeSetThreads(n)
+    }
+
+    /** Android asked for memory back. Takes effect at once, even in the middle of a reply. */
+    fun trimMemory() {
+        if (loaded?.info?.pager == true) runCatching { NativeEngine.nativeTrimMemory() }
+    }
+
+    /** Other apps may have closed or opened: a paged model looks again at how much it may keep. */
+    fun memoryChanged() {
+        if (loaded?.info?.pager == true) runCatching { NativeEngine.nativeMemoryChanged() }
+    }
+
+    /** The pager's view now, or null without one. Cheap; safe while a reply is written. */
+    fun pagerStats(): PagerStats? {
+        if (loaded?.info?.pager != true) return null
+        return runCatching { PagerStats.parse(NativeEngine.nativePagerStats().toString(Charsets.UTF_8)) }.getOrNull()
     }
 
     fun systemInfo(callback: (String) -> Unit) {

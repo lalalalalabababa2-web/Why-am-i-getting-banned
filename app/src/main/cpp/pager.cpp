@@ -14,6 +14,7 @@
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #ifndef MADV_POPULATE_READ
@@ -249,7 +250,8 @@ bool Pager::open(const std::string & path, bool mtp_used) {
 
 bool Pager::attach() {
     // llama maps the file once (read-only, shared), from the page where the tensor data starts:
-    // find that mapping
+    // find that mapping, by its path or by the file's identity (storage can show up under
+    // another path than the one the app opened)
     uint64_t need_lo = UINT64_MAX, need_hi = 0;
     for (const auto & g : groups_) {
         for (const auto & r : g.ranges) {
@@ -257,6 +259,9 @@ bool Pager::attach() {
             need_hi = std::max(need_hi, r.off + r.len);
         }
     }
+    if (skip_maps_) return false;
+    struct stat sb;
+    const bool have_stat = fstat(fd_, &sb) == 0;
     char real[PATH_MAX];
     const std::string want = realpath(path_.c_str(), real) ? std::string(real) : path_;
     FILE * f = std::fopen("/proc/self/maps", "r");
@@ -264,27 +269,36 @@ bool Pager::attach() {
     char line[PATH_MAX + 256];
     uintptr_t found = 0;
     while (std::fgets(line, sizeof line, f)) {
-        unsigned long lo = 0, hi = 0, off = 0;
+        unsigned long lo = 0, hi = 0, off = 0, ino = 0;
+        unsigned int dmaj = 0, dmin = 0;
         char perms[8] = {0};
         int path_at = 0;
-        if (std::sscanf(line, "%lx-%lx %7s %lx %*s %*s %n", &lo, &hi, perms, &off, &path_at) < 4 || path_at <= 0) continue;
+        if (std::sscanf(line, "%lx-%lx %7s %lx %x:%x %lu %n", &lo, &hi, perms, &off, &dmaj, &dmin, &ino, &path_at) < 7 ||
+            path_at <= 0) {
+            continue;
+        }
         std::string p = line + path_at;
         while (!p.empty() && (p.back() == '\n' || p.back() == ' ')) p.pop_back();
-        if (p != want && p != path_) continue;
+        const bool same_file = p == want || p == path_ ||
+                               (have_stat && ino == (unsigned long) sb.st_ino && dmaj == major(sb.st_dev) && dmin == minor(sb.st_dev));
+        if (!same_file) continue;
         if (off > need_lo || off + (uint64_t) (hi - lo) < need_hi) continue;
         found = (uintptr_t) lo - (uintptr_t) off;  // where offset 0 of the file would be; the newest wins
     }
     std::fclose(f);
     if (!found) return false;
-    base_ = (const uint8_t *) found;
+    set_base(found);
+    return true;
+}
+
+void Pager::set_base(uintptr_t base) {
     spans_.clear();
     for (size_t gi = 0; gi < groups_.size(); gi++) {
-        for (const auto & r : groups_[gi].ranges) {
-            spans_.push_back({(uintptr_t) base_ + r.off, (uintptr_t) base_ + r.off + r.len, (int) gi});
-        }
+        for (const auto & r : groups_[gi].ranges) spans_.push_back({base + r.off, base + r.off + r.len, (int) gi});
     }
     std::sort(spans_.begin(), spans_.end(), [](const Span & a, const Span & b) { return a.lo < b.lo; });
-    return true;
+    base_ready_ = true;
+    base_.store(base, std::memory_order_release);
 }
 
 int Pager::group_at(uintptr_t addr) const {
@@ -436,9 +450,10 @@ void Pager::load_range(uint64_t off, uint64_t len, std::vector<uint8_t> & buf) {
     if (hi <= lo) return;
     // straight into the model's own mapping: read and mapped, so the model does not even take a
     // page fault on it
-    if (base_ && populate_ok_.load()) {
+    const uint8_t * base = this->base();
+    if (base && populate_ok_.load()) {
         for (int tries = 0; tries < 3; tries++) {
-            if (madvise((void *) (base_ + lo), hi - lo, MADV_POPULATE_READ) == 0) return;
+            if (madvise((void *) (base + lo), hi - lo, MADV_POPULATE_READ) == 0) return;
             if (errno != EINTR && errno != EAGAIN) break;
         }
         if (errno == EINVAL || errno == ENOSYS || errno == EPERM) populate_ok_.store(false);  // older kernel
@@ -515,7 +530,7 @@ void Pager::drop(Group & g) {
         const uint64_t hi = (r.off + r.len) / page_ * page_;
         if (hi <= lo) continue;
         // out of this process's page tables first (the cache keeps mapped pages), then out of the cache
-        if (base_) madvise((void *) (base_ + lo), hi - lo, MADV_DONTNEED);
+        if (const uint8_t * base = this->base()) madvise((void *) (base + lo), hi - lo, MADV_DONTNEED);
         posix_fadvise(fd_, (off_t) lo, (off_t) (hi - lo), POSIX_FADV_DONTNEED);
     }
     g.state = OUT_OF_MEMORY;
@@ -524,7 +539,8 @@ void Pager::drop(Group & g) {
 }
 
 double Pager::check_resident() {
-    if (!base_) return 1.0;
+    const uint8_t * base = this->base();
+    if (!base) return 1.0;
     uint64_t pages = 0, present = 0;
     std::vector<unsigned char> vec;
     for (const auto & g : groups_) {
@@ -535,7 +551,7 @@ double Pager::check_resident() {
             if (hi <= lo) continue;
             const size_t np = (size_t) ((hi - lo) / page_);
             vec.resize(np);
-            if (mincore((void *) (base_ + lo), hi - lo, vec.data()) != 0) return 1.0;
+            if (mincore((void *) (base + lo), hi - lo, vec.data()) != 0) return 1.0;
             pages += np;
             for (size_t i = 0; i < np; i++) present += vec[i] & 1;
         }
@@ -607,8 +623,22 @@ bool Pager::eval_cb(ggml_tensor * t, bool ask, void * user_data) {
         p->flagged_ = -1;
         return true;
     }
+    if (!p->base_ready_) {
+        // the mapping was not found by name: the first weight the model reads says where it is
+        if (p->broken_.load()) return false;
+        for (int k = 0; k < GGML_MAX_SRC; k++) {
+            const ggml_tensor * s = t->src[k];
+            if (!s || !s->data || s->op != GGML_OP_NONE) continue;
+            auto it = p->offsets_.find(s->name);
+            if (it == p->offsets_.end()) continue;
+            p->set_base((uintptr_t) s->data - (uintptr_t) it->second);
+            p->verified_ = true;
+            break;
+        }
+        if (!p->base_ready_) return false;
+    }
     if (!p->track_.load(std::memory_order_relaxed)) return false;
-    const uintptr_t lo = (uintptr_t) p->base_, hi = lo + (uintptr_t) p->file_size_;
+    const uintptr_t lo = p->base_.load(std::memory_order_relaxed), hi = lo + (uintptr_t) p->file_size_;
     for (int k = 0; k < GGML_MAX_SRC; k++) {
         const ggml_tensor * s = t->src[k];
         if (!s || !s->data) continue;

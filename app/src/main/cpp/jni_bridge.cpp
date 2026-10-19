@@ -97,6 +97,8 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
         p.drafter_path = o.value("drafter", std::string());
         p.mmproj_path = o.value("mmproj", std::string());
         p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
+        p.pager = o.value("pager", p.pager);
+        p.mem_budget_mb = o.value("mem_budget_mb", p.mem_budget_mb);
     } catch (const std::exception & e) {
         return to_bytes(env, std::string("Bad load options: ") + e.what());
     }
@@ -124,7 +126,20 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
         };
     }
     std::string err;
-    if (engine().load(from_bytes(env, jpath), p, err, progress, warm)) return nullptr;
+    // nothing thrown in the engine may cross into Java: that would end the whole app
+    try {
+        if (engine().load(from_bytes(env, jpath), p, err, progress, warm)) return nullptr;
+    } catch (const std::bad_alloc &) {
+        try { engine().unload(); } catch (...) {}
+        err = "There is not enough memory to load this model. Close other apps, use a smaller context size or "
+              "low-memory mode in Settings, or pick a smaller model.";
+    } catch (const std::exception & e) {
+        try { engine().unload(); } catch (...) {}
+        err = std::string("The model could not be loaded: ") + e.what();
+    } catch (...) {
+        try { engine().unload(); } catch (...) {}
+        err = "The model could not be loaded.";
+    }
     return to_bytes(env, err.empty() ? std::string("The model could not be loaded.") : err);
 }
 
@@ -155,6 +170,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"vision", mi.vision},
         {"audio", mi.audio},
         {"compute_bytes", engine().compute_bytes()},
+        {"pager", mi.pager},
+        {"streaming", mi.streaming},
+        {"resident_bytes", mi.resident_bytes},
+        {"streamed_bytes", mi.streamed_bytes},
+        {"read_mbps", mi.read_mbps},
     };
     return to_bytes(env, dump(j));
 }
@@ -174,6 +194,36 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeReleaseMedia(JNIEnv *, jclass)
     engine().release_media();
 }
 
+// Android asked for memory back: a paged model keeps fewer layers. Any thread.
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeTrimMemory(JNIEnv *, jclass) {
+    engine().trim_memory();
+}
+
+// Other apps closed or opened: a paged model looks again at how much it may keep. Any thread.
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeMemoryChanged(JNIEnv *, jclass) {
+    engine().memory_changed();
+}
+
+// What the pager is doing now, for the status line. Any thread.
+JNIEXPORT jbyteArray JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativePagerStats(JNIEnv * env, jclass) {
+    const auto ps = engine().pager_stats();
+    json j = {
+        {"planned", ps.planned},
+        {"active", ps.active},
+        {"pass_bytes", ps.pass_bytes},
+        {"resident_bytes", ps.resident_bytes},
+        {"streamed_bytes", ps.streamed_bytes},
+        {"read_mbps", ps.read_mbps},
+        {"resident_present", ps.resident_present},
+        {"pass_ms", ps.pass_ms},
+        {"n_replans", ps.n_replans},
+    };
+    return to_bytes(env, dump(j));
+}
+
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeSetThreads(JNIEnv *, jclass, jint n) {
     engine().set_threads(n);
@@ -191,7 +241,14 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeBench(JNIEnv * env, jclass, ji
     threads.resize((size_t) n);
     if (n > 0) env->GetIntArrayRegion(jthreads, 0, n, threads.data());
     std::string err;
-    const auto results = engine().bench(threads, n_prompt, n_gen, err);
+    std::vector<oa::BenchResult> results;
+    try {
+        results = engine().bench(threads, n_prompt, n_gen, err);
+    } catch (const std::exception & e) {
+        err = std::string("The speed test failed: ") + e.what();
+    } catch (...) {
+        err = "The speed test failed.";
+    }
     json arr = json::array();
     for (const auto & r : results) arr.push_back({{"threads", r.threads}, {"pp", r.pp_tps}, {"tg", r.tg_tps}});
     return to_bytes(env, dump(json{{"results", arr}, {"error", err}}));
@@ -271,7 +328,26 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
         };
     }
 
-    const auto res = engine().chat(req, cb);
+    oa::ChatResult res;
+    try {
+        res = engine().chat(req, cb);
+    } catch (const std::bad_alloc &) {
+        res = oa::ChatResult();
+        res.error = "The phone ran out of memory while writing. Close other apps, use a smaller context size, or "
+                    "pick a smaller model.";
+        res.stats.stop_reason = "error";
+        try { engine().reset_cache(); } catch (...) {}
+    } catch (const std::exception & e) {
+        res = oa::ChatResult();
+        res.error = std::string("Something went wrong while writing: ") + e.what();
+        res.stats.stop_reason = "error";
+        try { engine().reset_cache(); } catch (...) {}
+    } catch (...) {
+        res = oa::ChatResult();
+        res.error = "Something went wrong while writing.";
+        res.stats.stop_reason = "error";
+        try { engine().reset_cache(); } catch (...) {}
+    }
     json r = {
         {"ok", res.ok},
         {"content", res.content},
@@ -296,6 +372,12 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"t_verify_ms", res.stats.t_verify_ms},
             {"t_sync_ms", res.stats.t_sync_ms},
             {"n_majflt", res.stats.n_majflt},
+            {"streaming", res.stats.streaming},
+            {"resident_gb", res.stats.resident_gb},
+            {"streamed_gb", res.stats.streamed_gb},
+            {"read_gb", res.stats.read_gb},
+            {"read_mbps", res.stats.read_mbps},
+            {"t_pass_ms", res.stats.t_pass_ms},
             {"stop_reason", res.stats.stop_reason},
         }},
     };

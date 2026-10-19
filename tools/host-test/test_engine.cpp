@@ -1111,7 +1111,13 @@ int main(int argc, char ** argv) {
     // back and read again on every step), a hybrid, sliding window, experts
     const std::string deep = dir + "/llama-deep.gguf";
     if (!exists(deep)) CHECK(make_deep_model(dir + "/llama-dense.gguf", deep, 10), "could not make the deep test model");
-    if (exists(deep)) test_cache(deep, false, true, 1);
+    if (exists(deep)) {
+        test_cache(deep, false, true, 1);
+        // the same with the mapping not found by name: the pager learns it from the first step
+        oa::Pager::skip_maps_for_tests(true);
+        test_cache(deep, false, true, 1);
+        oa::Pager::skip_maps_for_tests(false);
+    }
     test_cache(dir + "/qwen35-dense.gguf", false, true, 1);
     test_cache(dir + "/gemma3-dense.gguf", false, true, 1);
     test_cache(dir + "/mistral3-moe.gguf", false, true, 1);

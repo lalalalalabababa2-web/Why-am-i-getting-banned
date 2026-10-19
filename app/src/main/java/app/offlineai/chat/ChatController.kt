@@ -48,30 +48,109 @@ class ChatController(private val app: App) {
     var generated = 0
         private set
     private var genStartedAt = 0L
+    private var promptStartedAt = 0L
     private var promptT0 = 0L
     private var promptDone0 = 0
     private var faults0 = 0L
 
-    /** The model is being read again from storage during this reply: it does not fit in free memory. */
-    fun thrashing(): Boolean = generating && Device.majorFaults() - faults0 > SLOW_MEMORY_FAULTS
+    /**
+     * The model is being read again from storage during this reply: it does not fit in free memory.
+     * Not with the pager, which reads the part that does not fit on purpose (and says so).
+     */
+    fun thrashing(): Boolean = generating && app.engine.loaded?.info?.pager != true &&
+        Device.majorFaults() - faults0 > SLOW_MEMORY_FAULTS
 
-    /** Seconds left reading the message, from the speed so far; -1 until there is a speed to go by. */
+    // ---- how long things will take
+    //
+    // Reading a message: from its speed so far, or before there is any, from how fast the last
+    // message was read with this model (or, streaming from storage, from how long one step through
+    // the model takes). Writing: the speed over the last several seconds (it changes as the phone
+    // warms up or other apps take memory) and how long this model's replies usually are.
+
+    /** Prompt tokens per second with the loaded model, from its last reply; 0 before there is one. */
+    private val readSpeed = mutableMapOf<String, Double>()
+    private val genSamples = ArrayDeque<Pair<Long, Int>>()  // (uptime ms, tokens written)
+    private var thinkingNow = false
+
+    /** Seconds left reading the message; -1 when there is nothing to go by yet. */
     fun promptSecondsLeft(): Int {
-        if (promptT0 == 0L || promptDone <= promptDone0 || promptTotal <= promptDone) return -1
-        val ms = android.os.SystemClock.elapsedRealtime() - promptT0
-        if (ms < 300) return -1
-        val perMs = (promptDone - promptDone0).toDouble() / ms
-        return ((promptTotal - promptDone) / perMs / 1000.0).toInt() + 1
+        if (promptTotal <= promptDone) return -1
+        if (promptT0 != 0L && promptDone > promptDone0) {
+            val ms = SystemClock.elapsedRealtime() - promptT0
+            if (ms >= 300) {
+                val perMs = (promptDone - promptDone0).toDouble() / ms
+                return ((promptTotal - promptDone) / perMs / 1000.0).toInt() + 1
+            }
+        }
+        // nothing measured in this reply yet
+        val model = app.engine.loaded ?: return -1
+        val pager = if (model.info.streaming) app.engine.pagerStats() else null
+        if (pager != null && pager.active && pager.passMs > 0) {
+            // every prompt step reads the streamed layers once; long prompts are slower to compute too
+            val steps = (promptTotal - promptDone + model.config.nUbatch - 1) / model.config.nUbatch
+            val tps = readSpeed[model.key] ?: 0.0
+            val compute = if (tps > 0) (promptTotal - promptDone) / tps else 0.0
+            val waited = (SystemClock.elapsedRealtime() - promptStartedAt) / 1000.0
+            return (maxOf(steps * pager.passMs / 1000.0, compute) - waited).coerceAtLeast(1.0).toInt()
+        }
+        val tps = readSpeed[model.key] ?: return -1
+        val waited = (SystemClock.elapsedRealtime() - promptStartedAt) / 1000.0
+        return ((promptTotal - promptDone) / tps - waited).coerceAtLeast(1.0).toInt()
     }
 
-    /** " · about 20 s left" while reading a long message, else "". */
+    /** " · about 20 s left" while reading a message, else "". */
     fun promptEtaLabel(): String {
         val s = promptSecondsLeft()
-        return when {
-            s < 0 -> ""
-            s < 90 -> " · about $s s left"
-            else -> " · about ${(s + 30) / 60} min left"
+        return if (s < 0) "" else " · about ${duration(s)} left"
+    }
+
+    /** Before the first word, while nothing is reported: " · first word in about 12 s", else "". */
+    fun firstWordLabel(): String {
+        val s = promptSecondsLeft()
+        return if (s < 0) "" else " · first word in about ${duration(s)}"
+    }
+
+    /** Tokens per second over the last several seconds (or the whole reply while it is short). */
+    fun tokensPerSecond(): Double {
+        val now = SystemClock.uptimeMillis()
+        val first = genSamples.firstOrNull()
+        if (first != null && generated - first.second >= 2 && now - first.first >= 1500) {
+            return (generated - first.second) * 1000.0 / (now - first.first)
         }
+        val ms = now - genStartedAt
+        return if (generated > 1 && genStartedAt > 0 && ms > 0) (generated - 1) * 1000.0 / ms else 0.0
+    }
+
+    /**
+     * Tokens this reply probably still has to go: from the lengths of this model's earlier
+     * replies that were longer than this one is now (how much longer they went on), within the
+     * reply length limit. -1 when there is nothing to go by.
+     */
+    fun tokensLeftEstimate(): Int {
+        val model = app.engine.loaded ?: return -1
+        val limit = app.settings.maxTokens
+        val longer = app.settings.replyLengths(model.key, thinkingNow).filter { it > generated }
+        if (longer.size < 2) return -1
+        val left = longer.map { it - generated }.sorted()
+        // the median: one very long reply in the past must not make every estimate long
+        val mid = left[left.size / 2]
+        return mid.coerceAtMost((limit - generated).coerceAtLeast(0))
+    }
+
+    /** Seconds this reply probably still takes; -1 when there is nothing to go by. */
+    fun secondsLeftEstimate(): Int {
+        val left = tokensLeftEstimate()
+        val tps = tokensPerSecond()
+        if (left < 0 || tps <= 0.0) return -1
+        return (left / tps).toInt() + 1
+    }
+
+    /** "Writing · 1.4 tok/s · 120 tokens · about 40 s left" */
+    fun writingLabel(): String {
+        val sb = StringBuilder("Writing · ").append(tps(tokensPerSecond())).append(" tok/s · ").append(generated).append(" tokens")
+        val s = secondsLeftEstimate()
+        if (s >= 0) sb.append(" · about ").append(duration(s)).append(" left")
+        return sb.toString()
     }
 
     /** Pictures being read: index of the current one (-1 while the picture part loads), and how many. */
@@ -157,11 +236,6 @@ class ChatController(private val app: App) {
         }
     }
 
-    fun tokensPerSecond(): Double {
-        val ms = SystemClock.uptimeMillis() - genStartedAt
-        return if (generated > 1 && genStartedAt > 0 && ms > 0) (generated - 1) * 1000.0 / ms else 0.0
-    }
-
     fun send(text: String): Boolean {
         val model = app.engine.loaded ?: return false
         val attachments = draftAttachments.toList()
@@ -233,9 +307,12 @@ class ChatController(private val app: App) {
         promptTotal = 0
         promptT0 = 0L
         promptDone0 = 0
+        promptStartedAt = SystemClock.elapsedRealtime()
         faults0 = Device.majorFaults()
         generated = 0
         genStartedAt = 0L
+        genSamples.clear()
+        thinkingNow = app.settings.thinking && model.info.supportsThinking
         mediaIndex = -2
         mediaTotal = 0
         changed()
@@ -257,8 +334,12 @@ class ChatController(private val app: App) {
             }
 
             override fun onUpdate(reasoning: String, content: String, generated: Int) {
-                if (genStartedAt == 0L) genStartedAt = SystemClock.uptimeMillis()
+                val now = SystemClock.uptimeMillis()
+                if (genStartedAt == 0L) genStartedAt = now
                 this@ChatController.generated = generated
+                // the speed now: the last ten seconds or so, at least two points
+                genSamples.addLast(now to generated)
+                while (genSamples.size > 2 && now - genSamples.first().first > 10_000) genSamples.removeFirst()
                 reply.reasoning = reasoning
                 reply.content = content
                 replyUpdated()
@@ -278,9 +359,18 @@ class ChatController(private val app: App) {
 
             override fun onDone(outcome: ChatOutcome) {
                 mediaIndex = -2
+                learn(model, outcome)
                 finish(reply, outcome)
             }
         })
+    }
+
+    /** What the next estimates go by: how fast this model read, and how long its reply was. */
+    private fun learn(model: LoadedModel, o: ChatOutcome) {
+        if (!o.ok) return
+        if (o.nEvaluated >= 16 && o.tPromptMs > 0) readSpeed[model.key] = o.nEvaluated * 1000.0 / o.tPromptMs
+        // only replies that ended by themselves say how long replies are
+        if (o.stopReason == "eos" && o.nGenerated > 0) app.settings.addReplyLength(model.key, thinkingNow, o.nGenerated)
     }
 
     private fun finish(reply: ChatMessage, o: ChatOutcome) {
@@ -312,10 +402,12 @@ class ChatController(private val app: App) {
     private fun describe(o: ChatOutcome): String {
         val parts = mutableListOf<String>()
         if (o.tGenMs > 0 && o.nGenerated > 1) {
-            parts += String.format(Locale.US, "%.1f tok/s", (o.nGenerated - 1) * 1000.0 / o.tGenMs)
+            parts += tps((o.nGenerated - 1) * 1000.0 / o.tGenMs) + " tok/s"
         }
         parts += "${o.nGenerated} tokens"
-        if (o.tFirstMs > 0) parts += String.format(Locale.US, "first word %.1fs", o.tFirstMs / 1000.0)
+        val total = (o.tFirstMs.coerceAtLeast(o.tPromptMs) + o.tGenMs) / 1000.0
+        if (total >= 1) parts += String.format(Locale.US, "%s in all", seconds(total))
+        if (o.tFirstMs > 0) parts += String.format(Locale.US, "first word %s", seconds(o.tFirstMs / 1000.0))
         if (o.nDrafted > 0 && o.nSteps > 0) {
             // how much drafting ahead helped: tokens written per model step (1.0 without it)
             parts += String.format(Locale.US, "%.1f tokens per step", o.nGenerated.toDouble() / o.nSteps)
@@ -328,7 +420,10 @@ class ChatController(private val app: App) {
             parts += String.format(Locale.US, "read %d in %.1fs", o.nEvaluated, o.tPromptMs / 1000.0)
         }
         if (o.nDropped > 0) parts += "${o.nDropped} oldest messages left out to fit"
-        if (o.nMajflt > SLOW_MEMORY_FAULTS) {
+        if (o.streaming) {
+            parts += String.format(Locale.US, "%.1f GB kept in memory, %.1f GB read from storage per step%s", o.residentGb,
+                o.streamedGb, if (o.readMbps > 0) String.format(Locale.US, " (storage %.1f GB/s)", o.readMbps / 1000.0) else "")
+        } else if (o.nMajflt > SLOW_MEMORY_FAULTS && app.engine.loaded?.info?.pager != true) {
             parts += "slow because the model did not fit in free memory and was read again from storage; close other " +
                 "apps, lower the context size or pick a smaller model"
         }
@@ -439,4 +534,25 @@ class ChatController(private val app: App) {
         changed()
         status()
     }
+}
+
+/** Tokens per second with the digits that mean something: 0.43, 3.7, 12. */
+internal fun tps(v: Double): String = when {
+    v < 1 -> String.format(Locale.US, "%.2f", v)
+    v < 10 -> String.format(Locale.US, "%.1f", v)
+    else -> String.format(Locale.US, "%.0f", v)
+}
+
+/** 4.2s, 38s, 2m 05s */
+internal fun seconds(s: Double): String = when {
+    s < 10 -> String.format(Locale.US, "%.1fs", s)
+    s < 60 -> String.format(Locale.US, "%.0fs", s)
+    else -> String.format(Locale.US, "%dm %02ds", (s / 60).toInt(), (s % 60).toInt())
+}
+
+/** A rough wait: "20 s", "3 min" */
+internal fun duration(s: Int): String = when {
+    s < 90 -> "$s s"
+    s < 3600 -> "${(s + 30) / 60} min"
+    else -> String.format(Locale.US, "%.1f h", s / 3600.0)
 }

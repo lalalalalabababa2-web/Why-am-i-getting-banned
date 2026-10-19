@@ -572,6 +572,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
     }
 
+    /** " · low memory", or for a model bigger than memory how much of it stays and how much streams. */
+    private fun memoryLabel(loaded: app.offlineai.chat.engine.LoadedModel): String {
+        if (!loaded.config.lowMemory) return ""
+        val p = app.engine.pagerStats()
+        if (p == null || !p.active) return " · low memory"
+        return String.format(Locale.US, " · %.1f GB in memory, %.1f GB streamed per token", p.residentBytes / 1e9, p.streamedBytes / 1e9)
+    }
+
     private fun refreshHeader() {
         val e = app.engine
         val c = app.chat
@@ -589,14 +597,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             c.generating && c.mediaIndex >= 0 && c.mediaTotal > 0 && (c.promptTotal == 0 || c.promptDone < c.promptTotal) ->
                 "Looking at attachment ${c.mediaIndex + 1} of ${c.mediaTotal}…$hot"
             c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal -> "Reading ${c.promptDone} of ${c.promptTotal} tokens${c.promptEtaLabel()}$hot"
-            c.generating && c.generated > 1 -> String.format(Locale.US, "Writing · %.1f tok/s", c.tokensPerSecond()) + hot
-            c.generating -> "Starting…$hot"
+            c.generating && c.generated > 1 -> c.writingLabel() + hot
+            c.generating -> "Starting…${c.firstWordLabel()}$hot"
             loaded == null && e.lastError != null -> {
                 subtitle.setTextColor(Palette.danger)
                 e.lastError
             }
             loaded == null -> "No model loaded · tap to choose"
-            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
+            else -> "Ready · ${loaded.nCtx} context" + memoryLabel(loaded) +
                 (if (loaded.info.vision) " · sees pictures" else "") + " · tap to change"
         }
         val showProgress = e.isLoading || (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)

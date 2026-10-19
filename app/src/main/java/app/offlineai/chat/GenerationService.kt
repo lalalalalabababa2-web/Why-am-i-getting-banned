@@ -117,7 +117,7 @@ class GenerationService : Service() {
         }
         val text = when {
             reading -> "$name · ${c.promptDone} of ${c.promptTotal} tokens${c.promptEtaLabel()}"
-            c.generated > 1 -> String.format(Locale.US, "%s · %d tokens · %.1f tok/s", name, c.generated, c.tokensPerSecond())
+            c.generated > 1 -> "$name · " + c.writingLabel().removePrefix("Writing · ")
             else -> name
         } + (if (gentle) " · gentle while you use other apps" else "")
         val b = NotificationCompat.Builder(this, CHANNEL)

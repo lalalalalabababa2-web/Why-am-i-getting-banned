@@ -21,7 +21,8 @@ enum class BackgroundSpeed(val label: String, val help: String) {
 enum class MemoryMode(val label: String, val help: String) {
     AUTO("Automatic", "Fast mode, or low-memory mode for models too big to copy into this phone's memory."),
     FAST("Fast", "Copies the weights into memory in a layout the CPU computes with fastest."),
-    LOW("Low memory", "Leaves the weights in the file, so Android can page them. Slower, but bigger models fit."),
+    LOW("Low memory", "Leaves the weights in the file. A model bigger than the free memory keeps what fits and " +
+        "streams the rest from storage, so even 9B models run on an 8 GB phone."),
 }
 
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Same as the phone") }
@@ -75,6 +76,14 @@ class Settings(context: Context) {
     var promptBatch: Int
         get() = int("prompt_batch", 256)
         set(v) = put("prompt_batch", v)
+    /**
+     * Low memory: keep as many layers as fit in memory for good and stream the rest from storage
+     * in big reads just ahead of the model (app/src/main/cpp/pager.h). Off leaves it to Android,
+     * which rereads nearly the whole model for every token once it does not fit.
+     */
+    var streaming: Boolean
+        get() = bool("streaming", true)
+        set(v) = put("streaming", v)
 
     // ---- performance
     var perfMode: PerfMode
@@ -133,12 +142,25 @@ class Settings(context: Context) {
     fun measuredDrafts(modelFile: String): Int = int("drafts:$modelFile", -1)
     fun setMeasuredDrafts(modelFile: String, n: Int) = put("drafts:$modelFile", n)
 
-    /** Drafts per step to load [modelFile] with (0: off). */
-    fun draftsFor(modelFile: String): Int {
+    /**
+     * Drafts per step to load [modelFile] with (0: off). [streamsWithMtp]: a model with its own MTP
+     * head in low-memory mode, where checking several guesses costs the same read of the model as
+     * writing one token, so drafting is on (3 at a time) until the drafting test says otherwise.
+     */
+    fun draftsFor(modelFile: String, streamsWithMtp: Boolean = false): Int {
         if (!speculative) return 0
         if (draftTokens > 0) return draftTokens
         val m = measuredDrafts(modelFile)
-        return if (m >= 0) m else 0
+        return if (m >= 0) m else if (streamsWithMtp) 3 else 0
+    }
+
+    /** Lengths in tokens of the last finished replies of a model, oldest first (the time-left estimate). */
+    fun replyLengths(modelFile: String, thinking: Boolean): List<Int> =
+        str("lengths:$modelFile:${if (thinking) 1 else 0}", "").split(',').mapNotNull { it.toIntOrNull() }
+
+    fun addReplyLength(modelFile: String, thinking: Boolean, n: Int) {
+        val kept = (replyLengths(modelFile, thinking) + n).takeLast(40)
+        put("lengths:$modelFile:${if (thinking) 1 else 0}", kept.joinToString(","))
     }
 
     // ---- pictures, video and sound

@@ -98,7 +98,11 @@ class App : Application() {
     private fun frontChanged(front: Boolean) {
         inFront = front
         applyBackground()
-        if (front) GenerationService.clearReplyReady(this)
+        if (front) {
+            GenerationService.clearReplyReady(this)
+            // apps may have closed (or opened) meanwhile: a model too big for memory looks again
+            engine.memoryChanged()
+        }
     }
 
     /** Gentle writing while another app is in front, if the setting says so. */
@@ -146,7 +150,7 @@ class App : Application() {
 
     fun configFor(model: LocalModel): LoadConfig {
         val low = lowMemoryFor(model)
-        val drafts = settings.draftsFor(model.file.name)
+        val drafts = settings.draftsFor(model.file.name, low && settings.streaming && model.catalog?.mtp == true)
         return LoadConfig(
             nCtx = settings.contextSize,
             nThreads = settings.baseThreads(),
@@ -161,6 +165,7 @@ class App : Application() {
             imageMaxTokens = settings.pictureDetail.maxTokens,
             // big Gemma models: a compact sliding-window cache (much less memory, no drafting)
             swaFull = !low,
+            pager = settings.streaming,
         )
     }
 
@@ -176,6 +181,14 @@ class App : Application() {
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
         if (low && !engine.isBusy) engine.releaseMedia()
+        // memory is running short with the app in front: a model streamed from storage keeps fewer
+        // layers now, before Android has to take them (or close an app for them)
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE
+        ) {
+            engine.trimMemory()
+        }
     }
 
     /** Loads the model used last time, if it is still here and nothing is loaded. */

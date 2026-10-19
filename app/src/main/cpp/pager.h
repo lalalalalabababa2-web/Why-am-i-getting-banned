@@ -60,7 +60,8 @@ public:
     // Reads the file's tensor layout. False when this file cannot be paged (split into parts,
     // unreadable). `mtp_used`: the model's MTP head drafts, so its layer is used on every step.
     bool open(const std::string & path, bool mtp_used);
-    // Once llama has mapped the file: finds that mapping. False when it is not there.
+    // Once llama has mapped the file: finds that mapping. False when it is not there; the pager
+    // then learns where it is from the first weight the model reads.
     bool attach();
     // Decides which layers stay in memory, given `budget` bytes for the model's pages.
     void plan(uint64_t budget);
@@ -88,6 +89,8 @@ public:
     static uint64_t memory_for_model();
 
     // ---- for tests
+    // attach() pretends the mapping is not in /proc/self/maps, so the pager has to learn it
+    static void skip_maps_for_tests(bool on) { skip_maps_ = on; }
     struct Range {
         uint64_t off = 0, len = 0;  // in the file
     };
@@ -130,7 +133,11 @@ private:
         int       group;
     };
     std::vector<Span>    spans_;       // mapped address ranges by group, sorted
-    const uint8_t *      base_ = nullptr;
+    static inline bool   skip_maps_ = false;
+    std::atomic<uintptr_t> base_{0};      // where offset 0 of the file would be in the mapping
+    bool                 base_ready_ = false;  // compute thread (and attach, before it runs)
+    const uint8_t *      base() const { return (const uint8_t *) base_.load(std::memory_order_acquire); }
+    void                 set_base(uintptr_t base);
     uint64_t             file_size_ = 0;
     size_t               page_ = 4096;
 

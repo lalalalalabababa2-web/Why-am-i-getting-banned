@@ -19,7 +19,7 @@ object NativeEngine {
 
     @JvmStatic external fun nativeInit(libDir: String)
     @JvmStatic external fun nativeSystemInfo(): String
-    /** [options] is JSON (UTF-8): n_ctx, n_threads, n_batch, n_ubatch, low_memory, kv_q8, spec_n_max, spec_ngram, drafter, mmproj, image_max_tokens. */
+    /** [options] is JSON (UTF-8): n_ctx, n_threads, n_batch, n_ubatch, low_memory, kv_q8, spec_n_max, spec_ngram, drafter, mmproj, image_max_tokens, pager, mem_budget_mb. */
     @JvmStatic external fun nativeLoad(path: ByteArray, options: ByteArray, listener: LoadListener?): ByteArray?
     @JvmStatic external fun nativeUnload()
     @JvmStatic external fun nativeInfo(): ByteArray
@@ -31,6 +31,12 @@ object NativeEngine {
     /** Gentle writing while another app is in front: [threads] threads, low priority, takes effect at the next step. */
     @JvmStatic external fun nativeSetBackground(on: Boolean, threads: Int)
     @JvmStatic external fun nativeBench(threads: IntArray, nPrompt: Int, nGen: Int): ByteArray
+    /** Android asked for memory back: a model too big for memory keeps fewer of its layers. Any thread. */
+    @JvmStatic external fun nativeTrimMemory()
+    /** Other apps opened or closed: a model too big for memory looks again at how much it may keep. Any thread. */
+    @JvmStatic external fun nativeMemoryChanged()
+    /** What the pager is doing (JSON), for the status line. Any thread. */
+    @JvmStatic external fun nativePagerStats(): ByteArray
 }
 
 interface LoadListener {

@@ -304,13 +304,14 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
 
     model_ = llama_model_load_from_file(path.c_str(), mp);
     if (!model_) {
+        pager_.reset();
         err = "The model could not be loaded. The file may be incomplete or damaged, or it is a kind of "
               "model this version of the app cannot run.";
         return false;
     }
     vocab_ = llama_model_get_vocab(model_);
     is_swa_ = llama_model_n_swa(model_) > 0;
-    if (pager_ && !pager_->attach()) pager_.reset();
+    if (pager_) pager_->attach();  // if not found, the pager learns where the weights are on the first step
     // whether part of the model will be read from storage on every step (decided for good once
     // the contexts exist): drafting is then nearly free, since checking several guessed tokens
     // costs the same one read of the model as writing one

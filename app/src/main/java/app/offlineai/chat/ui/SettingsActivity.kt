@@ -84,6 +84,11 @@ class SettingsActivity : AppCompatActivity() {
         choice("Memory mode", s.memoryMode.help + reloadNote, MemoryMode.values().map { it.label }, s.memoryMode.ordinal) {
             s.memoryMode = MemoryMode.values()[it]
         }
+        switch("Stream what does not fit",
+            "Low memory: keep as much of the model in memory as fits and read the rest from storage in big pieces just " +
+                "before it is needed, a few times faster than leaving it to Android. Adjusts by itself when other apps " +
+                "take or give back memory.$reloadNote",
+            s.streaming) { s.streaming = it }
         switch("Compact conversation memory",
             "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact.$reloadNote",
             s.kvQ8) { s.kvQ8 = it }
@@ -284,7 +289,13 @@ class SettingsActivity : AppCompatActivity() {
             "Offline AI ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
                 (loaded?.let { m ->
                     "\n\nLoaded: ${m.displayName} (${m.info.desc}), ${m.nCtx} context, ${if (m.config.lowMemory) "low-memory" else "fast"} mode, " +
-                        "loaded in ${String.format(Locale.US, "%.1f", m.loadMs / 1000.0)}s."
+                        "loaded in ${String.format(Locale.US, "%.1f", m.loadMs / 1000.0)}s." +
+                        (app.engine.pagerStats()?.let { p ->
+                            String.format(Locale.US, " Of its %.1f GB read per step, %.1f GB stay in memory%s; storage reads %.1f GB/s.",
+                                p.passBytes / 1e9, p.residentBytes / 1e9,
+                                if (p.active) String.format(Locale.US, " and %.1f GB stream from storage", p.streamedBytes / 1e9) else "",
+                                p.readMbps / 1000.0)
+                        } ?: "")
                 } ?: "") +
                 "\n\nThe phone: ${Device.cores()} cores (${Device.fastCores()} fast), ${ModelStore.formatBytes(app.totalRam)} of memory, " +
                 "${ModelStore.formatBytes(app.availableRam())} free now.",
