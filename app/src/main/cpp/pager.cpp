@@ -958,4 +958,95 @@ void Pager::loop() {
     }
 }
 
+// ---- ExpertPrefetch
+
+ExpertPrefetch::~ExpertPrefetch() {
+    if (fd_ >= 0) ::close(fd_);
+}
+
+bool ExpertPrefetch::open(const std::string & path) {
+    gguf_init_params gp;
+    gp.no_alloc = true;
+    gp.ctx = nullptr;
+    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+    if (!g) return false;
+    struct Free {
+        gguf_context * g;
+        ~Free() { gguf_free(g); }
+    } free_g{g};
+    std::string arch;
+    const int64_t ka = gguf_find_key(g, "general.architecture");
+    if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) arch = gguf_get_val_str(g, ka);
+    const int64_t ke = gguf_find_key(g, (arch + ".expert_count").c_str());
+    if (ke < 0) return false;
+    switch (gguf_get_kv_type(g, ke)) {
+        case GGUF_TYPE_UINT32: n_expert_ = gguf_get_val_u32(g, ke); break;
+        case GGUF_TYPE_INT32:  n_expert_ = (uint32_t) std::max(0, gguf_get_val_i32(g, ke)); break;
+        default:               return false;
+    }
+    if (n_expert_ < 2) return false;
+    const uint64_t data = gguf_get_data_offset(g);
+    for (int64_t i = 0; i < gguf_get_n_tensors(g); i++) {
+        const std::string name = gguf_get_tensor_name(g, i);
+        if (name.compare(0, 4, "blk.") != 0 || name.find("_exps") == std::string::npos) continue;
+        const uint64_t len = gguf_get_tensor_size(g, i);
+        if (len % n_expert_ != 0) continue;  // not one block per expert
+        const int il = std::atoi(name.c_str() + 4);
+        if (il < 0 || il > 4096) continue;
+        if ((int) layers_.size() <= il) layers_.resize(il + 1);
+        layers_[il].push_back({data + gguf_get_tensor_offset(g, i), len});
+    }
+    if (layers_.empty()) return false;
+    fd_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_ < 0) return false;
+    seen_.assign(n_expert_, 0);
+    return true;
+}
+
+void ExpertPrefetch::prefetch(int layer, const ggml_tensor * ids) {
+    if (layer < 0 || layer >= (int) layers_.size() || layers_[layer].empty()) return;
+    if (ids->type != GGML_TYPE_I32 || !ids->data) return;
+    if (++stamp_ == 0) {
+        std::fill(seen_.begin(), seen_.end(), 0);
+        stamp_ = 1;
+    }
+    // each picked expert once, however many tokens picked it (a prompt step picks most of them)
+    std::vector<int> picked;
+    for (int64_t t = 0; t < ids->ne[1]; t++) {
+        const auto * row = (const int32_t *) ((const char *) ids->data + t * ids->nb[1]);
+        for (int64_t k = 0; k < ids->ne[0]; k++) {
+            const int32_t e = *(const int32_t *) ((const char *) row + k * ids->nb[0]);
+            if (e < 0 || (uint32_t) e >= n_expert_ || seen_[e] == stamp_) continue;
+            seen_[e] = stamp_;
+            picked.push_back(e);
+        }
+    }
+    // the kernel cuts a bigger "read ahead" request down to its read-ahead size and drops the
+    // rest, so it is asked in pieces it takes whole; it reads them while the model goes on
+    constexpr uint64_t kAhead = 128 * 1024;
+    for (const Tensor & w : layers_[layer]) {
+        const uint64_t per = w.len / n_expert_;
+        for (int e : picked) {
+            const uint64_t lo = w.off + (uint64_t) e * per, hi = lo + per;
+            for (uint64_t o = lo; o < hi; o += kAhead) {
+                posix_fadvise(fd_, (off_t) o, (off_t) std::min(kAhead, hi - o), POSIX_FADV_WILLNEED);
+            }
+            asked_.fetch_add(per, std::memory_order_relaxed);
+        }
+    }
+}
+
+bool ExpertPrefetch::eval_cb(ggml_tensor * t, bool ask, void * user_data) {
+    // "ffn_moe_topk-<layer>": the experts each token of the step picked in that layer
+    static constexpr char kName[] = "ffn_moe_topk-";
+    if (std::strncmp(t->name, kName, sizeof(kName) - 1) != 0) return false;
+    if (ask) return true;  // stop the graph here, to read the picks before the experts are used
+    try {
+        static_cast<ExpertPrefetch *>(user_data)->prefetch(std::atoi(t->name + sizeof(kName) - 1), t);
+    } catch (...) {
+        // nothing read ahead: the model faults the experts in itself
+    }
+    return true;
+}
+
 }  // namespace oa

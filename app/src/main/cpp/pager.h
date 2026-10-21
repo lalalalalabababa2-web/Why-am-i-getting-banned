@@ -196,4 +196,37 @@ private:
     std::vector<int>         io_cpus_;
 };
 
+// A mixture of experts in low-memory mode: a token reads only the experts its router picks (8 of
+// 256 in MiniCPM-V 4.7 / Qwen3.5 35B-A3B), a few hundred KB each, scattered through every layer.
+// The pager leaves such a model to the kernel, which faults those in one small read at a time
+// while the model waits. This stops the graph right after each layer's router has picked
+// (llama's graph callback, "ffn_moe_topk") and asks the kernel to read every picked expert of
+// that layer at once, so the storage gets them all together. Advice only: a wrong guess costs a
+// read, never a wrong answer.
+class ExpertPrefetch {
+public:
+    ExpertPrefetch() = default;
+    ~ExpertPrefetch();
+    ExpertPrefetch(const ExpertPrefetch &) = delete;
+    ExpertPrefetch & operator=(const ExpertPrefetch &) = delete;
+
+    // False when the file is not a mixture of experts (or cannot be read).
+    bool open(const std::string & path);
+    static bool eval_cb(ggml_tensor * t, bool ask, void * user_data);
+    uint64_t asked_bytes() const { return asked_.load(); }  // read ahead so far
+
+private:
+    void prefetch(int layer, const ggml_tensor * ids);
+
+    struct Tensor {
+        uint64_t off = 0, len = 0;  // in the file, all experts
+    };
+    int                              fd_ = -1;
+    uint32_t                         n_expert_ = 0;
+    std::vector<std::vector<Tensor>> layers_;  // each layer's expert tensors
+    std::vector<uint32_t>            seen_;    // expert -> stamp, to ask once per expert
+    uint32_t                         stamp_ = 0;
+    std::atomic<uint64_t>            asked_{0};
+};
+
 }  // namespace oa

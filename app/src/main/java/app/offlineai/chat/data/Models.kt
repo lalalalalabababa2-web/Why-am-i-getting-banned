@@ -263,6 +263,25 @@ object Catalog {
             "prism-ml/Bonsai-27B-gguf", "Bonsai-27B-Q1_0.gguf", 3_803_452_480L, Family.QWEN, true, large = true,
             pictures = ExtraFile("Bonsai-27B-mmproj-Q8_0.gguf", 629_246_880L, "prism-ml/Bonsai-27B-gguf"),
         ),
+        // ---- OpenBMB: a 35B mixture of experts, bigger than the phone's memory; each word uses only
+        // the 8 experts (of 256) it picks, about 1 GB, which low-memory mode reads ahead from storage
+        CatalogModel(
+            "minicpmv47-35b-fast", "MiniCPM-V 4.7 35B-A3B (fastest)", "OpenBMB",
+            "35B of knowledge but only 3B works on each word, so it runs from storage even though it is bigger " +
+                "than the phone's memory. The smallest build (1-2 bits): the fastest, a little less accurate. " +
+                "Needs 10 GB of storage. Sees pictures.",
+            "AtomicChat/MiniCPM-V-4.7-35B-A3B-GGUF", "MiniCPM-V-4.7-35B-A3B-AD-IQ2_XXS-IQ1_M.gguf", 10_100_000_000L,
+            Family.QWEN, false, large = true,
+            pictures = ExtraFile("mmproj-model-f16.gguf", 1_119_575_840L, "openbmb/MiniCPM-V-4.7-35B-A3B-gguf"),
+        ),
+        CatalogModel(
+            "minicpmv47-35b", "MiniCPM-V 4.7 35B-A3B", "OpenBMB",
+            "The same 35B mixture of experts at about 2 bits: better answers than the fastest build, about 10% slower. " +
+                "Needs 11 GB of storage. Sees pictures.",
+            "AtomicChat/MiniCPM-V-4.7-35B-A3B-GGUF", "MiniCPM-V-4.7-35B-A3B-AD-IQ2_XS-IQ2_XXS.gguf", 11_300_000_000L,
+            Family.QWEN, false, large = true,
+            pictures = ExtraFile("mmproj-model-f16.gguf", 1_119_575_840L, "openbmb/MiniCPM-V-4.7-35B-A3B-gguf"),
+        ),
         CatalogModel(
             "gemma4-12b", "Gemma 4 12B", "Google",
             "The biggest Gemma that fits: Gemma 4 12B squeezed to about 3 bits. Smarter than E4B, sees pictures " +

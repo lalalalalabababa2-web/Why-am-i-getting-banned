@@ -18,7 +18,7 @@ if [ ! -f "$OUT/llama/build.ninja" ]; then
 fi
 cmake --build "$OUT/llama" --target llama llama-common mtmd test-llama-archs
 
-for arch in llama qwen35 gemma3 mistral3; do
+for arch in llama qwen35 qwen35moe gemma3 mistral3; do
   ls "$OUT/models/$arch"-*.gguf >/dev/null 2>&1 || \
     "$OUT/llama/bin/test-llama-archs" -a "^$arch\$" -o "$OUT/models/" >/dev/null
 done

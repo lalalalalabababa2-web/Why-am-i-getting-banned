@@ -269,6 +269,8 @@ public:
         auto p = shared_pager();
         return p ? p->stats() : PagerStats();
     }
+    // Bytes of picked experts read ahead (a mixture of experts in low memory). Engine thread.
+    uint64_t prefetched_bytes() const { return experts_ ? experts_->asked_bytes() : 0; }
     // Android asked the app for memory back: keep fewer layers of a paged model. Any thread.
     void trim_memory() {
         if (auto p = shared_pager()) p->trim();
@@ -399,6 +401,7 @@ private:
     bool                  self_bg_   = false;
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
+    std::unique_ptr<ExpertPrefetch> experts_;  // a mixture of experts in low memory (instead of the pager)
     std::shared_ptr<Pager> pager_;   // written on the engine thread only, under pager_mu_
     mutable std::mutex     pager_mu_;
 

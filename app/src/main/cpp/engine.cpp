@@ -237,6 +237,7 @@ void Engine::unload() {
         llama_model_free(model_);
         model_ = nullptr;
     }
+    experts_.reset();  // after the contexts that call it
     vocab_ = nullptr;
     cache_.clear();
     cache_extra_cells_ = 0;
@@ -288,7 +289,12 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // must not read the whole file while loading (it would push out what loaded first)
     if (params.low_memory && params.use_mmap && params.pager) {
         auto p = std::make_shared<Pager>();
-        if (p->open(path, file_mtp)) set_pager(std::move(p));
+        if (p->open(path, file_mtp)) {
+            set_pager(std::move(p));
+        } else {
+            auto x = std::make_unique<ExpertPrefetch>();
+            if (x->open(path)) experts_ = std::move(x);
+        }
     }
 
     auto mp = llama_model_default_params();
@@ -296,7 +302,8 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     mp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
     mp.use_extra_bufts = !params.low_memory;
     mp.load_mtp = file_mtp;
-    mp.no_populate = pager_ != nullptr;
+    // (nor for a mixture of experts too big for memory: each token reads only what it picks)
+    mp.no_populate = pager_ != nullptr || experts_ != nullptr;
     // with the pager, loading is the quick part and reading the kept layers the slow one
     std::function<bool(float)> load_progress_fn = progress;
     if (pager_ && progress) load_progress_fn = [&](float p) { return progress(p * 0.1f); };
@@ -372,6 +379,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     if (pager_) {
         cp.cb_eval = Pager::eval_cb;
         cp.cb_eval_user_data = pager_.get();
+    } else if (experts_) {
+        cp.cb_eval = ExpertPrefetch::eval_cb;
+        cp.cb_eval_user_data = experts_.get();
     }
     cp.no_perf = true;
     if (params.kv_q8) {

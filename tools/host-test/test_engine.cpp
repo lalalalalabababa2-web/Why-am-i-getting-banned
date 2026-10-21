@@ -213,6 +213,10 @@ static void test_cache(const std::string & path, bool kv_q8 = false, bool low_me
     CHECK(e.sync_prompt(p6, 0, err, nullptr, &st), "after-stop sync: %s", err.c_str());
     std::printf("    after stop reused=%d evaluated=%d\n", st.n_reused, st.n_evaluated);
     compare("after a stopped prompt", e, ref, p6);
+    if (budget_mb > 0 && moe) {
+        std::printf("    experts read ahead: %.1f MB\n", e.prefetched_bytes() / 1e6);
+        CHECK(e.prefetched_bytes() > 0, "the picked experts should have been read ahead");
+    }
     if (budget_mb > 0 && !moe) {
         const auto ps = e.pager_stats();
         std::printf("    pager: read %.1f MB, %d replans, resident present %.0f%%, a step through the model %.1f ms\n",
@@ -1303,7 +1307,8 @@ int main(int argc, char ** argv) {
     }
     test_cache(dir + "/qwen35-dense.gguf", false, true, 1);
     test_cache(dir + "/gemma3-dense.gguf", false, true, 1);
-    test_cache(dir + "/mistral3-moe.gguf", false, true, 1);  // the pager stays out of it
+    test_cache(dir + "/mistral3-moe.gguf", false, true, 1);  // the pager stays out, experts are read ahead
+    test_cache(dir + "/qwen35moe-moe.gguf", false, true, 1);  // MiniCPM-V 4.7 35B-A3B's architecture
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");
