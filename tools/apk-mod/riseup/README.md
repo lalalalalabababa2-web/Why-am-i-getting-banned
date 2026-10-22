@@ -22,3 +22,6 @@ a build signed with a different key over it, and the save is lost with it.
 
 Pick a subset with `--only god,skins`. `patch.py` checks every original instruction
 before it writes, so another game version stops with an error instead of breaking.
+
+`build-menu.sh` builds the same mods behind the floating switch menu
+(`tools/apk-mod/menu`) instead: writes `RiseUp-menu.apks`, everything starts off.

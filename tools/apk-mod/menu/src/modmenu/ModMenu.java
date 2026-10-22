@@ -1,10 +1,11 @@
-package pvzmod;
+package modmenu;
 
 import android.app.Activity;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Handler;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -23,13 +24,14 @@ import java.io.RandomAccessFile;
 import java.util.Arrays;
 
 /**
- * Floating, draggable mod menu. Called from PvZActivity.onCreate (one smali line).
- * Each switch writes its patch bytes into libpvz.so's code through /proc/self/mem,
+ * Floating, draggable mod menu. Called from the game's main activity onCreate (one
+ * smali line); the game's patch table is the generated Patches class.
+ * Each switch writes its patch bytes into the game library's code through /proc/self/mem,
  * which ignores page protection for the process's own memory, and writes the
  * original bytes back when switched off. Switch states are remembered.
  */
 public final class ModMenu {
-    private static final String LIB = "libpvz.so";
+    private static final String LIB = Patches.LIB;
     private static long base;
 
     public static void init(final Activity activity) {
@@ -47,7 +49,7 @@ public final class ModMenu {
     }
 
     private static void show(final Activity activity) {
-        final SharedPreferences prefs = activity.getSharedPreferences("pvzmod", 0);
+        final SharedPreferences prefs = activity.getSharedPreferences("modmenu", 0);
         final WindowManager wm = activity.getWindowManager();
         final float dp = activity.getResources().getDisplayMetrics().density;
 
@@ -79,9 +81,9 @@ public final class ModMenu {
             sw.setTextColor(Color.WHITE);
             sw.setTextSize(14);
             sw.setPadding(pad, pad / 2, pad, pad / 2);
-            boolean on = prefs.getBoolean(mod.label, false);
-            if (on && apply(mod, true) != null) on = false;
+            final boolean on = prefs.getBoolean(mod.label, false);
             sw.setChecked(on);
+            if (on) reapply(activity, mod, sw, 60);
             sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override public void onCheckedChanged(CompoundButton b, boolean checked) {
                     String err = apply(mod, checked);
@@ -145,11 +147,29 @@ public final class ModMenu {
         wm.addView(panel, lp);
     }
 
+    /**
+     * Re-applies a remembered mod. Some engines (Unity) load their library after
+     * onCreate, so this retries once a second until it is loaded.
+     */
+    private static void reapply(final Activity activity, final Mod mod, final Switch sw, final int triesLeft) {
+        String err = apply(mod, true);
+        if (err == null) return;
+        if (err.endsWith(" is not loaded") && triesLeft > 0) {
+            new Handler().postDelayed(new Runnable() {
+                @Override public void run() { reapply(activity, mod, sw, triesLeft - 1); }
+            }, 1000);
+            return;
+        }
+        Toast.makeText(activity, mod.label + ": " + err, Toast.LENGTH_LONG).show();
+        sw.setChecked(false);
+    }
+
     /** Writes the mod's patches (or the originals); returns an error message or null. */
     static String apply(Mod mod, boolean on) {
         try {
             long b = base();
-            if (b == 0) return LIB + " is not loaded";
+            // Nothing can be patched before the library loads, so "off" already holds.
+            if (b == 0) return on ? LIB + " is not loaded" : null;
             RandomAccessFile mem = new RandomAccessFile("/proc/self/mem", "rw");
             try {
                 // Check every site first so a mod is never left half applied.

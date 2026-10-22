@@ -26,7 +26,10 @@ mid-level, and is remembered for the next launch.
 | Sun x4 | `Board::AddSunMoney` adds 4× |
 | Coins x10 | `Coin::GetCoinValue` silver 10, gold 50, diamond 1000 |
 
+If the switches fail on your phone, `build-static.sh` builds the same mods written
+into `libpvz.so` itself, always on.
+
 How: `mods.py` checks each patch site in `libpvz.so` and generates the table in
-`Patches.java`; `src/pvzmod/ModMenu.java` writes those bytes (or the originals)
+`Patches.java`; the shared menu (`tools/apk-mod/menu`) writes those bytes (or the originals)
 into the loaded library through `/proc/self/mem`. The library file is not changed,
 and `PvZActivity.onCreate` gets one added line that starts the menu.
