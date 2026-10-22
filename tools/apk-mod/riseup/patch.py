@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Rise Up (com.riseup.game) 300000.15.0 mods: patches libil2cpp.so in place.
+
+usage: python3 patch.py libil2cpp.so [--only god,skins,...]
+
+Offsets are file offsets from Il2CppDumper's dump.cs for this exact build.
+Every patch checks the original instruction first, so a different game version
+fails cleanly instead of producing a broken binary. Needs: pip install capstone keystone-engine
+"""
+import argparse
+import sys
+
+import capstone
+import keystone
+
+# (name, file offset, expected original, replacement)
+# Replacement branches are written relative to their own address, like the originals.
+PATCHES = {
+    # PlayerController.OnCollisionEnter2D: "if (!IsAlive || IsImmortal || remoteGodMode) return"
+    # -> always return, so nothing pops the balloon.
+    "god": [
+        (0x259F07C, "cbnz w8, #0x259f088", "b #0x259f088"),
+    ],
+    # Unlock requirements read as 0, so the game's own unlock pass grants them.
+    # Premium (subscription) skins are left alone.
+    "skins": [
+        (0x267C008, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # BalloonForAttempts.NeedAttemptsCount
+        (0x267C018, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # BalloonForBalloonCount.NeedGetBalloonsCount
+        (0x267C028, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # BalloonForBestScore.NeedBestScoreToOpen
+        (0x267C038, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # BalloonForCurrency.Price
+        (0x267C058, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # BalloonForReward.NeedWatchRewardsCount
+        (0x267BFC8, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # ProtectorForCurrency.Price
+        (0x267BFE0, "ldr w0, [x0, #0x38]", "mov w0, #0"),  # ProtectorForReward.NeedWatchRewardsCount
+    ],
+    # CurrencyService: spending never fails and never subtracts; coins earned x64.
+    "coins": [
+        (0x2599430, "cset w0, ge", "mov w0, #1"),                       # IsValueEnough
+        (0x2599580, "b.ge #0x259958c", "b #0x259958c"),                 # TrySpend: skip the balance check
+        (0x25995A8, "sub w8, w24, w20", "mov w8, w24"),                 # TrySpend: keep the balance
+        (0x2599484, "add w8, w24, w20", "add w8, w24, w20, lsl #6"),    # AddValue: amount * 64
+    ],
+    # PlayerController.Move: rise speed multiplier 1.5 -> 1.0 (a third slower).
+    "slow": [
+        (0x259EF84, "fmov s0, #1.50000000", "fmov s0, #1.00000000"),
+    ],
+    # ScoreController.CalculateScoreAsync: stage score = height * 2 -> height * 20.
+    # The infinity guard's register is reused for the 20.0 constant, so the compare
+    # that fed it is replaced with one that always picks the computed score.
+    "score": [
+        (0x25A25BC, "fmov s1, w8", "fmov s1, #20.0"),
+        (0x25A25C8, "fadd s0, s0, s0", "fmul s0, s0, s1"),
+        (0x25A25D0, "fcmp s0, s1", "cmp w8, #0"),
+    ],
+}
+
+md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+ks = keystone.Ks(keystone.KS_ARCH_ARM64, keystone.KS_MODE_LITTLE_ENDIAN)
+
+
+def disasm(data, off):
+    insn = next(md.disasm(bytes(data[off:off + 4]), off), None)
+    return f"{insn.mnemonic} {insn.op_str}".strip() if insn else "?"
+
+
+def norm(s):
+    return " ".join(s.replace(".00000000", ".0").split())
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("lib")
+    ap.add_argument("--only", help="comma-separated: " + ",".join(PATCHES))
+    args = ap.parse_args()
+    groups = args.only.split(",") if args.only else list(PATCHES)
+
+    data = bytearray(open(args.lib, "rb").read())
+    plan = []
+    for g in groups:
+        for off, want, new in PATCHES[g]:
+            have = disasm(data, off)
+            enc, _ = ks.asm(new, off)
+            patched = bytes(enc)
+            if norm(have) == norm(want):
+                plan.append((g, off, patched, new))
+            elif data[off:off + 4] == patched:
+                print(f"  {g:6} {off:#x} already patched")
+            else:
+                sys.exit(f"{g} {off:#x}: expected '{want}', found '{have}'. Wrong game version?")
+
+    for g, off, patched, new in plan:
+        data[off:off + 4] = patched
+        print(f"  {g:6} {off:#x} -> {new}")
+    open(args.lib, "wb").write(data)
+
+
+if __name__ == "__main__":
+    main()
