@@ -27,6 +27,15 @@ MODS = [
         # Player.OnTriggerEnter2D: a missile hit always takes the "had a shield" path.
         (0x129619C, "cbz w8, #0x12961c8", "nop"),
     ]),
+    ("Always shielded", [
+        # Player.Reset: every round starts with the shield on. The clear of shieldActive
+        # and the SetActive(false) argument swap into "w1 = 1; shieldActive = w1".
+        (0x1295868, "strb wzr, [x19, #0xb1]", "mov w1, #1"),
+        (0x1295870, "mov w1, wzr", "strb w1, [x19, #0xb1]"),
+        # Player.OnTriggerEnter2D: a hit on the shield keeps it on and visible.
+        (0x12961A4, "strb wzr, [x19, #0xb1]", "nop"),
+        (0x12961B0, "mov w1, wzr", "mov w1, #1"),
+    ]),
     ("Unlimited coins", [
         (0x12A4308, "ldr x8, [x0, #0x30]; cbz x8, #0x12a431c; ldp w8, w9, [x8, #0x38]",
          "mov w0, #0x423f; movk w0, #0xf, lsl #16; ret"),  # PlayerProfile.get_Points -> 999999
@@ -55,6 +64,15 @@ MODS = [
         # Player.UpdateInput: current speed doubled before the velocity is set.
         # Takes the slot of "mov x1, xzr", the MethodInfo argument set_velocity ignores.
         (0x1295A94, "mov x1, xzr", "fadd s2, s2, s2"),
+    ]),
+    ("More power-ups", [
+        # PowerUpManager: a power-up 1 s into a run, and the next one 1 s after the
+        # last is collected or flies off screen, instead of the game's own delays.
+        # The last two take the slot of "mov x2, xzr", the MethodInfo argument
+        # MonoBehaviour.Invoke ignores.
+        (0x12A81F0, "fmul s0, s0, s1", "fmov s0, #1.0"),  # StartSpawning
+        (0x12A8630, "mov x2, xzr", "fmov s0, #1.0"),      # PowerUpCollected
+        (0x12A88F0, "mov x2, xzr", "fmov s0, #1.0"),      # CheckPowerUps
     ]),
 ]
 
