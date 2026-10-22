@@ -39,6 +39,8 @@ struct mtmd_context;
 struct mtmd_input_chunks;
 
 struct ggml_threadpool;  // ggml-cpu.h
+struct ggml_context;
+struct ggml_backend_buffer;
 
 namespace oa {
 
@@ -74,6 +76,14 @@ struct LoadParams {
     // whose memory can be wound back token by token).
     bool spec_ngram    = true;
     std::string drafter_path;  // Gemma 4 "mtp-*.gguf" assistant, or empty
+    // An MTP head guesses among this many of the most used tokens only (the first ids of the
+    // vocabulary, plus the special ones), instead of reading the output head for all of them: a
+    // fraction of the work per guess (Qwen3.5's head has 248k rows). The model still checks each
+    // guess against every token, so replies do not change. 0: the whole head.
+    int  draft_vocab   = 32768;
+    // Spec_n_max is the most per step; how many each step drafts is tuned as it goes (DraftTuner),
+    // from what drafting costs and earns with this model on this phone. False: always spec_n_max.
+    bool spec_auto     = true;
     // A small model of the same family with its own memory (Qwen3.5 0.8B for a Qwen3.5 9B) that
     // guesses the next few tokens while part of the model streams from storage, or empty. Used
     // only then: checking its guesses costs the model one read of what streams, like one token.
@@ -165,6 +175,43 @@ struct ChatCallbacks {
     std::function<void(int index, int total)> on_media;
 };
 
+// How many tokens to draft at each step, from what drafting has cost and earned so far with this
+// model on this phone: the time of a step that checks b tokens (the last one and b-1 drafted),
+// the time to draft one token, and how often a drafted token is kept at each place, given the
+// ones before it were. It picks the count with the most tokens written per second; now and then
+// it tries another again, since speeds drift with heat, threads and what the reply is about.
+// A CPU pays for most of every token it checks, and ARM's fast kernels take tokens four at a
+// time (checking 2 or 3 can cost more than 4), so a fixed count is often slower than none.
+class DraftTuner {
+public:
+    void reset(int n_max);
+    int  n_max() const { return n_max_; }
+    // Tokens to draft for the next step, 0 (none) to n_max.
+    int  pick();
+    // What the step did: `drafted` tokens came from the tuned drafter (0 when it did not draft,
+    // or the draft came from elsewhere), `kept` of them were what the model wrote; the step
+    // checked `batch` tokens in `t_verify_ms`.
+    void record(int drafted, int kept, double t_draft_ms, int batch, double t_verify_ms);
+    // Tokens per millisecond expected when drafting d per step; < 0 while not known.
+    double rate(int d) const;
+    int  steps() const { return steps_; }
+
+private:
+    double alpha(int i) const;
+    double step_ms(int d) const;
+
+    int n_max_ = 0;
+    int steps_ = 0;
+    std::vector<double> verify_ms_;  // [batch] smoothed time of a step that checks that many
+    std::vector<int>    verify_n_;
+    double              draft_ms_ = 0;  // per drafted token
+    int                 draft_n_  = 0;
+    std::vector<double> reached_;    // [place] drafts that got to be checked there (decaying)
+    std::vector<double> kept_;       // [place] of those, kept
+    std::vector<int>    last_;       // [d] step it was last picked
+    bool                retry_ = false;  // the last pick was not the best one, to check it again
+};
+
 struct ModelInfo {
     std::string name;
     std::string arch;
@@ -185,6 +232,8 @@ struct ModelInfo {
     bool        helper            = false;  // a helper model drafts while the model streams
     bool        pager             = false;  // low memory, with the pager looking after the model's pages
     bool        streaming         = false;  // part of the model is read from storage on every step
+    bool        experts_storage   = false;  // a mixture of experts bigger than memory: picked experts read ahead
+    int         draft_vocab       = 0;      // tokens the MTP head guesses among (0: all)
     uint64_t    resident_bytes    = 0;
     uint64_t    streamed_bytes    = 0;
     double      read_mbps         = 0;      // storage speed measured while loading
@@ -330,6 +379,8 @@ private:
     int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
     uint64_t budget_now() const;
     bool streaming() const { return pager_ && pager_->active(); }
+    // Part of the model comes from storage on every step: streamed layers, or experts read as picked.
+    bool from_storage() const { return streaming() || moe_storage_; }
     // The pager for the calls other threads make (the status line asks while a model may be
     // loading, which replaces it): a copy taken under the lock stays valid however long it is used.
     std::shared_ptr<Pager> shared_pager() const {
@@ -402,6 +453,14 @@ private:
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
     std::unique_ptr<ExpertPrefetch> experts_;  // a mixture of experts in low memory (instead of the pager)
+    bool                  moe_storage_ = false;    // ... bigger than the memory there is
+    DraftTuner            tuner_;
+    // the MTP head's smaller output head (LoadParams::draft_vocab)
+    bool make_draft_head(const std::string & path, int n_rows);
+    void free_draft_head();
+    ::ggml_context *             dft_head_ctx_ = nullptr;
+    ::ggml_backend_buffer *      dft_head_buf_ = nullptr;
+    int                          dft_head_rows_ = 0;
     std::shared_ptr<Pager> pager_;   // written on the engine thread only, under pager_mu_
     mutable std::mutex     pager_mu_;
 

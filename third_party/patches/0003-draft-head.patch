@@ -1,0 +1,179 @@
+diff --git a/include/llama.h b/include/llama.h
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -603,6 +603,13 @@
+     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
++
++    // [Offline AI] Gives the model's MTP head a smaller LM head to draft with: w holds the rows
++    // of the output head (in its own type) for the tokens in ids (I32, one per row). Drafts are
++    // then picked among those tokens only; the model still checks each one against its whole
++    // vocabulary, so replies do not change. nullptr removes it. Set it before making the
++    // drafting context; the tensors must outlive every context made after.
++    LLAMA_API void llama_model_set_draft_head(struct llama_model * model, struct ggml_tensor * w, struct ggml_tensor * ids);
+     LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_head_kv    (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_swa        (const struct llama_model * model);
+diff --git a/src/llama-model.h b/src/llama-model.h
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -741,6 +741,11 @@
+     struct ggml_tensor * output_s    = nullptr;
+     struct ggml_tensor * output_in_s = nullptr;
+ 
++    // [Offline AI] a smaller LM head for drafting (llama_model_set_draft_head): the rows of the
++    // most used tokens, so an MTP head guesses without reading the whole vocabulary's head
++    struct ggml_tensor * output_dft     = nullptr; // [n_embd_out, n_dft], the head's own type
++    struct ggml_tensor * output_dft_ids = nullptr; // [n_dft] I32: the token of each row
++
+     // NextN/MTP model-level projections
+     struct ggml_tensor * nextn_proj_pre  = nullptr;
+     struct ggml_tensor * nextn_proj_post = nullptr;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -3394,6 +3394,16 @@
+     return model->hparams.n_layer_nextn;
+ }
+ 
++void llama_model_set_draft_head(llama_model * model, ggml_tensor * w, ggml_tensor * ids) {
++    const ggml_tensor * head = model->output;
++    if (w && ids && (!head || ids->type != GGML_TYPE_I32 || ids->ne[0] != w->ne[1] || w->ne[0] != head->ne[0] ||
++                     w->ne[1] > head->ne[1])) {
++        w = ids = nullptr;  // not a head this model can use
++    }
++    model->output_dft     = w && ids ? w   : nullptr;
++    model->output_dft_ids = w && ids ? ids : nullptr;
++}
++
+ int32_t llama_model_dflash_selector_top_k(const llama_model * model) {
+     return model->hparams.dflash_selector_top_k;
+ }
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -1458,3 +1458,8 @@
+ 
+ // TODO: better name
+ int32_t llama_relative_position_bucket(llama_pos x, llama_pos y, uint64_t n_buckets, bool bidirectional);
++
++// [Offline AI] Logits from a drafting head that has the rows of some tokens only (w: [n_embd, n_dft],
++// ids: [n_dft] I32): those tokens get their logits, every other one -inf. cur: [n_embd, n_out].
++// Returns [n_vocab, n_out], what the whole head would give for the tokens it has.
++ggml_tensor * llama_build_draft_logits(ggml_context * ctx, ggml_tensor * w, ggml_tensor * ids, ggml_tensor * cur, int64_t n_vocab);
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -4249,3 +4249,20 @@
+ 
+     return relative_bucket;
+ }
++
++ggml_tensor * llama_build_draft_logits(ggml_context * ctx, ggml_tensor * w, ggml_tensor * ids, ggml_tensor * cur, int64_t n_vocab) {
++    ggml_tensor * sub = ggml_mul_mat(ctx, w, cur); // [n_dft, n_out]
++    const int64_t n_dft = sub->ne[0];
++    const int64_t n_out = sub->ne[1];
++
++    // every token -inf first (filled a whole row of the vocabulary at a time), then the rows of the
++    // tokens the head has, put in by token: rows of n_out values each
++    ggml_tensor * full = ggml_fill_inplace(ctx, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_vocab, n_out), -INFINITY);
++    if (n_out == 1) {
++        ggml_tensor * dst = ggml_set_rows(ctx, ggml_reshape_2d(ctx, full, 1, n_vocab), ggml_reshape_2d(ctx, sub, 1, n_dft), ids);
++        return ggml_reshape_2d(ctx, dst, n_vocab, 1);
++    }
++    ggml_tensor * dst = ggml_set_rows(ctx, ggml_cont(ctx, ggml_transpose(ctx, full)),
++                                      ggml_cont(ctx, ggml_transpose(ctx, sub)), ids); // [n_out, n_vocab]
++    return ggml_cont(ctx, ggml_transpose(ctx, dst)); // [n_vocab, n_out]
++}
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -659,7 +659,14 @@
+     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
+     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
+-    cur = build_lora_mm(head_w, cur, head_s);
++    if (model.output_dft && head_w == model.output && head_s == nullptr && cur->ne[1] > 0) {
++        // [Offline AI] guesses among the most used tokens only (llama_model_set_draft_head): a
++        // fraction of the whole head to read and multiply; the model checks every guess anyway
++        cur = llama_build_draft_logits(ctx0, model.output_dft, model.output_dft_ids,
++                build_hadamard_input(head_w, cur), head_w->ne[1]);
++    } else {
++        cur = build_lora_mm(head_w, cur, head_s);
++    }
+     cb(cur, "result_output", -1);
+ 
+     res->t_logits = cur;
+diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
+--- a/src/models/qwen35moe.cpp
++++ b/src/models/qwen35moe.cpp
+@@ -732,7 +732,14 @@
+     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
+     GGML_ASSERT(head_w && "QWEN35MOE MTP: missing LM head (nextn.shared_head_head or model.output)");
+-    cur = build_lora_mm(head_w, cur, head_s);
++    if (model.output_dft && head_w == model.output && head_s == nullptr && cur->ne[1] > 0) {
++        // [Offline AI] guesses among the most used tokens only (llama_model_set_draft_head): a
++        // fraction of the whole head to read and multiply; the model checks every guess anyway
++        cur = llama_build_draft_logits(ctx0, model.output_dft, model.output_dft_ids,
++                build_hadamard_input(head_w, cur), head_w->ne[1]);
++    } else {
++        cur = build_lora_mm(head_w, cur, head_s);
++    }
+     cb(cur, "result_output", -1);
+ 
+     res->t_logits = cur;
+diff --git a/common/speculative.h b/common/speculative.h
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -79,6 +79,13 @@
+     // the target's temp and seed, read only when the drafter samples probabilistically
+     float    temp = 1.0f;
+     uint32_t seed = LLAMA_DEFAULT_SEED;
++
++    // [Offline AI] the implementation that made the last draft (set by common_speculative_draft)
++    enum common_speculative_type type = COMMON_SPECULATIVE_TYPE_NONE;
++
++    // [Offline AI] a cap for the MTP head (or drafter) alone, below n_max: -1 none, 0 it does not
++    // draft this step (copying from the conversation still may)
++    int32_t n_max_head = -1;
+ };
+ 
+ common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1706,6 +1706,11 @@
+                 continue;
+             }
+ 
++            // [Offline AI] the caller decided this step drafts nothing with the head
++            if (dp.n_max_head == 0) {
++                continue;
++            }
++
+             n_drafting++;
+             drafting[seq_id] = true;
+             // greedy drafting leaves no candidates behind, so the verifier falls back to sample-and-match
+@@ -1803,7 +1808,11 @@
+                     dp.result_q->emplace_back(cur_p->data, cur_p->data + cur_p->size);
+                 }
+ 
+-                if (params.n_max <= (int) result.size()) {
++                // [Offline AI] the step's own caps too: drafting past them only to be cut off costs
++                // a whole MTP step per token for nothing
++                if ((params.n_max <= (int) result.size()) ||
++                    (dp.n_max > 0 && dp.n_max <= (int) result.size()) ||
++                    (dp.n_max_head > 0 && dp.n_max_head <= (int) result.size())) {
+                     drafting[seq_id] = false;
+                     n_drafting--;
+                     continue;
+@@ -2961,6 +2970,7 @@
+             // a new draft has been sampled
+             if (dp.drafting && !result.empty()) {
+                 dp.drafting = false;
++                dp.type = impl->type; // [Offline AI] who drafted it
+ 
+                 if (dp.n_max > 0) {
+                     if (!result.empty() && (int) result.size() > dp.n_max) {

@@ -33,6 +33,10 @@ data class ModelInfo(
     val pager: Boolean = false,
     /** Part of the model is read from storage on every step (it is bigger than the memory there is). */
     val streaming: Boolean = false,
+    /** A mixture of experts bigger than the memory: the experts each token picks are read from storage. */
+    val expertsStorage: Boolean = false,
+    /** Tokens the MTP head guesses among (the most used ones), 0 for all of them. */
+    val draftVocab: Int = 0,
     val residentBytes: Long = 0,
     val streamedBytes: Long = 0,
     /** How fast this phone's storage read the model while loading, MB/s. */
@@ -62,6 +66,8 @@ data class ModelInfo(
                 helper = j.optBoolean("helper"),
                 pager = j.optBoolean("pager"),
                 streaming = j.optBoolean("streaming"),
+                expertsStorage = j.optBoolean("experts_storage"),
+                draftVocab = j.optInt("draft_vocab"),
                 residentBytes = j.optLong("resident_bytes"),
                 streamedBytes = j.optLong("streamed_bytes"),
                 readMbps = j.optDouble("read_mbps", 0.0),
@@ -77,8 +83,10 @@ data class LoadConfig(
     val nUbatch: Int,
     val lowMemory: Boolean,
     val kvQ8: Boolean,
-    /** Tokens drafted ahead per step (0: off). */
+    /** Tokens drafted ahead per step (0: off): the most, or exactly that many when [specAuto] is off. */
     val specNMax: Int = 0,
+    /** How many to draft each step is tuned as replies go, from what drafting costs on this phone. */
+    val specAuto: Boolean = true,
     val specNgram: Boolean = false,
     /** A drafter file next to the model (Gemma 4 "mtp-*.gguf"), or empty. */
     val drafterPath: String = "",
@@ -102,6 +110,7 @@ data class LoadConfig(
         .put("low_memory", lowMemory)
         .put("kv_q8", kvQ8)
         .put("spec_n_max", specNMax)
+        .put("spec_auto", specAuto)
         .put("spec_ngram", specNgram)
         .put("drafter", drafterPath)
         .put("mmproj", mmprojPath)

@@ -5,6 +5,9 @@
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
 #   0002-no-populate.patch: a model parameter to map the file without reading all of it at load
 #     (low-memory mode reads only the layers it keeps; see app/src/main/cpp/pager.h)
+#   0003-draft-head.patch: an MTP head can draft with the rows of the most used tokens only
+#     (llama_model_set_draft_head), and stops at each step's own draft cap; the engine is told
+#     which drafter made a draft (see DraftTuner in app/src/main/cpp/engine.h)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../llama.cpp"

@@ -176,6 +176,57 @@ jobs:
         if: always()
         run: python3 ci/real_report.py real.log "arm64 streaming"
 
+  moe:
+    name: Mixture of experts bigger than memory (arm64, 4 GB)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h .
+
+      - name: Download the model
+        run: |
+          mkdir -p real-models && cd real-models
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
+          # what the app offers as MiniCPM-V 4.7 35B-A3B (fastest): 35B, 3B of it used per token
+          get AtomicChat/MiniCPM-V-4.7-35B-A3B-GGUF MiniCPM-V-4.7-35B-A3B-AD-IQ2_XXS-IQ1_M.gguf
+          df -h . ; free -g ; nproc
+
+      - name: Build
+        env:
+          REAL_MODELS: ${{ github.workspace }}/real-models
+          REAL_BUILD_ONLY: '1'
+        run: tools/host-test/real.sh
+
+      - name: Run in 4 GB
+        run: |
+          OUT=build/host-test
+          run() {
+            echo "== $2 (memory limited to 4 GB, cold)" | tee -a real.log
+            sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+            sudo systemd-run --scope -q -p MemoryMax=4G -p MemorySwapMax=0 \
+              timeout 2400 "$OUT/test_engine_real" "$OUT/models" third_party/llama.cpp real-models --stream "real-models/$1" "$2" "$3" "$4" 2>&1 \
+              | grep -v '^graph_compute\|^process_ubatch' | tee -a real.log || echo "  (stopped or failed: $?)" | tee -a real.log
+          }
+          # pager 0: the kernel alone (page faults, small prompt steps); pager 1: picked experts read
+          # ahead, big prompt steps, the next layer read while this one computes
+          run MiniCPM-V-4.7-35B-A3B-AD-IQ2_XXS-IQ1_M.gguf "MiniCPM-V 4.7 35B-A3B, experts left to the kernel" 0 0
+          run MiniCPM-V-4.7-35B-A3B-AD-IQ2_XXS-IQ1_M.gguf "MiniCPM-V 4.7 35B-A3B, experts read ahead" 1 0
+          ! grep -q "FAIL" real.log
+
+      - name: Results
+        if: always()
+        run: python3 ci/real_report.py real.log "arm64 mixture of experts"
+
   emulator:
     name: On-device tests (Android 14 emulator)
     needs: engine-tests

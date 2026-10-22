@@ -8,13 +8,16 @@
 #include "llama-ext.h"   // memory breakdown (llama's staging API)
 #include "ggml-backend.h"
 #include "ggml-cpu.h"     // threadpool types (the functions come from the loaded CPU backend)
+#include "gguf.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <fcntl.h>
 #include <sched.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -168,6 +171,9 @@ static ChatResult & with_faults(ChatResult & r, long faults0) {
 
 // Drafted tokens a hybrid model can copy from the conversation per step (one recurrent-state copy each).
 static constexpr int kRsNgram = 3;
+// Tokens per prompt step for a mixture of experts read from storage (each step reads nearly every
+// expert once, however many tokens it has).
+static constexpr uint32_t kStorageStep = 1024;
 
 static double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -191,6 +197,213 @@ Engine::Engine() = default;
 
 Engine::~Engine() {
     unload();
+}
+
+// ---------------------------------------------------------------- drafting, tuned as it goes
+
+namespace {
+constexpr double kTuneSmooth = 0.2;   // weight of the newest step in the smoothed times
+constexpr double kTuneRetry  = 0.5;   // ... when it tried a count it does not usually pick
+constexpr double kTuneDecay  = 0.98;  // how fast old drafts stop counting (about 50 steps)
+constexpr int    kTuneFirst  = 2;     // steps each count is tried before the tuner trusts it
+constexpr int    kTuneAgain  = 16;    // every so many steps, a count not picked lately
+}  // namespace
+
+void DraftTuner::reset(int n_max) {
+    n_max_ = std::max(0, n_max);
+    steps_ = 0;
+    verify_ms_.assign((size_t) n_max_ + 2, 0.0);
+    verify_n_.assign((size_t) n_max_ + 2, 0);
+    draft_ms_ = 0;
+    draft_n_ = 0;
+    reached_.assign((size_t) n_max_ + 1, 0.0);
+    kept_.assign((size_t) n_max_ + 1, 0.0);
+    last_.assign((size_t) n_max_ + 1, 0);
+    retry_ = false;
+}
+
+double DraftTuner::alpha(int i) const {
+    // with nothing seen yet, an even chance (1 kept of 2)
+    return (kept_[i] + 1.0) / (reached_[i] + 2.0);
+}
+
+double DraftTuner::step_ms(int d) const {
+    const int b = d + 1;
+    if (verify_n_[b] == 0 || (d > 0 && draft_n_ == 0)) return -1;
+    return verify_ms_[b] + d * draft_ms_;
+}
+
+double DraftTuner::rate(int d) const {
+    if (d < 0 || d > n_max_) return -1;
+    const double ms = step_ms(d);
+    if (ms <= 0) return -1;
+    // tokens a step writes: the model's own, then each draft while all before it were kept
+    double tokens = 1.0, p = 1.0;
+    for (int i = 1; i <= d; i++) {
+        p *= alpha(i);
+        tokens += p;
+    }
+    return tokens / ms;
+}
+
+int DraftTuner::pick() {
+    if (n_max_ <= 0) return 0;
+    steps_++;
+    int d = -1;
+    // first each count a couple of times: the most first (it measures every place), then none
+    for (int k = 0; k <= n_max_ && d < 0; k++) {
+        const int c = k == 0 ? n_max_ : k - 1;
+        if (verify_n_[c + 1] < kTuneFirst) d = c;
+    }
+    if (d < 0) {
+        int best = 0;
+        double best_rate = -1;
+        for (int c = 0; c <= n_max_; c++) {
+            const double r = rate(c);
+            if (r > best_rate) {
+                best_rate = r;
+                best = c;
+            }
+        }
+        d = best;
+        if (steps_ % kTuneAgain == 0) {
+            // the count not picked for longest, so a phone that warmed up or cooled down is noticed
+            int oldest = -1;
+            for (int c = 0; c <= n_max_; c++) {
+                if (c != best && (oldest < 0 || last_[c] < last_[oldest])) oldest = c;
+            }
+            if (oldest >= 0) d = oldest;
+        }
+        retry_ = d != best;
+    }
+    last_[d] = steps_;
+    return d;
+}
+
+void DraftTuner::record(int drafted, int kept, double t_draft_ms, int batch, double t_verify_ms) {
+    if (n_max_ <= 0) return;
+    if (batch >= 1 && batch < (int) verify_ms_.size() && t_verify_ms > 0) {
+        // a count tried again after a while weighs more: it is all there is to go on for it
+        const double w = retry_ ? kTuneRetry : kTuneSmooth;
+        double & v = verify_ms_[batch];
+        v = verify_n_[batch] == 0 ? t_verify_ms : v + w * (t_verify_ms - v);
+        verify_n_[batch]++;
+    }
+    retry_ = false;
+    if (drafted > 0) {
+        const double per = std::max(0.0, t_draft_ms) / drafted;
+        draft_ms_ = draft_n_ == 0 ? per : draft_ms_ + kTuneSmooth * (per - draft_ms_);
+        draft_n_++;
+        for (auto & r : reached_) r *= kTuneDecay;
+        for (auto & k : kept_) k *= kTuneDecay;
+        // the drafts up to the first one rejected were checked; the ones before it were kept
+        const int reached = std::min(kept + 1, drafted);
+        for (int i = 1; i <= reached && i <= n_max_; i++) reached_[i] += 1.0;
+        for (int i = 1; i <= kept && i <= n_max_; i++) kept_[i] += 1.0;
+    }
+}
+
+// ---------------------------------------------------------------- the MTP head's smaller output head
+
+void Engine::free_draft_head() {
+    if (model_) llama_model_set_draft_head(model_, nullptr, nullptr);
+    if (dft_head_buf_) {
+        ggml_backend_buffer_free(dft_head_buf_);
+        dft_head_buf_ = nullptr;
+    }
+    if (dft_head_ctx_) {
+        ggml_free(dft_head_ctx_);
+        dft_head_ctx_ = nullptr;
+    }
+    dft_head_rows_ = 0;
+}
+
+bool Engine::make_draft_head(const std::string & path, int n_rows) {
+    free_draft_head();
+    if (!model_ || !vocab_ || n_rows <= 0) return false;
+    ggml_context * meta = nullptr;
+    gguf_init_params gp;
+    gp.no_alloc = true;
+    gp.ctx = &meta;
+    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+    if (!g) return false;
+    struct Free {
+        gguf_context * g;
+        ggml_context * m;
+        ~Free() {
+            if (m) ggml_free(m);
+            gguf_free(g);
+        }
+    } free_g{g, meta};
+    // the output head, or the input table when the model writes with it (tied embeddings)
+    int64_t ti = gguf_find_tensor(g, "output.weight");
+    if (ti < 0) ti = gguf_find_tensor(g, "token_embd.weight");
+    if (ti < 0) return false;
+    const ggml_tensor * head = ggml_get_tensor(meta, gguf_get_tensor_name(g, ti));
+    if (!head || ggml_n_dims(head) != 2) return false;
+    const int64_t n_embd = head->ne[0];
+    const int64_t n_head = head->ne[1];
+    const size_t  row    = ggml_row_size(head->type, n_embd);
+    const uint64_t off   = gguf_get_data_offset(g) + gguf_get_tensor_offset(g, ti);
+
+    // the first ids are the most used ones (byte-pair merges come in the order they were learned,
+    // the most frequent first); the special tokens past them are added (end of turn, thinking)
+    std::vector<int32_t> ids;
+    const int64_t n_vocab = std::min<int64_t>(n_head, llama_vocab_n_tokens(vocab_));
+    for (int32_t i = 0; i < std::min<int64_t>(n_rows, n_head); i++) ids.push_back(i);
+    for (int64_t i = n_rows; i < n_vocab; i++) {
+        const auto attr = llama_vocab_get_attr(vocab_, (llama_token) i);
+        if ((attr & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED)) || llama_vocab_is_eog(vocab_, (llama_token) i)) {
+            ids.push_back((int32_t) i);
+        }
+    }
+    if ((int64_t) ids.size() * 4 > n_head * 3) return false;  // not enough smaller to be worth it
+
+    ggml_init_params ip;
+    ip.mem_size = 3 * ggml_tensor_overhead();
+    ip.mem_buffer = nullptr;
+    ip.no_alloc = true;
+    dft_head_ctx_ = ggml_init(ip);
+    if (!dft_head_ctx_) return false;
+    ggml_tensor * w = ggml_new_tensor_2d(dft_head_ctx_, head->type, n_embd, (int64_t) ids.size());
+    ggml_tensor * t_ids = ggml_new_tensor_1d(dft_head_ctx_, GGML_TYPE_I32, (int64_t) ids.size());
+    ggml_set_name(w, "output_dft.weight");
+    ggml_set_name(t_ids, "output_dft.ids");
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (cpu) dft_head_buf_ = ggml_backend_alloc_ctx_tensors_from_buft(dft_head_ctx_, ggml_backend_dev_buffer_type(cpu));
+    if (!dft_head_buf_) {
+        free_draft_head();
+        return false;
+    }
+    std::memcpy(t_ids->data, ids.data(), ids.size() * sizeof(int32_t));
+    // the rows, a run of consecutive ids at a time
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    bool ok = fd >= 0;
+    for (size_t i = 0; ok && i < ids.size();) {
+        size_t j = i + 1;
+        while (j < ids.size() && ids[j] == ids[j - 1] + 1) j++;
+        uint8_t * dst = (uint8_t *) w->data + i * row;
+        const size_t len = (j - i) * row;
+        const uint64_t src = off + (uint64_t) ids[i] * row;
+        for (size_t got = 0; got < len;) {
+            const ssize_t r = pread(fd, dst + got, len - got, (off_t) (src + got));
+            if (r <= 0) {
+                if (r < 0 && errno == EINTR) continue;
+                ok = false;
+                break;
+            }
+            got += (size_t) r;
+        }
+        i = j;
+    }
+    if (fd >= 0) ::close(fd);
+    if (!ok) {
+        free_draft_head();
+        return false;
+    }
+    llama_model_set_draft_head(model_, w, t_ids);
+    dft_head_rows_ = (int) ids.size();
+    return true;
 }
 
 void Engine::free_spec() {
@@ -233,11 +446,14 @@ void Engine::unload() {
         llama_free(ctx_);
         ctx_ = nullptr;
     }
+    free_draft_head();  // after the contexts that read it, before the model it is set on
     if (model_) {
         llama_model_free(model_);
         model_ = nullptr;
     }
     experts_.reset();  // after the contexts that call it
+    moe_storage_ = false;
+    tuner_.reset(0);
     vocab_ = nullptr;
     cache_.clear();
     cache_extra_cells_ = 0;
@@ -337,6 +553,10 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // the contexts exist): drafting is then nearly free, since checking several guessed tokens
     // costs the same one read of the model as writing one
     const bool will_stream = pager_ && llama_model_size(model_) + (256ull << 20) > budget_now();
+    // a mixture of experts bigger than the memory: picked experts are read ahead of the model;
+    // one that fits needs no help (and no stop in the graph at every layer)
+    moe_storage_ = experts_ && llama_model_size(model_) + (256ull << 20) > budget_now();
+    if (experts_ && !moe_storage_) experts_.reset();
     {
         char desc[256] = {0};
         llama_model_desc(model_, desc, sizeof desc);
@@ -364,6 +584,12 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.n_ctx = (uint32_t) std::max(512, params.n_ctx);
     cp.n_batch = (uint32_t) std::max(32, params.n_batch);
     cp.n_ubatch = std::min<uint32_t>(cp.n_batch, (uint32_t) std::max(16, params.n_ubatch));
+    if (moe_storage_) {
+        // every prompt step reads nearly all the experts from storage, whatever its size: big
+        // steps read them once for many tokens (a mixture of experts is light on memory per token)
+        cp.n_batch = std::max<uint32_t>(cp.n_batch, kStorageStep);
+        cp.n_ubatch = cp.n_batch;
+    }
     cp.n_seq_max = 1;
     cp.n_threads = std::max(1, params.n_threads);
     cp.n_threads_batch = std::max(1, params.n_threads);
@@ -455,6 +681,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         dcp.cb_eval = nullptr;
         dcp.cb_eval_user_data = nullptr;
         if (file_mtp) {
+            // its guesses among the most used tokens only, a fraction of the work per guess; not
+            // while the model comes from storage, where memory is worth more than the CPU time
+            if (params.draft_vocab > 0 && !will_stream && !moe_storage_) make_draft_head(path, params.draft_vocab);
             ctx_dft_ = llama_init_from_model(model_, dcp);
         } else if (use_drafter) {
             auto mpd = llama_model_default_params();
@@ -499,6 +728,11 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
             }
             if (spec_) {
                 spec_n_max_ = n_draft;
+                // the head's drafts per step are tuned as replies go (a hybrid winds back only as
+                // far as it keeps copies of its state)
+                int tune = head && params.spec_auto ? n_draft : 0;
+                if (tune > 0 && !can_rm_part_) tune = std::min(tune, (int) llama_n_rs_seq(ctx_));
+                tuner_.reset(tune);
                 ngram_ = want_ngram;
                 if (head) spec_kind_ = file_mtp ? "mtp" : "drafter";
                 if (want_ngram) spec_kind_ += spec_kind_.empty() ? "ngram" : "+ngram";
@@ -612,6 +846,8 @@ ModelInfo Engine::info() const {
         mi.streamed_bytes = ps.streamed_bytes;
         mi.read_mbps = ps.read_mbps;
     }
+    mi.experts_storage = moe_storage_;
+    mi.draft_vocab = dft_head_rows_;
     return mi;
 }
 
@@ -972,9 +1208,10 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
     common_batch batch(ctx_);
     // While someone watches the progress, steps are sized to take about a second each (a big model
     // reading a long message would otherwise sit at 0% for the whole first step of 256 tokens).
-    // Streaming from storage, every step reads the streamed layers once whatever its size, so
-    // steps are as big as they go from the start.
-    int step = progress && !streaming() ? std::min(n_batch, 32) : n_batch;
+    // From storage (streamed layers, or a mixture of experts whose every step reads nearly all its
+    // experts), a step costs the same read of the model whatever its size, so steps are as big as
+    // they go from the start.
+    int step = progress && !from_storage() ? std::min(n_batch, 32) : n_batch;
     for (size_t i = from; i < to;) {
         size_t n = std::min<size_t>(step, to - i);
         // 1- and 2-bit weights (Bonsai) are read four tokens at a time (third_party/patches); a step
@@ -1015,7 +1252,7 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
             err = "stopped";
             return false;
         }
-        if (progress && n >= 8 && !streaming()) {
+        if (progress && n >= 8 && !from_storage()) {
             const double ms = std::max(1.0, ms_since(t_step));
             // tokens in about a second and a half, a multiple of 4, at least 8
             int want = (int) (n * 1500.0 / ms);
@@ -1693,6 +1930,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     const int spec_cap = req.spec_n_max > 0 ? std::min(req.spec_n_max, spec_n_out_ - 1)
                                             : std::max(spec_n_max_, ngram_ ? 32 : 0);
     const bool rs_limited = !can_rm_part_;
+    // how many the head drafts per step is tuned as replies go, unless the request fixes it (the
+    // drafting test) or the head is not tuned
+    const bool tuned = spec_on && req.spec_n_max < 0 && tuner_.n_max() > 0;
     std::vector<token> spec_prompt;
     if (spec_on) {
         text_only(cache_, spec_prompt);
@@ -1784,6 +2024,8 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         draft.clear();
         draft_q.clear();
         bool from_helper = false;
+        bool from_head = false;
+        double t_draft_step = 0;
         if (spec_on) {
             int cap = spec_cap;
             cap = std::min(cap, n_ctx - cells_used() - 3);
@@ -1794,6 +2036,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 auto & dp = common_speculative_get_draft_params(spec_, 0);
                 dp.drafting = true;
                 dp.n_max = cap;
+                // the head drafts as many as tuned for this phone; copying may still go up to cap
+                dp.n_max_head = tuned ? std::min(cap, tuner_.pick()) : -1;
+                dp.type = COMMON_SPECULATIVE_TYPE_NONE;
                 dp.pos0 = pos;
                 dp.id_last = last;
                 dp.prompt = &spec_prompt;
@@ -1803,19 +2048,22 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 dp.seed = sp.seed;
                 const auto t_d = std::chrono::steady_clock::now();
                 common_speculative_draft(spec_);
-                res.stats.t_draft_ms += ms_since(t_d);
+                t_draft_step = ms_since(t_d);
+                res.stats.t_draft_ms += t_draft_step;
+                from_head = !draft.empty() && dp.type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
                 // a draft never holds anything the model could not read
                 size_t okn = 0;
                 while (okn < draft.size() && draft[okn] >= 0 && draft[okn] < n_vocab) okn++;
                 if (okn < draft.size()) draft.resize(okn);
                 if ((int) draft.size() > cap) draft.resize(cap);
-                // ggml's repacked ARM kernels read the weights once for every 4 tokens of a step and
-                // once more for each token left over, so a step of 4 costs little more than 1 while
-                // a step of 2 or 3 costs 2 or 3 (measured on an ARM server CPU in CI). Checking
-                // 4k tokens (the last one plus 4k-1 drafted) keeps every step on the fast path.
-                // Streaming from storage, the read of the model costs the same for any size of
-                // step, so every guess is kept.
-                if (draft.size() >= 3 && !streaming()) draft.resize((draft.size() + 1) / 4 * 4 - 1);
+                // Copied drafts (free to make, often long): ggml's repacked ARM kernels read the
+                // weights once for every 4 tokens of a step and once more for each token left over,
+                // so a step of 4 costs little more than 1 while a step of 2 or 3 costs 2 or 3
+                // (measured on an ARM server CPU in CI). Checking 4k tokens (the last one plus 4k-1
+                // drafted) keeps every step on the fast path. From storage, the read of the model
+                // costs the same for any size of step, so every guess is kept. (The head's count is
+                // tuned on the phone itself, which learns the same.)
+                if (!from_head && draft.size() >= 3 && !from_storage()) draft.resize((draft.size() + 1) / 4 * 4 - 1);
                 if (draft_q.size() > draft.size()) draft_q.resize(draft.size());
                 // the drafter wrote its guesses into its own memory; the check below starts clean
                 trim_draft((size_t) pos);
@@ -1841,7 +2089,8 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         for (size_t i = 0; i < draft.size(); i++) batch.add(draft[i], pos + 1 + (llama_pos) i, 0, true);
         const auto t_v = std::chrono::steady_clock::now();
         const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
-        res.stats.t_verify_ms += ms_since(t_v);
+        double t_step = ms_since(t_v);
+        res.stats.t_verify_ms += t_step;
         if (ret != 0) {
             const size_t before = cache_.size();
             if (!can_rm_part_) {
@@ -1861,7 +2110,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         if (spec_) {
             const auto t_s = std::chrono::steady_clock::now();
             common_speculative_process(spec_, batch);
-            res.stats.t_sync_ms += ms_since(t_s);
+            const double t_sync = ms_since(t_s);
+            res.stats.t_sync_ms += t_sync;
+            t_step += t_sync;  // the drafter keeping up costs more with each token checked
         }
 
         std::vector<token> ids;
@@ -1898,6 +2149,10 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             written.insert(written.end(), draft.begin(), draft.begin() + accepted);
             helper_on = helper_feed(written.data(), written.size());
             res.stats.t_sync_ms += ms_since(t_h);
+        }
+        if (tuned) {
+            tuner_.record(from_head ? (int) draft.size() : 0, from_head ? (int) accepted : 0, t_draft_step,
+                          (int) draft.size() + 1, t_step);
         }
         res.stats.n_drafted += (int) draft.size();
         res.stats.n_accepted += (int) accepted;

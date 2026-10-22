@@ -166,21 +166,15 @@ class SettingsActivity : AppCompatActivity() {
         switch("Draft ahead with a helper",
             "Models with an MTP head (the Qwen3.5 files here) or a drafter (Gemma 4) can guess the next few words and " +
                 "check them in one step. Replies read the same; only the speed changes. On a phone's CPU checking extra " +
-                "words is not free, so it is used for a model only once the drafting test below finds it faster on " +
-                "this phone, or with a number set here.$reloadNote",
+                "words is not free, so by default the app measures as it writes how much each extra word costs and how " +
+                "often the guesses are kept, and drafts as many as are worth it at each step: none when it does not pay. " +
+                "Qwen3.5's head guesses among the 32k most used words only, a fraction of the work per guess.$reloadNote",
             s.speculative) { s.speculative = it; rebuild() }
         if (s.speculative) {
-            val file = app.engine.loaded?.key
-            val measured = file?.let { s.measuredDrafts(it) } ?: -1
-            val autoLabel = when {
-                measured > 0 -> "Automatic (test: $measured)"
-                measured == 0 -> "Automatic (test: off for this model)"
-                else -> "Automatic (off until tested)"
-            }
             choice("Words drafted per step",
-                "The drafting test picks this for each model. 3 is usually best when drafting helps at all: the CPU " +
-                    "checks words in groups of 4 most efficiently.$reloadNote",
-                listOf(autoLabel) + Settings.DRAFT_TOKENS.drop(1).map { "$it" }, Settings.DRAFT_TOKENS.indexOf(s.draftTokens).coerceAtLeast(0)) {
+                "Automatic tunes it on this phone as replies go, up to 3 (the CPU checks words in groups of 4 most " +
+                    "efficiently). A number fixes it.$reloadNote",
+                listOf("Automatic") + Settings.DRAFT_TOKENS.drop(1).map { "$it" }, Settings.DRAFT_TOKENS.indexOf(s.draftTokens).coerceAtLeast(0)) {
                 s.draftTokens = Settings.DRAFT_TOKENS[it]
             }
         }
@@ -200,7 +194,7 @@ class SettingsActivity : AppCompatActivity() {
             content.addView(note(desc))
         }
         row("Drafting test", s.draftSummary.ifBlank {
-            "Writes the same short text with drafting off and with 1, 2 and 3 drafted words, and keeps the fastest for this model."
+            "Writes the same short text with drafting off, with 1, 2 and 3 drafted words and tuned, and shows how fast each was."
         }) { runDraftTest() }
 
         content.addView(sectionTitle("Pictures, video and sound"))
@@ -400,16 +394,19 @@ class SettingsActivity : AppCompatActivity() {
                 return
             }
         }
-        if ((!head || m.info.specNMax < 3) && !reloaded) {
-            // load once with the helper and room for 3 drafts per step, so every length can be tried
+        if ((!head || m.info.specNMax < 3 || !m.config.specAuto) && !reloaded) {
+            // load once with the helper, room for 3 drafts per step and tuning, so every way can be tried
             val keepTokens = app.settings.draftTokens
             val keepSpec = app.settings.speculative
-            app.settings.draftTokens = 3
+            val keepMeasured = app.settings.measuredDrafts(m.key)
+            app.settings.draftTokens = 0
             app.settings.speculative = true
+            app.settings.setMeasuredDrafts(m.key, -1)
             Toast.makeText(this, "Loading the model with its drafting helper…", Toast.LENGTH_SHORT).show()
             app.loadModel(local) { err ->
                 app.settings.draftTokens = keepTokens
                 app.settings.speculative = keepSpec
+                app.settings.setMeasuredDrafts(m.key, keepMeasured)
                 if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show() else if (!isFinishing) runDraftTest(reloaded = true)
             }
             return
@@ -419,8 +416,8 @@ class SettingsActivity : AppCompatActivity() {
             app.reloadIfNeeded()
             return
         }
-        // drafting off, then each length
-        val candidates = listOf(0, 1, 2, 3).filter { it <= m.info.specNMax }
+        // drafting off, then each length, then tuned as it goes (-1: as loaded)
+        val candidates = listOf(0, 1, 2, 3).filter { it <= m.info.specNMax } + listOf(-1)
         val out = text("Writing a short text ${candidates.size} times with ${m.displayName}. Keep the app open.\n", 14f, Palette.text2).apply {
             setPadding(dp(24), dp(8), dp(24), 0)
             typeface = android.graphics.Typeface.MONOSPACE
@@ -434,7 +431,7 @@ class SettingsActivity : AppCompatActivity() {
             .show()
         val fam = local.family.recommended()
         val results = mutableListOf<Pair<Int, Double>>()
-        fun label(n: Int) = when (n) { 0 -> "off"; -1 -> "on"; else -> "$n" }
+        fun label(n: Int) = when (n) { 0 -> "off"; -1 -> "auto"; else -> "$n" }
         fun next(i: Int) {
             if (stopped || i >= candidates.size || isFinishing) {
                 dialog.dismiss()
@@ -475,25 +472,32 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun offerDraftResult(file: String, name: String, results: List<Pair<Int, Double>>) {
-        val best = results.maxByOrNull { it.second } ?: return
+        val fixed = results.filter { it.first >= 0 }.maxByOrNull { it.second } ?: return
+        val auto = results.firstOrNull { it.first == -1 }?.second ?: 0.0
         val off = results.firstOrNull { it.first == 0 }?.second ?: 0.0
-        val summary = results.joinToString(", ") {
-            String.format(Locale.US, "%s: %.1f", if (it.first == 0) "off" else "${it.first}", it.second)
-        }
-        val gain = if (off > 0) String.format(Locale.US, " (%.0f%% faster than without)", (best.second / off - 1) * 100) else ""
+        fun label(n: Int) = when (n) { 0 -> "off"; -1 -> "auto"; else -> "$n" }
+        val summary = results.joinToString(", ") { String.format(Locale.US, "%s: %.1f", label(it.first), it.second) }
+        fun gain(v: Double) = if (off > 0 && v > off) String.format(Locale.US, " (%.0f%% faster than without)", (v / off - 1) * 100) else ""
+        // automatic learns as it goes (its first steps try every count), so it keeps the job unless a
+        // fixed count was clearly faster
+        val keepAuto = auto >= fixed.second * 0.95
         val msg = String.format(Locale.US, "Tokens per second with %s:\n%s\n\n", name, summary) + when {
-            best.first == 0 -> "Drafting does not make this model faster on this phone. Keep it off for this model?"
-            else -> "Fastest: ${best.first} drafted words per step$gain. Use that for this model?"
+            keepAuto -> "Automatic is as fast as the best fixed count${gain(auto)}, and keeps adjusting as the phone warms up. Keep it?"
+            fixed.first == 0 -> "Drafting does not make this model faster on this phone. Turn it off for this model?"
+            else -> "Fastest: ${fixed.first} drafted words per step${gain(fixed.second)}. Fix that for this model?"
         }
         AlertDialog.Builder(this)
             .setTitle("Drafting test")
             .setMessage(msg)
             .setPositiveButton("Yes") { _, _ ->
-                app.settings.setMeasuredDrafts(file, best.first)
+                app.settings.setMeasuredDrafts(file, if (keepAuto) -1 else fixed.first)
                 app.settings.draftTokens = 0
-                if (best.first > 0) app.settings.speculative = true
-                app.settings.draftSummary = String.format(Locale.US, "%s: %s tok/s. Using %s.", name, summary,
-                    if (best.first == 0) "no drafting" else "${best.first} per step")
+                if (keepAuto || fixed.first > 0) app.settings.speculative = true
+                app.settings.draftSummary = String.format(Locale.US, "%s: %s tok/s. Using %s.", name, summary, when {
+                    keepAuto -> "automatic"
+                    fixed.first == 0 -> "no drafting"
+                    else -> "${fixed.first} per step"
+                })
                 app.reloadIfNeeded()
                 rebuild()
             }

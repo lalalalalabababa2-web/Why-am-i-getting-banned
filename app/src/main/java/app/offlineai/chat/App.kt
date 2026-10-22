@@ -162,7 +162,7 @@ class App : Application() {
 
     fun configFor(model: LocalModel): LoadConfig {
         val low = lowMemoryFor(model)
-        val drafts = settings.draftsFor(model.file.name, low && settings.streaming && model.catalog?.mtp == true)
+        val drafts = settings.draftsFor(model.file.name)
         return LoadConfig(
             nCtx = settings.contextSize,
             nThreads = settings.baseThreads(),
@@ -171,6 +171,7 @@ class App : Application() {
             // a model too big for fast mode also gets the half-size conversation memory, unless set by hand
             kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO),
             specNMax = drafts,
+            specAuto = settings.draftsTuned(model.file.name),
             specNgram = settings.copyDrafts,
             drafterPath = if (drafts > 0 && model.hasDrafter) model.drafterFile.absolutePath else "",
             mmprojPath = if (model.hasPictures) model.picturesFile.absolutePath else "",

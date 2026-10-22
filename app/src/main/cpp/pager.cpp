@@ -960,6 +960,9 @@ void Pager::loop() {
 
 // ---- ExpertPrefetch
 
+// a prompt step with this many tokens picks most experts of a layer (8 of 256 each: 87% at 64)
+static constexpr int64_t kWholeLayerTokens = 64;
+
 ExpertPrefetch::~ExpertPrefetch() {
     if (fd_ >= 0) ::close(fd_);
 }
@@ -1024,15 +1027,20 @@ void ExpertPrefetch::prefetch(int layer, const ggml_tensor * ids) {
     // the kernel cuts a bigger "read ahead" request down to its read-ahead size and drops the
     // rest, so it is asked in pieces it takes whole; it reads them while the model goes on
     constexpr uint64_t kAhead = 128 * 1024;
+    auto ask = [&](uint64_t lo, uint64_t hi) {
+        for (uint64_t o = lo; o < hi; o += kAhead) {
+            posix_fadvise(fd_, (off_t) o, (off_t) std::min(kAhead, hi - o), POSIX_FADV_WILLNEED);
+        }
+        asked_.fetch_add(hi - lo, std::memory_order_relaxed);
+    };
     for (const Tensor & w : layers_[layer]) {
         const uint64_t per = w.len / n_expert_;
-        for (int e : picked) {
-            const uint64_t lo = w.off + (uint64_t) e * per, hi = lo + per;
-            for (uint64_t o = lo; o < hi; o += kAhead) {
-                posix_fadvise(fd_, (off_t) o, (off_t) std::min(kAhead, hi - o), POSIX_FADV_WILLNEED);
-            }
-            asked_.fetch_add(per, std::memory_order_relaxed);
-        }
+        for (int e : picked) ask(w.off + (uint64_t) e * per, w.off + (uint64_t) (e + 1) * per);
+    }
+    // A prompt step of many tokens picks nearly every expert of every layer: the next layer's are
+    // read whole now, while this one computes, instead of only once its router has picked.
+    if (ids->ne[1] >= kWholeLayerTokens && layer + 1 < (int) layers_.size()) {
+        for (const Tensor & w : layers_[layer + 1]) ask(w.off, w.off + w.len);
     }
 }
 

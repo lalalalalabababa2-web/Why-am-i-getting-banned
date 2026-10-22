@@ -445,7 +445,8 @@ class ChatController(private val app: App) {
     /** Part of the model is read from storage on every step right now. */
     // (a mixture of experts bigger than the memory reads its experts from storage too)
     private fun streamsNow(model: LoadedModel): Boolean =
-        model.info.streaming || app.engine.pagerStats()?.active == true || model.info.sizeBytes > app.totalRam * 0.8
+        model.info.streaming || model.info.expertsStorage || app.engine.pagerStats()?.active == true ||
+            model.info.sizeBytes > app.totalRam * 0.8
 
     private fun familyOf(model: LoadedModel): Family = app.models.find(model.key)?.family ?: Family.OTHER
 

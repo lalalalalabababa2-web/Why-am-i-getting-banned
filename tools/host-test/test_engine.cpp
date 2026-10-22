@@ -681,10 +681,72 @@ static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t
 }
 
 // helper: a helper model's file, given to a model streamed by the pager (every layer, 1 MB)
+// The tuner, on made-up costs: it must find the count with the most tokens per second, whether
+// that is drafting a lot, a little or not at all, and change its mind when the costs change.
+static void test_tuner() {
+    std::printf("== draft tuner\n");
+    struct Case {
+        const char * name;
+        double       verify[5];  // ms of a step checking 1..4 tokens
+        double       draft;      // ms per drafted token
+        double       keep;       // chance each draft is kept (given the ones before it were)
+        int          want;       // the best count
+    };
+    const Case cases[] = {
+        // ARM's 4-at-a-time kernels: 2 and 3 cost more than 4; drafts are good -> 3
+        {"ARM, good drafts", {0, 92, 171, 243, 140}, 6, 0.75, 3},
+        // the same kernels, poor drafts: none
+        {"ARM, poor drafts", {0, 92, 171, 243, 140}, 22, 0.25, 0},
+        // a step costs about the same for any size (from storage): the most
+        {"from storage", {0, 900, 905, 910, 915}, 10, 0.6, 3},
+        // each token checked costs nearly a full step: none
+        {"compute-bound", {0, 50, 98, 146, 194}, 5, 0.7, 0},
+        // cheap to check one more, poor beyond it: 1
+        {"one is enough", {0, 100, 105, 200, 210}, 3, 0.8, 1},
+    };
+    for (const auto & c : cases) {
+        oa::DraftTuner t;
+        t.reset(3);
+        std::mt19937 rng(7);
+        std::uniform_real_distribution<double> u(0.0, 1.0);
+        int picks[4] = {0, 0, 0, 0};
+        for (int step = 0; step < 400; step++) {
+            const int d = t.pick();
+            CHECK(d >= 0 && d <= 3, "tuner %s: picked %d", c.name, d);
+            int kept = 0;
+            while (kept < d && u(rng) < c.keep) kept++;
+            const double noise = 0.9 + 0.2 * u(rng);
+            t.record(d, kept, d * c.draft * noise, d + 1, c.verify[d + 1] * noise);
+            if (step >= 100) picks[d]++;
+        }
+        int most = 0;
+        for (int d = 1; d <= 3; d++) if (picks[d] > picks[most]) most = d;
+        std::printf("    %-17s picks after warming up: 0:%d 1:%d 2:%d 3:%d -> %d (want %d)\n", c.name, picks[0], picks[1],
+                    picks[2], picks[3], most, c.want);
+        CHECK(most == c.want, "tuner %s: settled on %d drafts, the best is %d", c.name, most, c.want);
+        CHECK(picks[most] >= 250, "tuner %s: too much trying of other counts (%d of 300 on the best)", c.name, picks[most]);
+    }
+    // costs that change: drafting good at first, then checking gets expensive (the phone heats up)
+    oa::DraftTuner t;
+    t.reset(3);
+    int late[4] = {0, 0, 0, 0};
+    for (int step = 0; step < 600; step++) {
+        const int d = t.pick();
+        const bool hot = step >= 200;
+        const double v = hot ? 50.0 + 80.0 * d : 100.0 + 5.0 * d;
+        t.record(d, d, d * 2.0, d + 1, v);  // every draft kept: only the cost decides
+        if (step >= 400) late[d]++;
+    }
+    std::printf("    costs that change: picks at the end 0:%d 1:%d 2:%d 3:%d\n", late[0], late[1], late[2], late[3]);
+    CHECK(late[0] > late[3], "tuner: did not follow costs that changed (0:%d 3:%d)", late[0], late[3]);
+}
+
+// draft_vocab: rows of the MTP head's smaller output head (-1: the engine's default, which these
+// tiny models are too small for). tuned: the head's drafts per step tuned as it goes.
 static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0,
-                      const std::string & helper = "") {
-    std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f%s)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp,
-                helper.empty() ? "" : ", helper, streamed");
+                      const std::string & helper = "", int draft_vocab = -1, bool tuned = false) {
+    std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f%s%s)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp,
+                helper.empty() ? "" : ", helper, streamed", tuned ? ", tuned" : "");
     oa::LoadParams lp;
     lp.n_ctx = 1024;
     lp.n_threads = 2;
@@ -692,6 +754,8 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
     lp.n_ubatch = 32;
     lp.spec_n_max = n_max;
     lp.spec_ngram = ngram;
+    lp.spec_auto = tuned;
+    if (draft_vocab >= 0) lp.draft_vocab = draft_vocab;
     oa::LoadParams lr = lp;
     if (!helper.empty()) {
         lp.low_memory = true;
@@ -710,8 +774,9 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
         return;
     }
     const auto info = e.info();
-    std::printf("  speculative=%s n_max=%d memory=%s compute=%.1f MB\n", info.speculative.c_str(), info.spec_n_max,
-                info.memory.c_str(), e.compute_bytes() / 1e6);
+    std::printf("  speculative=%s n_max=%d memory=%s compute=%.1f MB draft head=%d rows\n", info.speculative.c_str(),
+                info.spec_n_max, info.memory.c_str(), e.compute_bytes() / 1e6, info.draft_vocab);
+    if (draft_vocab > 0) CHECK(info.draft_vocab > 0, "%s: the smaller draft head was not made", label);
     CHECK(!info.speculative.empty(), "%s: drafting was not set up", label);
     CHECK(ref.info().speculative.empty(), "%s: the reference must not draft", label);
     if (!helper.empty()) CHECK(info.helper && info.streaming, "%s: the helper should be drafting for a streamed model", label);
@@ -733,7 +798,10 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
                     r.stats.n_accepted, r.stats.n_reused, r.stats.used_snapshot, r.error.c_str());
         CHECK(r.ok, "%s turn %d failed: %s", label, turn, r.error.c_str());
         CHECK(r.stats.n_steps + r.stats.n_accepted + 1 >= r.stats.n_generated, "%s: tokens written without a step", label);
-        if ((n_max > 0 && !ngram) || !helper.empty()) CHECK(r.stats.n_drafted > 0, "%s turn %d: nothing was drafted", label, turn);
+        // (a tuned head may find drafting not worth it: only its first steps must draft)
+        if (((n_max > 0 && !ngram) || !helper.empty()) && (!tuned || turn == 0)) {
+            CHECK(r.stats.n_drafted > 0, "%s turn %d: nothing was drafted", label, turn);
+        }
         if (temp == 0.0) {
             int ties = 0;
             const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties);
@@ -798,8 +866,11 @@ static const char * kCopyPrompt =
 
 // Writing speed with each drafting setting, against a baseline loaded with drafting off (no drafter
 // memory at all). Greedy, so every setting must write the same words as the baseline.
+// in test_speed's list: drafting tuned as the reply goes (up to 3 per step)
+static constexpr int kTunedRun = -2;
+
 static void test_speed(const std::string & model, const char * label, const std::string & drafter,
-                       std::vector<int> drafts, bool ngram, const char * prompt) {
+                       std::vector<int> drafts, bool ngram, const char * prompt, int draft_vocab = -1) {
     if (!exists(model)) {
         std::printf("== speed %s: %s not there, skipped\n", label, model.c_str());
         return;
@@ -815,7 +886,7 @@ static void test_speed(const std::string & model, const char * label, const std:
     oa::ChatCallbacks cb;
     const int threads = std::max(1, (int) std::thread::hardware_concurrency());
     auto run = [&](oa::Engine & e, int n, const char * what) {
-        req.spec_n_max = n;
+        req.spec_n_max = n == kTunedRun ? -1 : n;
         oa::ChatRequest warm = req;
         warm.sampling.max_tokens = 4;
         e.chat(warm, cb);  // the file's pages read in, threads up
@@ -849,9 +920,10 @@ static void test_speed(const std::string & model, const char * label, const std:
     lp.n_ctx = 4096;
     lp.n_threads = threads;
     lp.spec_n_max = 0;
-    for (int n : drafts) lp.spec_n_max = std::max(lp.spec_n_max, n);
+    for (int n : drafts) lp.spec_n_max = std::max(lp.spec_n_max, n == kTunedRun ? 3 : n);
     lp.spec_ngram = ngram;
     lp.drafter_path = drafter;
+    if (draft_vocab >= 0) lp.draft_vocab = draft_vocab;
     oa::Engine e;
     std::string err;
     if (!e.load(model, lp, err)) {
@@ -859,11 +931,12 @@ static void test_speed(const std::string & model, const char * label, const std:
         g_failures++;
         return;
     }
-    std::printf("  drafting with: %s\n", e.info().speculative.c_str());
+    std::printf("  drafting with: %s (head guesses among %d tokens)\n", e.info().speculative.c_str(), e.info().draft_vocab);
     CHECK(!e.info().speculative.empty(), "%s: no drafting", label);
     for (int n : drafts) {
         char what[64];
-        if (n < 0) std::snprintf(what, sizeof what, "%s", "copying on");
+        if (n == kTunedRun) std::snprintf(what, sizeof what, "%s", "tuned (up to 3)");
+        else if (n < 0) std::snprintf(what, sizeof what, "%s", "copying on");
         else std::snprintf(what, sizeof what, "%d drafted", n);
         auto r = run(e, n, what);
         if (n == 0) continue;
@@ -917,7 +990,8 @@ static void test_real(const std::string & dir, const std::string & tmp) {
     }
 
     // 2. drafting with the model's MTP head, and copying from the conversation: same words, how fast
-    test_speed(model, "Qwen3.5 0.8B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+    test_speed(model, "Qwen3.5 0.8B Q4_K_M", "", {0, 1, 2, 3, kTunedRun}, false, kStoryPrompt);
+    test_speed(model, "Qwen3.5 0.8B Q4_K_M, whole head", "", {0, 3}, false, kStoryPrompt, 0);
     test_speed(model, "Qwen3.5 0.8B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
 
     // pictures: drafting off, as the app has it until the drafting test says otherwise
@@ -1220,6 +1294,21 @@ static void test_streaming(const std::string & path, const char * label, bool pa
                 rs.stats.n_majflt);
     std::printf("SPEED: %s on %d threads: %.2f tokens/s writing, first word after %.1fs, loaded in %.1fs\n", label,
                 lp.n_threads, tps, rs.stats.t_first_ms / 1000.0, load_s);
+    // a long message (a pasted note, a picture's worth of tokens): how fast it is read
+    {
+        oa::ChatRequest lm = req;
+        lm.messages.clear();
+        std::string note;
+        for (int i = 0; i < 4; i++) note += kCopyPrompt + std::string("\n\n");
+        lm.messages.push_back({"user", note + "Which harbour does the boat leave from? One word.", ""});
+        lm.sampling.max_tokens = 4;
+        e.reset_cache();
+        auto rl = e.chat(lm, cb);
+        const double s_read = rl.stats.t_prompt_ms / 1000.0;
+        std::printf("SPEED: %s: reads a %d-token message in %.1fs (%.1f tokens/s), %.2f GB read from storage\n", label,
+                    rl.stats.n_evaluated, s_read, s_read > 0 ? rl.stats.n_evaluated / s_read : 0.0, rl.stats.read_gb);
+        CHECK(rl.ok, "%s: the long message failed: %s", label, rl.error.c_str());
+    }
     // where the memory went: the engine's own (compute buffers, conversation memory) against what the pager kept
     long anon_kb = 0;
     if (FILE * f = std::fopen("/proc/self/status", "r")) {
@@ -1231,8 +1320,9 @@ static void test_streaming(const std::string & path, const char * label, bool pa
     }
     const auto ps = e.pager_stats();
     std::printf("  memory: engine's own %.2f GB (compute buffers %.2f GB), pager budget %.2f GB, kept %.2f GB, %.0f%% of it "
-                "present, %d replans\n", anon_kb / 1048576.0, e.compute_bytes() / 1e9, ps.budget_bytes / 1e9,
-                ps.resident_bytes / 1e9, ps.resident_present * 100, ps.n_replans);
+                "present, %d replans; experts from storage %d, %.2f GB of them read ahead\n", anon_kb / 1048576.0,
+                e.compute_bytes() / 1e9, ps.budget_bytes / 1e9, ps.resident_bytes / 1e9, ps.resident_present * 100,
+                ps.n_replans, info.experts_storage ? 1 : 0, e.prefetched_bytes() / 1e9);
     CHECK(rs.ok && rs.stats.n_generated > 8, "%s: the story failed: %s", label, rs.error.c_str());
 }
 
@@ -1265,10 +1355,14 @@ int main(int argc, char ** argv) {
     if (real_only) {
         const std::string rd = argv[3];
         test_real(rd, rd);
-        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M", "", {0, 1, 2, 3}, false, kStoryPrompt);
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M", "", {0, 1, 2, 3, kTunedRun}, false, kStoryPrompt);
+        // the MTP head guessing among all 248k tokens (as before), and among other numbers of them
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M, whole head", "", {0, 1, 3}, false, kStoryPrompt, 0);
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M, 16k head", "", {0, 3}, false, kStoryPrompt, 16384);
+        test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M, 64k head", "", {0, 3}, false, kStoryPrompt, 65536);
         test_speed(rd + "/Qwen3.5-4B-Q4_K_M.gguf", "Qwen3.5 4B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
-        test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M", rd + "/mtp-gemma-4-E2B-it.gguf", {0, 1, 2, 3},
-                   false, kStoryPrompt);
+        test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M", rd + "/mtp-gemma-4-E2B-it.gguf",
+                   {0, 1, 2, 3, kTunedRun}, false, kStoryPrompt);
         // copying from the conversation (attention-only models; hybrids cannot wind back that far)
         test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
         test_speed(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
@@ -1339,9 +1433,13 @@ int main(int argc, char ** argv) {
     test_spec(dir + "/qwen35-dense.gguf", "helper", 0, false, 0.0, dir + "/qwen35-dense.gguf");
     test_spec(dir + "/qwen35-dense.gguf", "helper and ngram, sampled", 0, true, 0.8, dir + "/qwen35-dense.gguf");
     if (exists(deep)) test_spec(deep, "helper", 0, false, 0.0, deep);
+    test_tuner();
     if (exists(mtp)) {
         test_spec(mtp, "mtp", 2, false);
         test_spec(mtp, "mtp", 3, false, 0.8);
+        // the smaller draft head (24 of 128 tokens plus the special ones), tuned per step
+        test_spec(mtp, "mtp, small draft head", 3, false, 0.0, "", 24, true);
+        test_spec(mtp, "mtp, small draft head", 3, false, 0.8, "", 24, true);
         test_cache(mtp);
         test_chat_smoke(mtp);
     }

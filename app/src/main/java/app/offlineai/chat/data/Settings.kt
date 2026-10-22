@@ -129,14 +129,14 @@ class Settings(context: Context) {
 
     /**
      * Draft a few tokens ahead with the model's MTP head or helper file and check them in one step
-     * (speculative decoding). Per model, only after the drafting test found it faster on this phone
-     * (or with a draft length set by hand): on the ARM and x86 CPUs it was tried on in CI it was
-     * slower or no faster, because a CPU pays for nearly every extra token it checks.
+     * (speculative decoding). A CPU pays for most of every extra token it checks, so whether it
+     * helps depends on the phone and the model: by default the engine tunes how many to draft at
+     * each step as it writes (none when drafting does not pay), from what it measures.
      */
     var speculative: Boolean
         get() = bool("speculative", true)
         set(v) = put("speculative", v)
-    /** Tokens drafted per step; 0 means the drafting test's pick for the model (off until tested). */
+    /** Tokens drafted per step; 0 means automatic (tuned as replies go, up to 3). */
     var draftTokens: Int
         get() = int("draft_tokens", 0)
         set(v) = put("draft_tokens", v)
@@ -149,21 +149,28 @@ class Settings(context: Context) {
         get() = str("draft_summary", "")
         set(v) = put("draft_summary", v)
 
-    /** The draft length the speed test found fastest for a model file: 0 = drafting off, -1 = not measured. */
-    fun measuredDrafts(modelFile: String): Int = int("drafts:$modelFile", -1)
-    fun setMeasuredDrafts(modelFile: String, n: Int) = put("drafts:$modelFile", n)
+    /**
+     * A draft length the drafting test found fastest for a model file and the user chose to fix:
+     * 0 = drafting off, -1 = automatic. (Results of the test before drafting was tuned are not
+     * used: they measured an MTP head that guessed among all 248k words and always 3 at a time.)
+     */
+    fun measuredDrafts(modelFile: String): Int = int("drafts2:$modelFile", -1)
+    fun setMeasuredDrafts(modelFile: String, n: Int) = put("drafts2:$modelFile", n)
 
     /**
-     * Drafts per step to load [modelFile] with (0: off). [streamsWithMtp]: a model with its own MTP
-     * head in low-memory mode, where checking several guesses costs the same read of the model as
-     * writing one token, so drafting is on (3 at a time) until the drafting test says otherwise.
+     * Drafts per step to load [modelFile] with (0: off): the most per step while tuned
+     * ([draftsTuned]), or exactly that many when set by hand. A model with no MTP head or drafter
+     * loads none of it either way, so this costs nothing for it.
      */
-    fun draftsFor(modelFile: String, streamsWithMtp: Boolean = false): Int {
+    fun draftsFor(modelFile: String): Int {
         if (!speculative) return 0
         if (draftTokens > 0) return draftTokens
         val m = measuredDrafts(modelFile)
-        return if (m >= 0) m else if (streamsWithMtp) 3 else 0
+        return if (m >= 0) m else 3
     }
+
+    /** Whether the drafts per step are tuned as replies go (not set by hand or fixed by the test). */
+    fun draftsTuned(modelFile: String): Boolean = draftTokens <= 0 && measuredDrafts(modelFile) < 0
 
     /** Lengths in tokens of the last finished replies of a model, oldest first (the time-left estimate). */
     fun replyLengths(modelFile: String, thinking: Boolean): List<Int> =

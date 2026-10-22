@@ -282,6 +282,47 @@ object Catalog {
             Family.QWEN, false, large = true,
             pictures = ExtraFile("mmproj-model-f16.gguf", 1_119_575_840L, "openbmb/MiniCPM-V-4.7-35B-A3B-gguf"),
         ),
+        // ---- more mixtures of experts: big models with few parameters at work per word, run the same way
+        CatalogModel(
+            "qwen36-35b-a3b", "Qwen3.6 35B-A3B", "Alibaba Qwen",
+            "Qwen's newest mixture of experts: 35B of knowledge, 3B at work on each word, so it runs from storage " +
+                "though it is bigger than the phone's memory. Strong at code and reasoning. About 2 bits; needs 11 GB " +
+                "of storage. Sees pictures.",
+            "unsloth/Qwen3.6-35B-A3B-GGUF", "Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf", 10_756_586_464L, Family.QWEN, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 899_283_680L, "unsloth/Qwen3.6-35B-A3B-GGUF"),
+        ),
+        CatalogModel(
+            "qwen36-35b-a3b-abl", "Qwen3.6 35B-A3B abliterated", "huihui-ai (community)",
+            "Qwen3.6 35B-A3B with refusals removed, a little smaller (9.5 GB) so a little faster. Sees pictures.",
+            "mradermacher/Huihui-Qwen3.6-35B-A3B-abliterated-i1-GGUF", "Huihui-Qwen3.6-35B-A3B-abliterated.i1-IQ2_XXS.gguf",
+            9_500_000_000L, Family.QWEN, false, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 899_283_680L, "unsloth/Qwen3.6-35B-A3B-GGUF"),
+        ),
+        CatalogModel(
+            "lfm25-24b-a2b", "LFM2.5 24B-A2B", "Liquid AI",
+            "Liquid's big mixture of experts: 24B of knowledge, 2.5B at work on each word, built to run fast on a " +
+                "CPU. Runs from storage; needs 8 GB of storage. It always thinks before it answers.",
+            "unsloth/LFM2.5-24B-A2B-GGUF", "LFM2.5-24B-A2B-UD-Q2_K_XL.gguf", 8_042_561_760L, Family.LIQUID, true, large = true,
+        ),
+        CatalogModel(
+            "gemma4-26b-a4b", "Gemma 4 26B-A4B", "Google",
+            "Google's mixture of experts: 25B of knowledge, 4B at work on each word. Runs from storage; about 2 bits, " +
+                "needs 10 GB of storage. Sees pictures.",
+            "unsloth/gemma-4-26B-A4B-it-GGUF", "gemma-4-26B-A4B-it-UD-IQ2_M.gguf", 10_014_755_296L, Family.GEMMA, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 1_190_000_000L, "unsloth/gemma-4-26B-A4B-it-GGUF"),
+        ),
+        CatalogModel(
+            "glm47-flash", "GLM-4.7 Flash", "Z.ai",
+            "Z.ai's 30B mixture of experts, 3B at work on each word: good at code and step-by-step work. Runs from " +
+                "storage; about 2 bits, needs 10.5 GB of storage.",
+            "unsloth/GLM-4.7-Flash-GGUF", "GLM-4.7-Flash-UD-IQ2_XXS.gguf", 10_513_625_440L, Family.OTHER, true, large = true,
+        ),
+        CatalogModel(
+            "ling30-tiny", "Ling 3.0 tiny", "inclusionAI",
+            "A small mixture of experts: 7.9B of knowledge but only 1.3B at work on each word, so it writes about as " +
+                "fast as a 1B model and nearly fits in memory. Thinks first unless thinking is off.",
+            "bartowski/Ling-3.0-tiny-GGUF", "Ling-3.0-tiny-IQ4_XS.gguf", 4_385_795_776L, Family.OTHER, true,
+        ),
         CatalogModel(
             "gemma4-12b", "Gemma 4 12B", "Google",
             "The biggest Gemma that fits: Gemma 4 12B squeezed to about 3 bits. Smarter than E4B, sees pictures " +
