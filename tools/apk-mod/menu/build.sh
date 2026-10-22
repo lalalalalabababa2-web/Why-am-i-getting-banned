@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# build.sh game.apks.zip out.apks Patches.java activity.smali super-call
+# build.sh game.apks.zip out.apks Patches.java activity.smali super-call [lib-entry=file]
 # Shared by the games' menu builds: compiles the floating menu (src/modmenu) with
 # the game's generated Patches.java into a new dex, starts it from the activity's
 # onCreate right after the given super call, re-signs every split with
-# tools/apk-mod/mod-key.jks and packs them into one .apks for SAI.
+# tools/apk-mod/mod-key.jks and packs them into one .apks for SAI. lib-entry=file
+# replaces that entry (e.g. lib/arm64-v8a/libil2cpp.so) in the split that has it.
 # Needs: javac, dx (apt: dalvik-exchange), android.jar (apt: libandroid-23-java), apktool.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../env.sh"
 repack="$here/../riseup/repack.py"
 
-[ $# -eq 5 ] || { echo "usage: $0 game.apks.zip out.apks Patches.java activity.smali super-call" >&2; exit 2; }
-src="$1"; out="$2"; patches="$3"; activity="$4"; anchor="$5"
+[ $# -eq 5 ] || [ $# -eq 6 ] || { echo "usage: $0 game.apks.zip out.apks Patches.java activity.smali super-call [lib-entry=file]" >&2; exit 2; }
+src="$1"; out="$2"; patches="$3"; activity="$4"; anchor="$5"; lib="${6:-}"
 [ -f "$APKMOD_KEY" ] || { echo "No signing key; run tools/apk-mod/setup.sh first." >&2; exit 1; }
 android_jar="${ANDROID_JAR:-/usr/lib/android-sdk/platforms/android-23/android.jar}"
 dx="$(command -v dalvik-exchange || command -v dx)"
@@ -46,6 +47,8 @@ for apk in "$work/in"/*.apk; do
   name="$(basename "$apk")"
   if [ "$name" = base.apk ]; then
     python3 -I "$repack" "$apk" "$work/unsigned.apk" "$dexname=$work/$dexname" "+classes$next.dex=$work/menu.dex"
+  elif [ -n "$lib" ] && unzip -Z1 "$apk" | grep -qxF "${lib%%=*}"; then
+    python3 -I "$repack" "$apk" "$work/unsigned.apk" "$lib"
   else
     python3 -I "$repack" "$apk" "$work/unsigned.apk"
   fi
