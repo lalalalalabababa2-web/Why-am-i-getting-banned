@@ -1906,6 +1906,9 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         return finish(res);
     }
     res.stats.t_prompt_ms = ms_since(t_prompt0);
+    // A model read from storage needs every MB for its own pages: the picture projector (up to
+    // 1.2 GB) goes once this turn's pictures are read; the next picture loads it again.
+    if (mtmd_ && from_storage() && res.stats.n_media > 0) release_media();
 
     common_params_sampling sp;
     sp.temp = req.sampling.temp;

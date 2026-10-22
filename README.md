@@ -18,7 +18,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 ## What it does
 
-- **Models screen**: 24 models from 270M to 27B that fit 8 GB of memory, grouped by what they
+- **Models screen**: 39 models from 270M to 35B, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
@@ -33,9 +33,14 @@ browser when Android asks. New builds install over old ones and keep models and 
   same. *Copying from the conversation* (n-gram drafts) is on by default: it costs nothing until a
   reply repeats text from the chat, then checks the repeated part many words at a time (3 at a
   time for Qwen3.5-style hybrid models under 10B). *Drafting with a helper* (Qwen3.5's MTP head,
-  Gemma 4's drafter) is off until the drafting test in Settings finds it faster on the phone: on
-  the CI machines it was slower or no faster (see Tests), because a CPU pays for most of each
-  extra word it checks.
+  Gemma 4's drafter) is on and tuned as it writes: a CPU pays for most of each extra word it
+  checks, so the engine measures what checking 1, 2, 3 or 4 words costs on this phone, what a
+  guess costs and how often guesses are kept, and drafts as many per step as are worth it (none
+  when it does not pay). Qwen3.5's MTP head guesses among the 32k most used words only, about a
+  seventh of the work per guess (see *Drafting* below).
+- **Thinking that ends**: in Automatic, a model that thinks does so for about a minute's worth of
+  words at its own speed, then says it will answer and does (llama.cpp's reasoning budget). On
+  lets it think as long as it likes; a model read from storage does not think in Automatic.
 - **Models bigger than the free memory**: a 9B model (4.7 GB) on an 8 GB phone with other apps
   open used to read nearly all of itself from storage for every word (0.1 words a second). Now
   it keeps as many of its layers in memory as fit and streams the rest from storage in big
@@ -63,7 +68,8 @@ browser when Android asks. New builds install over old ones and keep models and 
 | More 3-4B models | Llama 3.2 3B, Ministral 3 3B, Granite 4.1 3B, Phi-4-mini |
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
 | Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed |
-| Bigger | LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
+| Bigger | LFM2.5 8B-A1B, Ling 3.0 tiny, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
+| Big, from storage | Qwen3.6 35B-A3B, MiniCPM-V 4.7 35B-A3B (two sizes), LFM2.5 24B-A2B, Gemma 4 26B-A4B, GLM-4.7 Flash, Qwen3.6 35B-A3B abliterated: mixtures of experts of 8-11 GB that use 2-4B parameters per word and run from storage |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
 Bonsai) to fit. The community ones are fine-tunes by individuals; their makers' benchmark claims
@@ -129,8 +135,14 @@ time. The pager takes that decision away from the kernel:
   trim-memory calls reach it too.
 - llama.cpp does not read the whole file while loading (patch 0002); the pager reads the kept
   layers with four threads instead, which is also faster than the warm-up step it replaces.
-- A mixture of experts is left to the kernel: a token reads only the experts it picks, so
-  streaming whole layers would read many times what the model uses.
+- A mixture of experts is not streamed by layers: a token reads only the experts it picks, so
+  streaming whole layers would read many times what the model uses. Instead
+  (`ExpertPrefetch` in pager.cpp) the graph stops right after each layer's router has picked
+  and every picked expert of that layer is asked of the storage at once, instead of the page
+  faults reading them one small piece at a time. Reading a prompt, every step picks nearly
+  every expert of every layer however many tokens it has, so such a model reads prompts in
+  steps of 1024 tokens from the start (small steps used to read the whole model again for every
+  8 to 32 tokens), and while one layer computes, the next layer's experts are read whole.
 
 Everything it does is advice to the kernel, so whatever it gets wrong costs speed, never a wrong
 answer. While a model streams, the read of the model costs the same for a step of one token or
@@ -176,7 +188,11 @@ the file's pages back afterwards: about twice as fast to load.
 
 `third_party/patches/` holds the app's own changes, applied to the submodule at build time by
 `apply.sh` (the Android build and the test scripts run it): a model parameter that maps the
-file without reading all of it while loading (`no_populate`, for the pager), and faster ARM NEON dot products for the
+file without reading all of it while loading (`no_populate`, for the pager); a smaller output
+head for an MTP head to draft with (`llama_model_set_draft_head`: the rows of the most used
+tokens, every other token -inf, used by Qwen3.5 and Qwen3.5 MoE MTP heads), an MTP head that
+stops at each step's own draft cap, and the drafter that made a draft named to the caller (patch
+0003); and faster ARM NEON dot products for the
 Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
 the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
 lets it call a 4x4 one. They matter most in low-memory mode, where the weights stay in the file

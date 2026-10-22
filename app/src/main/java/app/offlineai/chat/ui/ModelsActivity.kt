@@ -117,13 +117,20 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("Bigger models",
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
-            listOf("lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
+            listOf("lfm25-8b-a1b", "ling30-tiny", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
+        group("Big models that run from storage",
+            "Mixtures of experts of 24B to 35B: bigger than the phone's memory, but each word uses only the few " +
+                "experts it picks (2-4B), so they run straight from storage, reading those experts as they are " +
+                "picked. 8 to 11 GB of storage each; the first message of a chat takes a while.",
+            listOf("qwen36-35b-a3b", "minicpmv47-35b-fast", "minicpmv47-35b", "lfm25-24b-a2b", "gemma4-26b-a4b",
+                "glm47-flash", "qwen36-35b-a3b-abl"))
         // anything in the catalog not placed above still shows
         val placed = setOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b", "qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b",
             "llama32-1b", "qwen35-0.8b", "gemma3-270m", "llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini",
             "qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm", "lfm25-8b-a1b",
             "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b", "abl-gemma4-e4b", "abl-qwen35-4b", "abl-gemma4-e2b",
-            "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b", "abl-qwen35-9b")
+            "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b", "abl-qwen35-9b", "ling30-tiny", "qwen36-35b-a3b",
+            "minicpmv47-35b-fast", "minicpmv47-35b", "lfm25-24b-a2b", "gemma4-26b-a4b", "glm47-flash", "qwen36-35b-a3b-abl")
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
         val local = app.models.local()
