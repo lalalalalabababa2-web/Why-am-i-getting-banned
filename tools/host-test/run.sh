@@ -23,6 +23,10 @@ for arch in llama qwen35 qwen35moe gemma3 mistral3; do
     "$OUT/llama/bin/test-llama-archs" -a "^$arch\$" -o "$OUT/models/" >/dev/null
 done
 
+# a mixture of experts with 8 experts (4 used) to tell them apart; llama.cpp's own have 2
+[ -f "$OUT/models/qwen35moe-moe8.gguf" ] || \
+  PYTHONPATH="$SRC/gguf-py" python3 "$ROOT/tools/host-test/make_moe8.py" "$OUT/models/qwen35moe-moe.gguf" "$OUT/models/qwen35moe-moe8.gguf"
+
 g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I "$SRC/include" -I "$SRC/common" -I "$SRC/ggml/include" -I "$SRC/vendor" -I "$SRC/src" -I "$SRC/tools/mtmd" \
   -I "$ROOT/app/src/main/cpp" \

@@ -178,6 +178,11 @@ class SettingsActivity : AppCompatActivity() {
                 s.draftTokens = Settings.DRAFT_TOKENS[it]
             }
         }
+        switch("Fewer experts per word",
+            "Mixtures of experts (the big models that run from storage, LFM2.5 8B-A1B, Ling) use 3 of every 4 " +
+                "experts they were made with for each word: about a quarter less to read from storage and to " +
+                "compute, so faster, and answers slightly less exact.$reloadNote",
+            s.fewerExperts) { s.fewerExperts = it }
         val current = app.engine.loaded
         if (current != null) {
             val how = current.info.speculative

@@ -140,6 +140,13 @@ class Settings(context: Context) {
     var draftTokens: Int
         get() = int("draft_tokens", 0)
         set(v) = put("draft_tokens", v)
+    /**
+     * A mixture of experts (the big models that run from storage, LFM2.5 8B-A1B, Ling) uses 3/4 of
+     * the experts per word it was made with: a quarter less to read and compute, slightly less exact.
+     */
+    var fewerExperts: Boolean
+        get() = bool("fewer_experts", false)
+        set(v) = put("fewer_experts", v)
     /** Draft by copying text already in the chat: free until a reply repeats something, then much faster. */
     var copyDrafts: Boolean
         get() = bool("copy_drafts", true)

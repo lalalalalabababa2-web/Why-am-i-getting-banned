@@ -37,6 +37,8 @@ data class ModelInfo(
     val expertsStorage: Boolean = false,
     /** Tokens the MTP head guesses among (the most used ones), 0 for all of them. */
     val draftVocab: Int = 0,
+    /** Experts each token uses, for a mixture of experts (0 otherwise). */
+    val nExpertUsed: Int = 0,
     val residentBytes: Long = 0,
     val streamedBytes: Long = 0,
     /** How fast this phone's storage read the model while loading, MB/s. */
@@ -68,6 +70,7 @@ data class ModelInfo(
                 streaming = j.optBoolean("streaming"),
                 expertsStorage = j.optBoolean("experts_storage"),
                 draftVocab = j.optInt("draft_vocab"),
+                nExpertUsed = j.optInt("n_expert_used"),
                 residentBytes = j.optLong("resident_bytes"),
                 streamedBytes = j.optLong("streamed_bytes"),
                 readMbps = j.optDouble("read_mbps", 0.0),
@@ -99,6 +102,8 @@ data class LoadConfig(
     val pager: Boolean = true,
     /** A small model of the same family that guesses ahead while the model streams, or empty. */
     val helperPath: String = "",
+    /** A mixture of experts uses 3/4 of its experts per word: faster, slightly less exact. */
+    val fewerExperts: Boolean = false,
 ) {
     fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
 
@@ -118,6 +123,7 @@ data class LoadConfig(
         .put("swa_full", swaFull)
         .put("pager", pager)
         .put("helper", helperPath)
+        .put("fewer_experts", fewerExperts)
 }
 
 data class LoadedModel(

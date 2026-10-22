@@ -181,6 +181,7 @@ class App : Application() {
             // only low-memory mode has the pager: the switch must not reload a model in fast mode
             pager = !low || settings.streaming,
             helperPath = helperFor(model, low)?.file?.absolutePath ?: "",
+            fewerExperts = settings.fewerExperts,
         )
     }
 

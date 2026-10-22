@@ -81,6 +81,9 @@ struct LoadParams {
     // fraction of the work per guess (Qwen3.5's head has 248k rows). The model still checks each
     // guess against every token, so replies do not change. 0: the whole head.
     int  draft_vocab   = 32768;
+    // A mixture of experts uses 3/4 of the experts per token it was made with (8 -> 6): a quarter
+    // less to read from storage and to compute, answers slightly less exact. Off: as made.
+    bool fewer_experts = false;
     // Spec_n_max is the most per step; how many each step drafts is tuned as it goes (DraftTuner),
     // from what drafting costs and earns with this model on this phone. False: always spec_n_max.
     bool spec_auto     = true;
@@ -237,6 +240,7 @@ struct ModelInfo {
     bool        streaming         = false;  // part of the model is read from storage on every step
     bool        experts_storage   = false;  // a mixture of experts bigger than memory: picked experts read ahead
     int         draft_vocab       = 0;      // tokens the MTP head guesses among (0: all)
+    int         n_expert_used     = 0;      // experts each token uses (a mixture of experts), 0 otherwise
     uint64_t    resident_bytes    = 0;
     uint64_t    streamed_bytes    = 0;
     double      read_mbps         = 0;      // storage speed measured while loading
@@ -457,6 +461,7 @@ private:
     size_t                compute_bytes_ = 0;
     std::unique_ptr<ExpertPrefetch> experts_;  // a mixture of experts in low memory (instead of the pager)
     bool                  moe_storage_ = false;    // ... bigger than the memory there is
+    int                   experts_used_ = 0;       // experts per token when fewer than the file's
     DraftTuner            tuner_;
     // the MTP head's smaller output head (LoadParams::draft_vocab)
     bool make_draft_head(const std::string & path, int n_rows);

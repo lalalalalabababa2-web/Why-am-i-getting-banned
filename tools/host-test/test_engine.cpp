@@ -741,6 +741,37 @@ static void test_tuner() {
     CHECK(late[0] > late[3], "tuner: did not follow costs that changed (0:%d 3:%d)", late[0], late[3]);
 }
 
+// A mixture of experts loaded to use fewer experts per token: it says so, answers, and its
+// logits differ from the model as made (they would not if the setting did nothing).
+static void test_fewer_experts(const std::string & path) {
+    std::printf("== fewer experts: %s\n", path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 512;
+    lp.n_threads = 2;
+    lp.spec_n_max = 0;
+    oa::LoadParams lf = lp;
+    lf.fewer_experts = true;
+    oa::Engine e, f;
+    std::string err;
+    if (!e.load(path, lp, err) || !f.load(path, lf, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    std::printf("  experts per token: %d as made, %d fewer\n", e.info().n_expert_used, f.info().n_expert_used);
+    CHECK(e.info().n_expert_used == 4 && f.info().n_expert_used == 3, "fewer experts: %d and %d per token",
+          e.info().n_expert_used, f.info().n_expert_used);
+    std::mt19937 rng(9);
+    auto p = random_tokens(rng, 40, 100);
+    oa::ChatStats st;
+    CHECK(e.sync_prompt(p, 0, err, nullptr, &st) && f.sync_prompt(p, 0, err, nullptr, &st), "fewer experts: %s", err.c_str());
+    const auto a = e.last_logits(), b = f.last_logits();
+    double diff = 0;
+    for (size_t i = 0; i < std::min(a.size(), b.size()); i++) diff = std::max(diff, (double) std::fabs(a[i] - b[i]));
+    std::printf("  largest logit difference %.4f\n", diff);
+    CHECK(diff > 1e-4, "fewer experts: the logits did not change");
+}
+
 // draft_vocab: rows of the MTP head's smaller output head (-1: the engine's default, which these
 // tiny models are too small for). tuned: the head's drafts per step tuned as it goes.
 static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0,
@@ -1430,6 +1461,11 @@ int main(int argc, char ** argv) {
     test_cache(dir + "/gemma3-dense.gguf", false, true, 1);
     test_cache(dir + "/mistral3-moe.gguf", false, true, 1);  // the pager stays out, experts are read ahead
     test_cache(dir + "/qwen35moe-moe.gguf", false, true, 1);  // MiniCPM-V 4.7 35B-A3B's architecture
+    // 8 experts, 4 used: experts that differ, read ahead as picked; then 3 of them per token
+    if (exists(dir + "/qwen35moe-moe8.gguf")) {
+        test_cache(dir + "/qwen35moe-moe8.gguf", false, true, 1);
+        test_fewer_experts(dir + "/qwen35moe-moe8.gguf");
+    }
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");

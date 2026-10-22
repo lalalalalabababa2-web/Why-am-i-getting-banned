@@ -103,6 +103,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
         p.mem_budget_mb = o.value("mem_budget_mb", p.mem_budget_mb);
         p.draft_vocab = o.value("draft_vocab", p.draft_vocab);
         p.spec_auto = o.value("spec_auto", p.spec_auto);
+        p.fewer_experts = o.value("fewer_experts", p.fewer_experts);
     } catch (const std::exception & e) {
         return to_bytes(env, std::string("Bad load options: ") + e.what());
     }
@@ -179,6 +180,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"streaming", mi.streaming},
         {"experts_storage", mi.experts_storage},
         {"draft_vocab", mi.draft_vocab},
+        {"n_expert_used", mi.n_expert_used},
         {"resident_bytes", mi.resident_bytes},
         {"streamed_bytes", mi.streamed_bytes},
         {"read_mbps", mi.read_mbps},

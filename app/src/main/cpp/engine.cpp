@@ -453,6 +453,7 @@ void Engine::unload() {
     }
     experts_.reset();  // after the contexts that call it
     moe_storage_ = false;
+    experts_used_ = 0;
     tuner_.reset(0);
     vocab_ = nullptr;
     cache_.clear();
@@ -516,6 +517,35 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
     mp.load_mode = params.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+    // fewer experts per token for a mixture of experts (LoadParams::fewer_experts)
+    std::vector<llama_model_kv_override> overrides;
+    if (params.fewer_experts) {
+        gguf_init_params gp;
+        gp.no_alloc = true;
+        gp.ctx = nullptr;
+        if (gguf_context * g = gguf_init_from_file(path.c_str(), gp)) {
+            std::string arch;
+            const int64_t ka = gguf_find_key(g, "general.architecture");
+            if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) arch = gguf_get_val_str(g, ka);
+            const std::string key = arch + ".expert_used_count";
+            const int64_t ku = gguf_find_key(g, key.c_str());
+            int64_t used = 0;
+            if (ku >= 0 && gguf_get_kv_type(g, ku) == GGUF_TYPE_UINT32) used = gguf_get_val_u32(g, ku);
+            if (ku >= 0 && gguf_get_kv_type(g, ku) == GGUF_TYPE_INT32) used = gguf_get_val_i32(g, ku);
+            gguf_free(g);
+            const int64_t fewer = std::max<int64_t>(2, (used * 3 + 2) / 4);
+            if (used > 2 && fewer < used && key.size() < sizeof(llama_model_kv_override::key)) {
+                experts_used_ = (int) fewer;
+                llama_model_kv_override o{};
+                o.tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+                std::snprintf(o.key, sizeof o.key, "%s", key.c_str());
+                o.val_i64 = fewer;
+                overrides.push_back(o);
+                overrides.push_back(llama_model_kv_override{});  // the end of the list: an empty key
+                mp.kv_overrides = overrides.data();
+            }
+        }
+    }
     mp.use_extra_bufts = !params.low_memory;
     mp.load_mtp = file_mtp;
     // (nor for a mixture of experts too big for memory: each token reads only what it picks)
@@ -848,6 +878,13 @@ ModelInfo Engine::info() const {
     }
     mi.experts_storage = moe_storage_;
     mi.draft_vocab = dft_head_rows_;
+    if (experts_used_ > 0) {
+        mi.n_expert_used = experts_used_;  // fewer than the file says (LoadParams::fewer_experts)
+    } else {
+        char key[160], val[32];
+        std::snprintf(key, sizeof key, "%s.expert_used_count", mi.arch.c_str());
+        if (llama_model_meta_val_str(model_, key, val, sizeof val) > 0) mi.n_expert_used = std::atoi(val);
+    }
     return mi;
 }
 
