@@ -26,9 +26,9 @@ enum class MemoryMode(val label: String, val help: String) {
 }
 
 enum class ThinkingMode(val label: String, val help: String) {
-    AUTO("Automatic", "On, except for a model too big for memory: there every word is a read from storage, and " +
-        "thinking first can take minutes before the answer starts."),
-    ON("On", "Models that can think work through the problem before answering. Slower, often better."),
+    AUTO("Automatic", "On, but for about a minute at most: then the model says it will answer and does. Off for " +
+        "a model too big for memory, where every word is a read from storage and thinking first can take minutes."),
+    ON("On", "Models that can think work through the problem as long as they like before answering. Slower, often better."),
     OFF("Off", "Answers straight away."),
 }
 
@@ -201,6 +201,15 @@ class Settings(context: Context) {
         ThinkingMode.ON -> true
         ThinkingMode.OFF -> false
         ThinkingMode.AUTO -> !streaming
+    }
+
+    /**
+     * Tokens of thinking before the model is told to answer: about a minute's worth at the speed it
+     * last wrote ([tokensPerSecond], or a guess before its first reply) when automatic; -1 for no limit.
+     */
+    fun thinkingBudget(tokensPerSecond: Double?): Int = when (thinkingMode) {
+        ThinkingMode.AUTO -> if (tokensPerSecond != null && tokensPerSecond > 0) (tokensPerSecond * 60).toInt().coerceIn(384, 4096) else 1024
+        else -> -1
     }
     var expandThinking: Boolean
         get() = bool("expand_thinking", false)

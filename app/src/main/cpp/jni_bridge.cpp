@@ -279,6 +279,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
         }
         req.enable_thinking = j.value("thinking", true);
         req.spec_n_max = j.value("spec_n_max", -1);
+        req.thinking_budget = j.value("thinking_budget", -1);
         req.now_ms = j.value("now_ms", (int64_t) 0);
         if (j.contains("sampling")) {
             const auto & s = j.at("sampling");

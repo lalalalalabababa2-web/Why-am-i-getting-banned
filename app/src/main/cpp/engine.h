@@ -127,6 +127,9 @@ struct ChatRequest {
     int64_t              now_ms          = 0;  // fixed per conversation, so dated templates render the same every turn
     SamplingParams       sampling;
     int                  spec_n_max      = -1; // -1: as loaded; 0: no drafting this reply; n: at most n
+    // Tokens a thinking model may think before it is told to answer (it then writes a short line
+    // saying so, closes its thinking and answers); -1: as long as it likes.
+    int                  thinking_budget = -1;
 };
 
 struct ChatStats {

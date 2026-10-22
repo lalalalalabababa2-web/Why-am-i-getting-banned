@@ -1916,6 +1916,19 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     sp.penalty_present = req.sampling.presence_penalty;
     sp.seed = req.sampling.seed;
     session->apply_sampling(sp);
+    // a limit on thinking: past it, the model is made to say it will answer now and close its
+    // thinking (llama.cpp's reasoning budget; the prompt may already have opened the thinking)
+    if (req.enable_thinking && req.thinking_budget >= 0 && !session->thinking_start_tag().empty() &&
+        !session->thinking_end_tags().empty()) {
+        sp.reasoning_budget_tokens = req.thinking_budget;
+        sp.reasoning_budget_start = common_tokenize(vocab_, session->thinking_start_tag(), false, true);
+        for (const auto & e : session->thinking_end_tags()) {
+            sp.reasoning_budget_end.push_back(common_tokenize(vocab_, e, false, true));
+        }
+        sp.reasoning_budget_message = "\n\nI have thought about this long enough, so I will answer now.\n";
+        sp.reasoning_budget_forced = common_tokenize(vocab_, sp.reasoning_budget_message + session->thinking_end_tags().front(),
+                                                     false, true);
+    }
     common_sampler * smpl = common_sampler_init(model_, sp);
     if (!smpl) {
         res.error = "Could not set up sampling.";

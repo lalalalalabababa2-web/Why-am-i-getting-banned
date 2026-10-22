@@ -69,6 +69,8 @@ class ChatController(private val app: App) {
 
     /** Prompt tokens per second with the loaded model, from its last reply; 0 before there is one. */
     private val readSpeed = mutableMapOf<String, Double>()
+    /** How fast each model last wrote, tokens per second (how long "about a minute" of thinking is). */
+    private val writeSpeed = mutableMapOf<String, Double>()
     private val genSamples = ArrayDeque<Pair<Long, Int>>()  // (uptime ms, tokens written)
     private var thinkingNow = false
 
@@ -376,6 +378,7 @@ class ChatController(private val app: App) {
         if (!o.ok) return
         // a short message says more about the fixed cost of a step than about reading speed
         if (o.nEvaluated >= 128 && o.tPromptMs > 0) readSpeed[model.key] = o.nEvaluated * 1000.0 / o.tPromptMs
+        if (o.nGenerated >= 16 && o.tGenMs > 0) writeSpeed[model.key] = (o.nGenerated - 1) * 1000.0 / o.tGenMs
         // only replies that ended by themselves say how long replies are
         if (o.stopReason == "eos" && o.nGenerated > 0) app.settings.addReplyLength(model.key, thinkingNow, o.nGenerated)
     }
@@ -492,6 +495,7 @@ class ChatController(private val app: App) {
         return JSONObject()
             .put("messages", messages)
             .put("thinking", s.thinkingFor(streamsNow(model)))
+            .put("thinking_budget", s.thinkingBudget(writeSpeed[model.key]))
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
     }

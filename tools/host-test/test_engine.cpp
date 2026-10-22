@@ -994,6 +994,33 @@ static void test_real(const std::string & dir, const std::string & tmp) {
     test_speed(model, "Qwen3.5 0.8B Q4_K_M, whole head", "", {0, 3}, false, kStoryPrompt, 0);
     test_speed(model, "Qwen3.5 0.8B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
 
+    // 3. a limit on thinking: the model thinks a little, says it will answer now, and answers
+    {
+        oa::LoadParams tl;
+        tl.n_ctx = 4096;
+        tl.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+        tl.spec_n_max = 0;
+        oa::Engine e;
+        std::string err;
+        CHECK(e.load(model, tl, err), "thinking budget load: %s", err.c_str());
+        oa::ChatRequest req;
+        req.now_ms = 1760000000000LL;
+        req.enable_thinking = true;
+        req.thinking_budget = 24;
+        req.sampling.temp = 0.0f;
+        req.sampling.top_k = 1;
+        req.sampling.max_tokens = 200;
+        req.messages.push_back({"user", "A farmer has 17 sheep and all but 9 run away. How many are left? Explain.", ""});
+        oa::ChatCallbacks cb;
+        auto r = e.chat(req, cb);
+        const auto think = e.tokenize(r.reasoning, false);
+        std::printf("  thinking budget 24: ok=%d, thinking %zu tokens [%s...], answer [%s] (%d tokens in all)\n", r.ok,
+                    think.size(), r.reasoning.substr(0, 60).c_str(), r.content.substr(0, 80).c_str(), r.stats.n_generated);
+        CHECK(r.ok, "thinking budget: reply failed: %s", r.error.c_str());
+        CHECK(think.size() <= 24 + 40, "thinking budget: thought for %zu tokens", think.size());
+        CHECK(!r.content.empty(), "thinking budget: no answer after the thinking was cut short");
+    }
+
     // pictures: drafting off, as the app has it until the drafting test says otherwise
     oa::LoadParams lp;
     lp.n_ctx = 4096;
