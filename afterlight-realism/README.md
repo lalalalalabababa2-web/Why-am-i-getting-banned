@@ -1,22 +1,97 @@
-# Afterlight: Blood & Steel — v12.0 Realism
+# Afterlight: Blood & Steel — v12.1 Realism
 
 A realism layer for the Afterlight v11.0.0 APK (`app.fieldline.afterlight.bloodsteel`).
 It is appended to the game's web bundle the same way the v7–v11 overhauls were,
 so every part of the original game still runs underneath it. A new **REALISM**
 tab in the main menu switches each aspect on or off.
 
-- APK: `apk/Afterlight_Blood_Steel_v12.0.0_Realism.apk` (versionCode 12000)
+- APK: `apk/Afterlight_Blood_Steel_v12.1.0_Realism.apk` (versionCode 12100)
 - Source: `src/realism_v12.js`
 - Assets: `assets/realism/` (photoscanned surfaces, HDRI skies, credits)
 - Before / after: `screenshots/before_after_1.jpg`, `screenshots/before_after_2.jpg`
+- v12.1: `screenshots/v121_*.jpg` (corpses, body, shadow, flash, death cam)
 
 ## Installing
 
-The v11 APK was signed with a local key that isn't available, so v12 is signed
-with a new key. **Uninstall v11 first**, then install v12. Uninstalling clears
-the game's saved settings and campaign victories.
+- **From v12.0:** install v12.1 over it. It uses the same key, so your
+  settings and victories are kept.
+- **From v11:** the v11 APK was signed with a local key that isn't available,
+  so v12 uses a new key. **Uninstall v11 first**, then install v12.1.
+  Uninstalling clears the game's saved settings and campaign victories.
 
-## What changed
+## New in 12.1
+
+Three new switches on the REALISM tab, all on in Authentic and Hardcore.
+
+### Ragdolls and corpses
+- **Bodies stay where they fall.**
+  - Zombie corpses last 90 s instead of 7 s.
+  - Up to 8 / 18 / 28 corpses are kept (Performance / Balanced / Ultra),
+    instead of 12 that vanish.
+  - Soldiers' bodies stay for the rest of the fight.
+- **Momentum.** A body keeps the speed it was moving at, so a running zombie
+  pitches forward.
+- **Falling.** A limp body tips over (mostly forward, since your centre of
+  mass is ahead of your ankles). It no longer folds onto its knees.
+- **Ground friction** (μ ≈ 0.65) stops a body within a body length instead
+  of letting it skate.
+- **Bullet impulses scale with the round.** A pistol shot drops a body; a
+  shotgun blast throws it. Shots into a corpse nudge it instead of shoving it.
+- **Stagger.** Heavy hits and blasts rock living zombies back.
+- **Blasts move corpses** up to 8 m away.
+
+### Grenades
+- **Real fuses.** Frag 4.4 s (M67: 4–5.5 s), flash 1.6 s (M84), all with
+  a little variation per grenade.
+- **Cooking.**
+  - Hold **G** (or FRAG on touch) and release to throw.
+  - The spoon flies after 0.25 s and the fuse starts running.
+  - Hold it too long and it goes off in your hand.
+  - If you die holding it, it drops at your feet.
+  - Your own running speed carries into the throw.
+- **Fragmentation.**
+  - A frag throws about 2,600 fragments.
+  - Each body is hit by its share, worked out from the size of target it
+    presents at that distance. Five line-of-sight checks from feet to head
+    decide how much of it is exposed, so cover and going prone save you.
+  - Fragments lose energy with range: lethal within about 5 m, wounding to
+    about 15 m, and harmless past 26 m.
+  - Fragments chip nearby walls.
+- **Overpressure.** The blast itself is lethal within about 2 m, injures to
+  5 m, and knocks you off your feet within 7 m.
+- **Flashbangs.** After the white-out, the frame you saw at the bang stays
+  burned on your vision for several seconds while it fades, and your hearing
+  rings.
+
+### Your body
+- **You have legs.**
+  - Look down to see your legs and boots move with your stride.
+  - Your full body, rifle included, casts its shadow on the ground.
+- **Head motion.**
+  - Step-locked head bob.
+  - The landing is absorbed through your knees.
+  - You lean into strafes.
+  - Idle breathing gets heavier as you tire.
+  - Blasts and blows kick the view.
+  - All of it is off with Reduced Motion.
+- **Weapon inertia.** The gun lags behind fast turns according to its weight.
+- **Going prone.**
+  - **Z**, or double-tap crouch. **JUMP** gets you up.
+  - Crawling is slow (about 0.8 m/s).
+  - Recoil and sway are lowest when prone.
+- **Limb wounds.** Hits land on a body region, shown on a small silhouette
+  on the HUD.
+  - Leg wounds slow you down. A badly hurt leg can't sprint, and worse can't
+    jump.
+  - Arm wounds slow reloads and add sway and recoil.
+  - Head hits concuss.
+  - Wounds heal slowly; a medkit treats most of the damage.
+- **No sprinting while reloading**, and no aiming down sights mid-reload.
+- **Breath vapour** on the cold maps (cemetery, rail yard, harbor).
+- **Death.** Your body ragdolls away from whatever killed you, and the camera
+  goes down with it. The view fades out before the results screen.
+
+## What changed in 12.0
 
 ### Graphics
 - **Photoscanned surfaces.** Every world material (tile, plaster, concrete,
@@ -70,7 +145,6 @@ the game's saved settings and campaign victories.
   - The weapon takes a moment to come up after a sprint.
   - Tactical reloads keep the chambered round, giving 30+1.
   - Real ADS and reload times.
-- **Grenades.** Frag grenades use a 4 s fuse and real gravity.
 
 ### Body
 - **Movement.** Realistic walk, sprint and crouch speeds with inertia; heavier

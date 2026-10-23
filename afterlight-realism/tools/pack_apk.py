@@ -5,7 +5,7 @@ import zipfile, zlib, struct, os, sys, binascii, time
 sys.path.insert(0, os.path.dirname(__file__))
 import axml
 src_apk, web_root, out_apk = sys.argv[1], sys.argv[2], sys.argv[3]
-VERSION_CODE, VERSION_NAME_OLD, VERSION_NAME_NEW = 12000, '11.0.0', '12.0.0'
+VERSION_CODE, VERSION_NAME_OLD, VERSION_NAME_NEW = 12100, '11.0.0', '12.1.0'
 zin = zipfile.ZipFile(src_apk)
 raw = open(src_apk, 'rb').read()
 

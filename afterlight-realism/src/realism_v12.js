@@ -22,9 +22,9 @@
   const KEY = "afterlight.realism.v12";
   const ASPECTS = ["surfaces", "sky", "camera", "filmic", "ballistics", "handling", "body", "injuries", "anatomy", "acoustics"];
   const PRESETS = {
-    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, hud: "standard", lethality: 1 },
-    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, hud: "immersive", lethality: 1 },
-    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, hud: "minimal", lethality: 1.45 },
+    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, ragdoll: false, ordnance: false, embodiment: false, hud: "standard", lethality: 1 },
+    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, hud: "immersive", lethality: 1 },
+    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, hud: "minimal", lethality: 1.45 },
   };
   function load() {
     const s = { preset: "authentic", ...PRESETS.authentic, motionBlur: true };
@@ -35,7 +35,7 @@
     return s;
   }
   const R = (a.realismV12 = {
-    version: "12.0",
+    version: "12.1",
     settings: load(),
     stats: { photoMaterials: 0, photoTextures: 0, probes: 0, hdri: null, shots: 0, segments: 0, mantles: 0, falls: 0 },
     listeners: [],
@@ -1261,6 +1261,7 @@ void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 a = texture2D(tAdapt, vec2(
   }
   gp.body = body;
   let inShot = 0;
+  gp.isShooting = () => inShot > 0;
   const shoot = e.Game.prototype.shoot;
   e.Game.prototype.shoot = function (...args) {
     const handling = on("handling");
@@ -1275,7 +1276,7 @@ void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 a = texture2D(tAdapt, vec2(
       const b = body(this.player), w = WEAPON[this.weapon.def.id] || {};
       // Stance and fatigue scale the kick; a shouldered, crouched shooter
       // controls it better; a tired one worse.
-      const stance = (this.player.crouching ? 0.78 : 1) * (this.ads > 0.5 ? 0.9 : 1.15) * (1 + b.fatigue * 0.35);
+      const stance = (this.player.rlProne ? 0.55 : this.player.crouching ? 0.78 : 1) * (this.ads > 0.5 ? 0.9 : 1.15) * (1 + b.fatigue * 0.35) * (1 + (b.wounds?.arms || 0) * 0.5);
       const dp = this.recoilPitch - before.p, dy = this.recoilYaw - before.y, dpitch = this.player.pitch - before.pitch;
       this.recoilPitch = before.p + dp * stance;
       // right-handed shooters drift up and slightly right
@@ -1354,8 +1355,8 @@ void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 a = texture2D(tAdapt, vec2(
       }
       b.gasp = Math.max(0, b.gasp - dt);
       const hold = b.holding ? 0.12 : 1 + b.gasp * 0.9;
-      const stance = p.crouching ? 0.62 : 1;
-      const tired = 1 + b.fatigue * 2.4 + (p.health < 35 ? 0.6 : 0);
+      const stance = p.rlProne ? 0.32 : p.crouching ? 0.62 : 1;
+      const tired = 1 + b.fatigue * 2.4 + (p.health < 35 ? 0.6 : 0) + (b.wounds?.arms || 0) * 1.6;
       const A = w.sway * stance * tired * hold * (0.35 + 0.65 * ads) * (1 + moving * 1.8);
       const br = b.holding ? 0.05 : 0.22 + b.fatigue * 0.25;
       const t = b.t;
@@ -1541,6 +1542,7 @@ void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 a = texture2D(tAdapt, vec2(
     game.audio?.play?.("body_fall", null, { gain: 0.8 });
     const b = body(p);
     if (on("injuries")) b.bleed += dmg * 0.012;
+    R.v121?.wound?.(p, "legs", dmg);
     if (p.health <= 0) {
       p.health = 0;
       p.alive = false;
@@ -2049,7 +2051,7 @@ body.rl-hud-minimal .rl-stamina { display: none; }
     panel.replaceChildren(
       h("header", {}, h("div", {}, h("p", { class: "eyebrow" }, "REALISM / v" + R.version), h("h2", {}, "As real as it gets")), h("button", { type: "button", class: "af-close", onclick: close }, "CLOSE")),
       h("div", { class: "rl-presets" },
-        preset("authentic", "Authentic", "Real calibres, drop and penetration, recoil and sway, stamina, bleeding, headshot-only zombies, photoscanned world."),
+        preset("authentic", "Authentic", "Real calibres, drop and penetration, recoil and sway, stamina, bleeding, limb wounds, cooked grenades with fragments, falling bodies that stay, photoscanned world."),
         preset("hardcore", "Hardcore", "Authentic plus lethal soldiers, slower healing, wounds that can kill, no reticle or hit markers."),
         preset("off", "Off", "The original v11 game, untouched.")),
       h("p", { class: "rl-sub" }, p === "custom" ? "CUSTOM MIX" : "ASPECTS"),
@@ -2065,9 +2067,13 @@ body.rl-hud-minimal .rl-stamina { display: none; }
         field("Injuries & healing", onOff("injuries")),
         field("Anatomy & lethality", onOff("anatomy")),
         field("Acoustics", onOff("acoustics")),
+        field("Ragdolls & corpses", onOff("ragdoll")),
+        field("Grenades: cooking & fragments", onOff("ordnance")),
+        field("Your body: legs, head motion, prone", onOff("embodiment")),
         field("HUD", seg([["standard", "STANDARD"], ["immersive", "IMMERSIVE"], ["minimal", "MINIMAL"]], S.hud, (v) => { R.save({ hud: v, preset: "custom" }); render(); }))),
       h("p", { class: "af-note" },
         "Hold breath: SHIFT while aiming (touch: hold a scoped rifle still). Vault: JUMP at a waist-high obstacle. Check the magazine: F / hold RLD. ",
+        "Cook a grenade: hold G / FRAG, release to throw — the spoon flies after a moment and the fuse runs. Go prone: Z or double-tap crouch; JUMP to get up. ",
         "Zombies only stop when the brain is destroyed; leg hits slow them. Bullets drop, lose energy and punch through thin cover; rifle rounds pass through bodies. ",
         "Sprinting tires you and makes your aim shake; wounds bleed until they clot. Gunfire arrives at the speed of sound and echoes off its surroundings; blasts ring your ears."),
       h("p", { class: "rl-sub" }, "ARSENAL"),
@@ -2153,4 +2159,986 @@ body.rl-hud-minimal .rl-stamina { display: none; }
   hudClass();
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", attachTab);
   else attachTab();
+})();
+
+;
+/* Afterlight v12.1 — Realism: ragdolls & corpses, ordnance, embodiment. */
+(() => {
+  "use strict";
+  const a = window.__AF_OVERHAUL__?.state;
+  const R = a?.realismV12;
+  if (!R || R.v121) return;
+  const e = a.engine, S = R.settings, gp = R.gameplay;
+  const on = (k) => !!S[k];
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const G = 9.81;
+  const M = (R.v121 = { stats: { fragHits: 0, fragActors: 0, cooked: 0, inHand: 0, corpsesKept: 0, ragdollsRestored: 0, prone: 0, deathCams: 0 } });
+  const quality = () => a.settings?.qualityV10 || "balanced";
+  const shooting = () => !!gp?.isShooting?.();
+  const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+  const flat = (p, q) => Math.hypot(p.x - q.x, p.z - q.z);
+  let inBlast = 0;
+
+  /* ================================================================== */
+  /* Ragdolls & corpses                                                  */
+  /* ================================================================== */
+  const corpseCap = () => (quality() === "performance" ? 8 : quality() === "ultra" ? 28 : 18);
+
+  // A rifle bullet carries ~4 N·s; a 70 kg body takes that as 0.05 m/s. People
+  // shot dead fold under their own weight and keep the momentum they had,
+  // they are not thrown. Blasts are a different matter and keep their push.
+  const baseL0 = L0;
+  L0 = function (actor, dir, force = 2.4, point = null) {
+    if (on("ragdoll") && shooting()) {
+      const def = a.game?.weapon?.def;
+      const pellets = (def?.pellets || 1) > 1;
+      force = clamp(0.3 + (def?.damage || 30) / 210 + (pellets ? 0.45 : 0), 0.3, 1.05);
+    }
+    return baseL0(actor, dir, force, point);
+  };
+  // Bullets into an already dead body nudge it, they don't shove it.
+  const baseV9 = V9;
+  V9 = function (gfx, actor, point, dir, force = 2.4) {
+    if (on("ragdoll") && shooting()) force *= 0.45;
+    return baseV9(gfx, actor, point, dir, force);
+  };
+  // Ragdoll creation: carry the body's real momentum into the fall and keep
+  // more bodies around than the stock cap of 12.
+  const baseRb = rb;
+  rb = function (gfx, rig, actor, kind) {
+    if (!on("ragdoll")) return baseRb(gfx, rig, actor, kind);
+    // A body killed before it was ever drawn has a rig still at the origin.
+    const rp = rig?.root?.position, ap = actor?.pos;
+    if (rp && ap && rp.lengthSq() === 0 && Math.hypot(ap.x, ap.z) > 0.5) {
+      rp.set(ap.x, ap.y, ap.z);
+      rig.root.rotation.set(0, actor.yaw || 0, 0);
+    }
+    const before = new Map(gfx.ragdollsV6 || []);
+    const saveVel = actor.vel;
+    const v = actor.rlV;
+    if (v && Number.isFinite(v.x)) actor.vel = { x: (v.x / 0.28) * 0.9, y: 0, z: (v.z / 0.28) * 0.9 };
+    const hit = !!actor.deathImpulseV6;
+    let body;
+    try { body = baseRb(gfx, rig, actor, kind); } finally { actor.vel = saveVel; }
+    if (body?.points?.length) topple(body, actor, hit ? 0.25 : 0.65);
+    const map = gfx.ragdollsV6;
+    const evicted = [...before.values()].filter((b) => !map.has(b.id) && b.hidden && b.rig?.root?.parent);
+    const merged = new Map();
+    for (const b of before.values()) if (map.has(b.id) || evicted.includes(b)) merged.set(b.id, b);
+    for (const [id, b] of map) if (!merged.has(id)) merged.set(id, b);
+    const cap = corpseCap();
+    while (merged.size > cap) {
+      const old = merged.values().next().value;
+      old.hidden = true;
+      if (old.rig?.root) old.rig.root.visible = false;
+      merged.delete(old.id);
+    }
+    for (const b of evicted) if (merged.has(b.id)) { b.hidden = false; b.rig.root.visible = true; b.drawDirty = true; M.stats.ragdollsRestored++; }
+    map.clear();
+    for (const [id, b] of merged) map.set(id, b);
+    return body;
+  };
+  M.stepRagdolls = (gfx, dt, n = 1) => { for (let i = 0; i < n; i++) ob(gfx, dt); };
+  // Limp bodies tip over instead of folding straight down onto their knees:
+  // along their momentum, or mostly forward (the centre of mass sits ahead
+  // of the ankles). w is the initial tipping rate in rad/s.
+  function topple(body, actor, w) {
+    let base = Infinity;
+    for (const pt of body.points) base = Math.min(base, pt.p.y);
+    const v = actor.rlV, sp = v ? Math.hypot(v.x, v.z) : 0;
+    let ang;
+    if (sp > 0.6) ang = Math.atan2(v.x, v.z);
+    else {
+      const yaw = actor.yaw || 0;
+      ang = Math.atan2(-Math.sin(yaw), -Math.cos(yaw)) + (Math.random() - 0.5) * 1.4;
+      if (Math.random() < 0.22) ang += Math.PI;
+    }
+    const dx = Math.sin(ang), dz = Math.cos(ang);
+    for (const pt of body.points) {
+      const h = Math.max(0, pt.p.y - base);
+      pt.prev.x -= (dx * w * h) / 60;
+      pt.prev.z -= (dz * w * h) / 60;
+    }
+  }
+  // Ground friction: cloth and skin on floors (μ ≈ 0.65) stop a body within
+  // a body length instead of letting it skate.
+  const baseOS = oS;
+  oS = function (body, dt) {
+    baseOS(body, dt);
+    if (!on("ragdoll") || body.hidden || body.sleeping || !(dt > 0)) return;
+    const dv = 0.65 * G * Math.min(dt, 0.0667);
+    const step = 1 / 60;
+    for (let i = 0; i < body.points.length; i++) {
+      const p = body.points[i];
+      if (!p.contact || body.disabledV8?.has(i)) continue;
+      const vx = (p.p.x - p.prev.x) / step, vz = (p.p.z - p.prev.z) / step;
+      const sp = Math.hypot(vx, vz);
+      if (sp < 1e-4) continue;
+      const k = Math.max(0, sp - dv) / sp;
+      p.prev.x = p.p.x - vx * k * step;
+      p.prev.z = p.p.z - vz * k * step;
+    }
+  };
+  // Velocity tracking (the core zeroes a zombie's velocity when it dies).
+  function trackVelocity(list, dt) {
+    if (!(dt > 0)) return;
+    for (const z of list || []) {
+      if (!z.alive) continue;
+      const lp = z.rlLastPos;
+      if (lp) {
+        const vx = (z.pos.x - lp.x) / dt, vz = (z.pos.z - lp.z) / dt;
+        if (Math.hypot(vx, vz) < 12) {
+          const k = 1 - Math.exp(-dt * 12);
+          z.rlV = z.rlV ? { x: z.rlV.x + (vx - z.rlV.x) * k, y: 0, z: z.rlV.z + (vz - z.rlV.z) * k } : { x: vx, y: 0, z: vz };
+        }
+      }
+      z.rlLastPos = { x: z.pos.x, y: z.pos.y, z: z.pos.z };
+    }
+  }
+  // Zombie corpses persist (the stock game clears them after 7 s, 12 max).
+  const zEnemies = e.ZombieAI.prototype.updateEnemies;
+  e.ZombieAI.prototype.updateEnemies = function (dt, player) {
+    if (!on("ragdoll")) return zEnemies.call(this, dt, player);
+    const keep = 90, cap = corpseCap();
+    const dead = this.enemies.filter((z) => !z.alive);
+    for (const z of dead) z.rlDeathAge = (z.rlDeathAge ?? z.deathT ?? 0);
+    dead.sort((p, q) => p.rlDeathAge - q.rlDeathAge); // newest first
+    const kept = dead.filter((z, i) => i < cap && z.rlDeathAge < keep);
+    const stash = kept.slice(12);
+    const stashIds = new Set(stash.map((z) => z.id));
+    for (const z of dead) z.deathT = kept.includes(z) ? Math.min(z.rlDeathAge, 6.5) : 8;
+    if (stash.length) this.enemies = this.enemies.filter((z) => !stashIds.has(z.id));
+    let r;
+    try { r = zEnemies.call(this, dt, player); }
+    finally {
+      if (stash.length) this.enemies.push(...stash);
+      for (const z of kept) { z.rlDeathAge += dt; z.deathT = Math.min(z.rlDeathAge, 6.5); }
+      M.stats.corpsesKept = kept.length;
+    }
+    trackVelocity(this.enemies, dt);
+    return r;
+  };
+  // Physical hit reactions: heavy hits and blasts rock a zombie back.
+  const zDamage = e.ZombieAI.prototype.damage;
+  e.ZombieAI.prototype.damage = function (z, amount, part = "torso", pen = 0.3, ...rest) {
+    const r = zDamage.call(this, z, amount, part, pen, ...rest);
+    if (on("ragdoll") && z?.alive && r > 0 && z.state !== "attack" && z.state !== "emerge") {
+      const heavy = inBlast ? 1.1 : shooting() ? clamp(amount / Math.max(40, z.maxHealth) - 0.15, 0, 0.6) : 0;
+      if (heavy > 0.05 && z.kind !== "boss") {
+        z.state = "stagger";
+        z.actionT = Math.max(z.actionT || 0, 0.2 + heavy);
+      }
+    }
+    return r;
+  };
+
+  /* ================================================================== */
+  /* Ordnance: cooking, fragments, overpressure, flash                  */
+  /* ================================================================== */
+  const GO_ORIG = { frag: { ...Go.frag }, flash: { ...Go.flash }, shock: { ...Go.shock }, molotov: { ...Go.molotov } };
+  const GO_REAL = {
+    frag: { fuse: 4.4, speed: 16 },     // M67: 4–5.5 s delay, ~16 m/s overhand
+    flash: { fuse: 1.6, speed: 15 },    // M84: 1–2.3 s
+    shock: { fuse: 1.8, speed: 15 },
+    molotov: { fuse: 3.5, speed: 12 },
+  };
+  function applyOrdnance() {
+    for (const k of Object.keys(GO_ORIG)) Object.assign(Go[k], on("ordnance") ? { ...GO_ORIG[k], ...GO_REAL[k] } : GO_ORIG[k]);
+  }
+  M.applyOrdnance = applyOrdnance;
+  const inputAction = e.Input.prototype.action;
+  e.Input.prototype.action = function (name, pressed, ...rest) {
+    if (name === "grenade") this.rlGrenadeHeld = !!pressed;
+    if (name === "crouch" && pressed) this.rlCrouchTap = performance.now();
+    return inputAction.call(this, name, pressed, ...rest);
+  };
+  function grenadeHeld(inp, src) {
+    return src === "key" ? inp.keys.has("KeyG") : src === "touch" ? !!inp.rlGrenadeHeld : false;
+  }
+  function launch(game, c, opts = {}) {
+    const n = game.grenades.length;
+    const save = game.explosiveType;
+    game.explosiveType = c.kind;
+    try { game.throwGrenade(); } finally { game.explosiveType = save; }
+    const g = game.grenades.length > n ? game.grenades[game.grenades.length - 1] : null;
+    game.rlCook = null;
+    if (!g) return null;
+    const spoonOff = Math.max(0, c.t - 0.25);
+    g.fuse = Math.max(0.02, c.fuse - spoonOff);
+    const pv = game.player.vel || { x: 0, y: 0, z: 0 };
+    if (opts.drop) {
+      // Released from a hand that can no longer throw.
+      const eye = game.player.eye;
+      g.pos = { x: eye.x, y: Math.max(game.player.pos.y + 0.25, eye.y - (opts.inHand ? 0.35 : 1.1)), z: eye.z };
+      g.vel = { x: pv.x * 0.6, y: 0, z: pv.z * 0.6 };
+      if (opts.inHand) g.fuse = 0.001;
+    } else {
+      // The thrower's own momentum goes with the grenade.
+      g.vel.x += pv.x; g.vel.z += pv.z; g.vel.y += Math.max(0, pv.y) * 0.5;
+    }
+    g.previousVelocity = { ...g.vel };
+    return g;
+  }
+  function cooking(game, dt) {
+    const c = game.rlCook;
+    if (!c) return;
+    c.t += dt;
+    if (c.t > 0.25 && !c.spoon) {
+      c.spoon = true;
+      M.stats.cooked++;
+      game.audio?.play?.("casing_metal", null, { gain: 0.35, rate: 1.6 });
+    }
+    const p = game.player;
+    if (!p.alive) { launch(game, c, { drop: true }); return; }
+    const fuseLeft = c.fuse - Math.max(0, c.t - 0.25);
+    if (c.spoon && fuseLeft <= 0) {
+      M.stats.inHand++;
+      launch(game, c, { drop: true, inHand: true });
+      return;
+    }
+    if (!grenadeHeld(game.input, c.source)) launch(game, c);
+  }
+
+  // Fragmentation. An M67 throws a few thousand fragments; a body at range d
+  // intercepts N·A/(4πd²) of them. Line of sight to several points on the
+  // body decides how much of it is exposed, so cover and going prone count.
+  const FRAGMENTS = 2600, FRAG_DMG = 15, FRAG_DECAY = 0.12, FRAG_RANGE = 26;
+  function poisson(l) {
+    if (l > 30) return Math.round(l + Math.sqrt(l) * (Math.random() * 2 - 1));
+    let k = 0, p = 1;
+    const L = Math.exp(-l);
+    do { k++; p *= Math.random(); } while (p > L);
+    return k - 1;
+  }
+  function exposure(world, origin, base, height) {
+    const hs = [0.12, 0.35, 0.55, 0.75, 0.93];
+    let vis = 0, head = false;
+    for (const f of hs) {
+      const pt = { x: base.x, y: base.y + height * f, z: base.z };
+      if (oa(world, origin, pt)) { vis++; if (f > 0.9) head = true; }
+    }
+    return { frac: vis / hs.length, head };
+  }
+  function fragHits(world, origin, actorPos, height) {
+    const d = Math.max(0.6, flat(origin, actorPos));
+    if (d > FRAG_RANGE) return null;
+    const ex = exposure(world, origin, actorPos, height);
+    if (ex.frac <= 0) return null;
+    const area = 0.62 * (height / 1.8);
+    const lambda = (FRAGMENTS * area * ex.frac) / (4 * Math.PI * d * d);
+    const n = Math.min(40, poisson(lambda));
+    if (!n) return null;
+    let dmg = 0, headHits = 0;
+    for (let i = 0; i < n; i++) {
+      const hit = FRAG_DMG * Math.exp(-FRAG_DECAY * d) * (0.45 + Math.random() * 1.1);
+      if (ex.head && Math.random() < 0.11) headHits++;
+      dmg += hit;
+    }
+    return { n, dmg, headHits, d };
+  }
+  function fragments(game, pos) {
+    const world = game.map?.world;
+    if (!world) return;
+    const origin = { x: pos.x, y: pos.y + 0.14, z: pos.z };
+    for (const z of game.zombies?.alive || []) {
+      const h = fragHits(world, origin, z.pos, z.height || 1.78);
+      if (!h) continue;
+      M.stats.fragHits += h.n; M.stats.fragActors++;
+      inBlast++;
+      try {
+        if (h.headHits) game.zombies.damage(z, h.dmg * 0.3 + 40 * h.headHits, "head", 0.35);
+        if (z.alive) game.zombies.damage(z, h.dmg, Math.random() < 0.35 ? "legs" : "torso", 0.35);
+      } finally { inBlast--; }
+    }
+    for (const r of game.ai?.alive || []) {
+      const h = fragHits(world, origin, r.pos, r.height || 1.78);
+      if (!h) continue;
+      M.stats.fragHits += h.n; M.stats.fragActors++;
+      const dmg = h.dmg * (h.headHits ? 2.5 : 1);
+      const [hp, ar] = nm(r.health, r.armor, dmg, 0.35);
+      r.health = hp; r.armor = ar;
+      game.ai.onDamaged(r, pos);
+      if (r.health <= 0 && r.alive) {
+        r.state = "dead"; r.deathT = 0;
+        game.ai.releaseCover(r);
+        game.stats.kills++;
+        game.mode.onKill();
+      }
+    }
+    const p = game.player;
+    if (p?.alive && game.config?.mode !== "training") {
+      const h = fragHits(world, origin, p.pos, p.height || 1.8);
+      if (h) {
+        M.stats.fragHits += h.n;
+        M.hurtContext = h.headHits ? "head" : "blast";
+        try { game.hurt(h.dmg * (h.headHits ? 1.8 : 1), pos); } finally { M.hurtContext = null; }
+      }
+    }
+    // Visible fragment strikes on nearby surfaces.
+    const fx = quality() === "performance" ? 6 : 16;
+    for (let i = 0, made = 0; i < 60 && made < fx; i++) {
+      const u = Math.random() * 0.9 - 0.05, th = Math.random() * Math.PI * 2, r2 = Math.sqrt(1 - u * u);
+      const dir = { x: r2 * Math.cos(th), y: u, z: r2 * Math.sin(th) };
+      const hit = e.raycastWorld(world, origin, dir, 14);
+      if (!hit || !hit.box) continue;
+      const pt = { x: origin.x + dir.x * hit.t, y: origin.y + dir.y * hit.t, z: origin.z + dir.z * hit.t };
+      try { game.gfx.impact(pt, hit.normal, hit.box.mat); } catch {}
+      made++;
+    }
+  }
+  function pushCorpses(game, pos, radius) {
+    const gfx = game.gfx;
+    for (const list of [game.zombies?.enemies, game.ai?.enemies]) for (const actor of list || []) {
+      if (actor.alive || !actor.renderRig?.ragdollV6) continue;
+      const d = flat(actor.pos, pos);
+      if (d > radius) continue;
+      const ex = game.explosiveExposureV5 ? game.explosiveExposureV5(pos, actor) : 1;
+      if (ex <= 0) continue;
+      const dir = { x: actor.pos.x - pos.x, y: 0.9, z: actor.pos.z - pos.z };
+      baseV9(gfx, actor, { ...pos }, dir, Math.min(7, (18 / Math.max(0.8, d)) * ex));
+    }
+  }
+  function knockPlayer(game, pos) {
+    const p = game.player;
+    if (!p?.alive) return;
+    const d = flat(p.pos, pos);
+    if (d > 7) return;
+    const ex = game.explosiveExposureV5 ? game.explosiveExposureV5(pos, p) : 1;
+    if (ex <= 0) return;
+    const s = (1 - d / 7) * ex;
+    const nx = (p.pos.x - pos.x) / (d || 1), nz = (p.pos.z - pos.z) / (d || 1);
+    p.vel.x += nx * 5.5 * s; p.vel.z += nz * 5.5 * s;
+    p.vel.y = Math.max(p.vel.y, 2.2 * s);
+    p.grounded = false;
+    M.shake = Math.max(M.shake || 0, 0.4 + s);
+  }
+  const applyBlast = e.Game.prototype.applyBlastV5;
+  e.Game.prototype.applyBlastV5 = function (pos, t) {
+    if (!on("ordnance") || t?.kind !== "frag") {
+      inBlast++;
+      try { return applyBlast.call(this, pos, t); } finally { inBlast--; }
+    }
+    let r;
+    inBlast++;
+    M.hurtContext = "blast";
+    try {
+      // Overpressure: lethal within ~2 m, injurious to ~5 m, shielded by walls.
+      r = applyBlast.call(this, pos, { ...t, radius: 5.2, damage: 170 });
+    } finally { inBlast--; M.hurtContext = null; }
+    try { fragments(this, pos); } catch (err) { console.error("[realism] fragments", err); }
+    pushCorpses(this, pos, 8);
+    knockPlayer(this, pos);
+    return r;
+  };
+  const detonate = e.Game.prototype.detonateOrdnanceV5;
+  e.Game.prototype.detonateOrdnanceV5 = function (g) {
+    const before = this.flashbangV5 || 0;
+    const kind = g?.kind || "frag";
+    const r = detonate.call(this, g);
+    if (on("ordnance") && kind === "flash" && this.player?.alive) {
+      const gain = (this.flashbangV5 || 0) - before;
+      const d = g?.pos ? dist(g.pos, this.player.eye) : 99;
+      // 170 dB and ~6 million candela: deafening in a room, retinal burn-in.
+      if (gain > 0.1) M.afterimage?.(clamp(gain / 2.5, 0.25, 1));
+      if (d < 14) R.acoustic?.concuss?.(clamp(1.15 - d / 11, 0, 1));
+    }
+    return r;
+  };
+
+  /* ================================================================== */
+  /* Embodiment                                                          */
+  /* ================================================================== */
+  // --- limb wounds ---------------------------------------------------
+  function wounds(p) {
+    const b = gp.body(p);
+    if (!b.wounds) b.wounds = { head: 0, torso: 0, arms: 0, legs: 0 };
+    return b.wounds;
+  }
+  M.wound = function (p, region, dmg) {
+    if (!on("injuries") || !p) return;
+    const w = wounds(p);
+    w[region] = clamp(w[region] + dmg / 70, 0, 1);
+    if (region === "head") R.acoustic?.concuss?.(clamp(dmg / 40, 0.2, 0.8));
+  };
+  const hurt = e.Game.prototype.hurt;
+  e.Game.prototype.hurt = function (amount, from) {
+    const p = this.player, before = p?.health ?? 0;
+    const r = hurt.call(this, amount, from);
+    const lost = before - (p?.health ?? before);
+    if (lost > 0 && on("injuries")) {
+      if (M.hurtContext === "blast") {
+        for (const reg of ["torso", "arms", "legs"]) M.wound(p, reg, lost * 0.45);
+      } else if (M.hurtContext === "head") M.wound(p, "head", lost);
+      else {
+        // Where a blow lands, roughly: arms raised in defence take many hits.
+        const roll = Math.random();
+        const reg = roll < 0.42 ? "torso" : roll < 0.7 ? "arms" : roll < 0.9 ? "legs" : "head";
+        M.wound(p, reg, lost);
+        if (reg === "torso") gp.body(p).bleed += lost * 0.012;
+      }
+    }
+    if (lost > 0 && on("embodiment")) {
+      // Being hit jolts the head.
+      const k = clamp(lost / 30, 0.15, 1);
+      cam.kickP += (Math.random() * 0.6 + 0.4) * 0.03 * k;
+      cam.kickY += (Math.random() - 0.5) * 0.05 * k;
+    }
+    return r;
+  };
+  function healWounds(game, dt) {
+    const p = game.player;
+    if (!p?.rlBody?.wounds) return;
+    const w = p.rlBody.wounds;
+    for (const k of Object.keys(w)) w[k] = Math.max(0, w[k] - dt * 0.006);
+  }
+  // Medical supplies dress wounds.
+  const zUpdate = e.ZombieAI.prototype.update;
+  e.ZombieAI.prototype.update = function (dt, ctx) {
+    const p = ctx?.player, before = p?.health;
+    const r = zUpdate.call(this, dt, ctx);
+    if (p?.rlBody && Number.isFinite(before) && p.health - before >= 20) {
+      const w = p.rlBody.wounds;
+      if (w) for (const k of Object.keys(w)) w[k] *= 0.25;
+      p.rlBody.bleed = 0;
+    }
+    return r;
+  };
+  // A wounded arm slows the hands.
+  const startReload = e.Weapon.prototype.startReload;
+  e.Weapon.prototype.startReload = function () {
+    const r = startReload.call(this);
+    const arms = a.game?.player?.rlBody?.wounds?.arms || 0;
+    if (r && on("injuries") && arms > 0.05) {
+      this.reloadTotal *= 1 + arms * 0.6;
+      this.reloadT = this.reloadTotal;
+    }
+    return r;
+  };
+
+  // --- prone, wounded legs, reloading restrictions ------------------
+  const pupdate = e.Player.prototype.update;
+  e.Player.prototype.update = function (dt, input, world, mult = 1) {
+    const game = a.game;
+    const emb = on("embodiment") && game?.player === this;
+    const w = this.rlBody?.wounds;
+    let inp = input, m = mult;
+    if (on("injuries") && w) {
+      m *= 1 - w.legs * 0.35;
+      if (w.legs > 0.55 && inp.sprint) inp = { ...inp, sprint: false };
+      if (w.legs > 0.75 && inp.jump) inp = { ...inp, jump: false };
+    }
+    if (game?.weapon?.reloading && on("handling") && inp.sprint) inp = { ...inp, sprint: false };
+    if (!emb || !this.rlProne) return pupdate.call(this, dt, inp, world, m);
+    // Prone: a crawl at ~0.8 m/s, eyes ~0.43 m above the ground.
+    if (inp.jump && canRise(this, world)) {
+      this.rlProne = false;
+      return pupdate.call(this, dt, { ...inp, jump: false, crouchHeld: true }, world, m);
+    }
+    const save = { crouchH: Ia.crouchH, crouch: Ia.crouch };
+    Ia.crouchH = 0.55;
+    Ia.crouch = 0.8;
+    try { return pupdate.call(this, dt, { ...inp, crouchHeld: true, sprint: false, jump: false, crouchPressed: false }, world, m); }
+    finally { Ia.crouchH = save.crouchH; Ia.crouch = save.crouch; }
+  };
+  function canRise(p, world) {
+    const r = Ia.radius;
+    return !l9(world, { x: p.pos.x - r, y: p.pos.y + 0.05, z: p.pos.z - r }, { x: p.pos.x + r, y: p.pos.y + Ia.crouchH, z: p.pos.z + r });
+  }
+  function proneInput(game) {
+    const inp = game.input, p = game.player;
+    if (!p?.alive) { p && (p.rlProne = false); return; }
+    const z = inp.keys.has("KeyZ");
+    let toggle = z && !M.zHeld;
+    M.zHeld = z;
+    if (inp.edges.has("crouch")) {
+      const now = performance.now();
+      if (M.lastCrouch && now - M.lastCrouch < 380) { toggle = true; M.lastCrouch = 0; }
+      else M.lastCrouch = now;
+    }
+    if (!toggle) return;
+    if (p.rlProne) {
+      if (canRise(p, game.map.world)) { p.rlProne = false; inp.crouch = true; }
+    } else if (p.grounded) {
+      p.rlProne = true;
+      inp.crouch = true;
+      M.stats.prone++;
+      game.audio?.play?.("crouch", null, { gain: 0.7, rate: 0.8 });
+      game.audio?.play?.("cloth_move", null, { gain: 0.6 });
+    }
+  }
+
+  // --- the step: cooking, prone, no aiming mid-reload ----------------
+  const step = e.Game.prototype.step;
+  e.Game.prototype.step = function (dt, ...rest) {
+    const playing = this.phase === "playing" && !a.coop?.active;
+    if (playing && on("ordnance")) {
+      const inp = this.input;
+      if (inp.edges.has("grenade")) {
+        inp.edges.delete("grenade");
+        if (!this.rlCook && this.player?.alive) {
+          if (this.grenadeCount > 0) {
+            const src = inp.keys.has("KeyG") ? "key" : inp.rlGrenadeHeld ? "touch" : "tap";
+            const base = Go[this.explosiveType]?.fuse || 4.4;
+            this.rlCook = { t: 0, kind: this.explosiveType, source: src, fuse: this.explosiveType === "frag" ? base * (0.92 + Math.random() * 0.2) : base };
+            this.audio?.play?.("grenade_pin", null, { gain: 0.55 });
+          } else this.throwGrenade(); // the stock "none left" message
+        }
+      }
+    }
+    if (playing && on("embodiment")) proneInput(this);
+    // You can't sight a weapon while your hand is on its magazine.
+    let restoreAds = null;
+    if (playing && on("handling") && this.weapon?.reloading && this.input.ads) { restoreAds = true; this.input.ads = false; }
+    let r;
+    try { r = step.call(this, dt, ...rest); } finally { if (restoreAds) this.input.ads = true; }
+    if (playing) {
+      if (on("ordnance")) cooking(this, dt);
+      healWounds(this, dt);
+      if (on("ragdoll")) {
+        trackVelocity(this.ai?.enemies, dt);
+        // Soldiers' bodies stay where they fell.
+        const dead = (this.ai?.enemies || []).filter((h) => !h.alive);
+        dead.sort((p, q) => (q.rlDeathAge || 0) - (p.rlDeathAge || 0));
+        dead.forEach((h, i) => {
+          h.rlDeathAge = (h.rlDeathAge || 0) + dt;
+          h.deathT = i < dead.length - corpseCap() ? 11 : Math.min(h.deathT, 9.5);
+        });
+      }
+    }
+    return r;
+  };
+
+  // --- your own body -------------------------------------------------
+  const body = (M.body = { rig: null, actor: null, gfx: null, ghosts: [] });
+  function buildBody(gfx) {
+    for (const o of body.ghosts) if (o.material !== o.userData.rlMat) o.material.dispose?.();
+    body.rig = null;
+    body.ghosts = [];
+    if (!on("embodiment") || !gfx.map) return;
+    const actor = { id: 97531, kind: undefined, role: "rifleman", variant: 0, height: 1.78, walkPhase: 0, moveSpeed: 0, aimPitch: 0, age: 0, stateT: 0, alive: true, pos: { x: 0, y: 0, z: 0 }, yaw: 0, vel: { x: 0, y: 0, z: 0 } };
+    let rig;
+    try { rig = gfx.human(actor); } catch (err) { console.warn("[realism] body", err); return; }
+    if (!rig?.root) return;
+    gfx.actorGroup.add(rig.root);
+    rig.high.visible = true;
+    if (rig.low) rig.low.visible = false;
+    rig.root.userData.rlPlayerBody = true;
+    body.rig = rig; body.actor = actor; body.gfx = gfx;
+    hideUpper(rig);
+  }
+  // The upper body is a "ghost": its cloned materials write neither colour
+  // nor depth, so the eyes never see it, but the shadow pass (which only uses
+  // geometry) still casts your whole silhouette, rifle included. A tiny pass
+  // hides the ghost again before ambient occlusion samples the depth.
+  function upperParts(rig) {
+    const parts = [rig.torso, rig.pelvis, rig.head, rig.weaponRoot, rig.rifle, ...(rig.joints?.palms || []), ...(rig.joints?.elbows || []), ...(rig.joints?.shoulders || [])];
+    for (const l of rig.limbs || []) parts.push(l.upperArm, l.lowerArm);
+    return parts.filter(Boolean);
+  }
+  function hideUpper(rig) {
+    body.ghosts = [];
+    const seen = new Set();
+    for (const n of upperParts(rig)) n.traverse((o) => {
+      if (!o.isMesh || seen.has(o)) return;
+      seen.add(o);
+      o.userData.rlMat = o.material;
+      const m = o.material.clone();
+      m.colorWrite = false;
+      m.depthWrite = false;
+      o.material = m;
+      o.userData.rlHead = false;
+      body.ghosts.push(o);
+    });
+    rig.head?.traverse((o) => { if (o.isMesh) o.userData.rlHead = true; });
+  }
+  function unghost(rig) {
+    // At death the arms and torso tumble into view; the head stays a ghost.
+    for (const o of body.ghosts || []) {
+      if (o.userData.rlHead) continue;
+      o.material.dispose?.();
+      o.material = o.userData.rlMat;
+      o.visible = true;
+    }
+    body.ghosts = (body.ghosts || []).filter((o) => o.userData.rlHead);
+  }
+  class GhostPass extends e.Pass {
+    constructor() { super(); this.needsSwap = false; }
+    render() { for (const o of body.ghosts || []) o.visible = false; }
+  }
+  function poseBody(game, dt) {
+    const rig = body.rig, act = body.actor, p = game.player;
+    if (!rig || !p || body.gfx !== game.gfx) return;
+    const show = on("embodiment") && game.phase === "playing" && p.alive && !p.rlProne && !a.coop?.active && !game.rlDeath;
+    rig.root.visible = show;
+    if (!show) return;
+    const fx = -Math.sin(p.yaw), fz = -Math.cos(p.yaw);
+    const sp = p.speed;
+    act.moveSpeed = sp;
+    act.walkPhase = (act.walkPhase + sp * dt * (2 * Math.PI / (p.sprinting ? 2.3 : 1.55))) % (Math.PI * 2);
+    act.height = Math.max(1.2, (p.height || 1.8) * (1.78 / 1.8));
+    act.age += dt;
+    act.aimPitch = 0;
+    rig.root.position.set(p.pos.x - fx * 0.08, p.pos.y, p.pos.z - fz * 0.08);
+    rig.root.rotation.set(0, p.yaw, 0);
+    try { nl(rig, act); } catch {}
+    for (const o of body.ghosts || []) o.visible = true;
+    rig.root.updateMatrixWorld(true);
+  }
+
+  // --- camera physics ------------------------------------------------
+  const cam = (M.cam = { phase: 0, y: 0, vy: 0, roll: 0, kickP: 0, kickY: 0, lastYaw: null, lastPitch: null, lagY: 0, lagP: 0, wasGrounded: true, vyAir: 0, t: 0 });
+  function cameraPhysics(game, dt) {
+    const gfx = game.gfx, p = game.player, c = gfx.camera;
+    if (!p || !on("embodiment") || a.coop?.active || !(dt > 0)) return;
+    if (game.settings.reducedMotion) return;
+    cam.t += dt;
+    const k = clamp((game.settings.shake ?? 0.35) / 0.35, 0, 1.6);
+    const ads = clamp(game.ads || 0, 0, 1);
+    const moving = p.grounded ? clamp(p.speed / 3.7, 0, 1.8) : 0;
+    // Step-locked bob: two vertical dips and one lateral sway per stride.
+    cam.phase += p.speed * dt * (2 * Math.PI / (p.sprinting ? 2.3 : p.crouching ? 1.1 : 1.55));
+    const amp = (p.sprinting ? 0.034 : p.crouching ? 0.009 : 0.016) * moving * (1 - ads * 0.75) * k;
+    const bobY = -amp * (1 - Math.cos(cam.phase * 2)) * 0.5;
+    const bobX = amp * 0.65 * Math.sin(cam.phase);
+    // Landing: legs absorb the impact as a damped spring.
+    if (p.grounded && !cam.wasGrounded && cam.vyAir < -2) cam.vy += Math.max(-1.8, cam.vyAir * 0.16) * k;
+    cam.wasGrounded = p.grounded;
+    if (!p.grounded) cam.vyAir = p.vel.y;
+    cam.vy += (-90 * cam.y - 13 * cam.vy) * dt;
+    cam.y += cam.vy * dt;
+    // Lean into strafes, roll with the stride.
+    const strafe = (Math.cos(p.yaw) * p.vel.x - Math.sin(p.yaw) * p.vel.z);
+    cam.roll += (-strafe * 0.0045 * k - cam.roll) * (1 - Math.exp(-dt * 6));
+    const strideRoll = amp * 0.35 * Math.sin(cam.phase);
+    // Idle breathing.
+    const b = p.rlBody;
+    const breath = (1 - moving) * 0.0035 * (1 + (b?.fatigue || 0) * 2) * Math.sin(cam.t * Math.PI * 2 * (0.25 + (b?.fatigue || 0) * 0.3));
+    // Recoil from blasts and blows.
+    cam.kickP *= Math.exp(-dt * 9);
+    cam.kickY *= Math.exp(-dt * 9);
+    const shake = (M.shake || 0) + (R.cameraFx?.concussion || 0) * 0.4;
+    M.shake = Math.max(0, (M.shake || 0) - dt * 1.6);
+    const sx = shake > 0 ? (Math.random() - 0.5) * 0.03 * shake * k : 0, sy = shake > 0 ? (Math.random() - 0.5) * 0.03 * shake * k : 0;
+    const rx = Math.cos(p.yaw), rz = -Math.sin(p.yaw);
+    c.position.x += rx * bobX;
+    c.position.z += rz * bobX;
+    c.position.y += bobY + cam.y + breath;
+    c.rotation.x += cam.kickP + sy;
+    c.rotation.y += cam.kickY + sx;
+    c.rotation.z += cam.roll + strideRoll;
+    c.updateMatrixWorld();
+  }
+  // Weapon inertia: the gun lags behind fast turns and settles back.
+  function weaponInertia(game, dt) {
+    const gfx = game.gfx, p = game.player;
+    if (!p || !on("embodiment") || !(dt > 0) || !gfx.weapon) return;
+    if (cam.lastYaw === null) { cam.lastYaw = p.yaw; cam.lastPitch = p.pitch; }
+    let dy = p.yaw - cam.lastYaw;
+    dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+    const dp = p.pitch - cam.lastPitch;
+    cam.lastYaw = p.yaw; cam.lastPitch = p.pitch;
+    const w = R.gameplay?.weapons?.[game.weapon?.def.id]?.weight || game.weapon?.def.weight || 3;
+    const heavy = clamp(0.6 + w * 0.11, 0.7, 1.9) * (1 - clamp(game.ads || 0, 0, 1) * 0.7);
+    const ty = clamp(-dy / dt * 0.012 * heavy, -0.09, 0.09), tp = clamp(-dp / dt * 0.012 * heavy, -0.07, 0.07);
+    const s = 1 - Math.exp(-dt * 11);
+    cam.lagY += (ty - cam.lagY) * s;
+    cam.lagP += (tp - cam.lagP) * s;
+    gfx.weapon.rotation.y += cam.lagY;
+    gfx.weapon.rotation.x += cam.lagP;
+    gfx.weapon.position.x += cam.lagY * 0.08;
+    gfx.weapon.position.y += cam.lagP * 0.06;
+    // Prone: the weapon rests low and steady.
+    if (p.rlProne) gfx.weapon.position.y -= 0.02 * (1 - clamp(game.ads || 0, 0, 1));
+  }
+
+  // --- breath vapour on cold nights ---------------------------------
+  const COLD = new Set(["cemetery", "rail", "harbor"]);
+  const vapour = { pool: [], t: 0, tex: null };
+  function puff(gfx, p) {
+    if (!vapour.tex) {
+      const cv = document.createElement("canvas");
+      cv.width = cv.height = 64;
+      const ctx = cv.getContext("2d");
+      const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+      g.addColorStop(0, "rgba(235,238,240,0.55)");
+      g.addColorStop(1, "rgba(235,238,240,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 64, 64);
+      vapour.tex = new e.CanvasTexture(cv);
+    }
+    let s = vapour.pool.find((v) => v.life <= 0);
+    if (!s) {
+      if (vapour.pool.length >= 6) return;
+      const sp = new e.Sprite(new e.SpriteMaterial({ map: vapour.tex, transparent: true, depthWrite: false, opacity: 0 }));
+      s = { sprite: sp, life: 0, vel: new e.Vector3() };
+      vapour.pool.push(s);
+    }
+    if (s.sprite.parent !== gfx.fxGroup) gfx.fxGroup.add(s.sprite);
+    const dir = gfx.camera.getWorldDirection(new e.Vector3());
+    s.sprite.position.copy(gfx.camera.position).addScaledVector(dir, 0.28).add(new e.Vector3(0, -0.07, 0));
+    s.vel.copy(dir).multiplyScalar(0.55 + Math.random() * 0.2).add(new e.Vector3(p.vel.x * 0.8, 0.12, p.vel.z * 0.8));
+    s.life = s.total = 1.4 + Math.random() * 0.4;
+    s.base = 0.12 + (p.rlBody?.fatigue || 0) * 0.08;
+  }
+  function vapourFrame(game, dt) {
+    const gfx = game.gfx, p = game.player;
+    for (const v of vapour.pool) {
+      if (v.life <= 0) { v.sprite.visible = false; continue; }
+      v.life -= dt;
+      const age = 1 - v.life / v.total;
+      v.sprite.visible = true;
+      v.sprite.position.addScaledVector(v.vel, dt);
+      v.vel.multiplyScalar(Math.exp(-dt * 1.6));
+      v.sprite.scale.setScalar(0.12 + age * 0.55);
+      v.sprite.material.opacity = v.base * Math.sin(Math.min(1, age * 1.3) * Math.PI) * (1 - age);
+    }
+    if (!on("embodiment") || !p?.alive || game.phase !== "playing" || !COLD.has(game.map?.def.id) || p.rlBody?.holding) return;
+    const rate = 0.28 + (p.rlBody?.fatigue || 0) * 0.55;
+    vapour.t -= dt;
+    if (vapour.t <= 0) { vapour.t = 1 / rate; puff(gfx, p); }
+  }
+
+  // --- death: your body falls, the camera goes with it ---------------
+  const finish = e.Game.prototype.finish;
+  e.Game.prototype.finish = function (...args) {
+    const dying = on("embodiment") && this.player && !this.player.alive && !a.coop?.active && this.phase === "playing";
+    if (dying && !this.rlDeathDone) {
+      if (!this.rlDeath) startDeath(this);
+      if (this.rlDeath && this.rlDeath.t < 3.1) return;
+      this.rlDeathDone = true;
+    }
+    return finish.apply(this, args);
+  };
+  function startDeath(game) {
+    const p = game.player, gfx = game.gfx;
+    game.rlDeath = { t: 0, ragdoll: null };
+    M.stats.deathCams++;
+    if (game.rlCook) launch(game, game.rlCook, { drop: true });
+    const rig = body.rig;
+    if (!rig || body.gfx !== gfx) return;
+    const act = body.actor;
+    act.pos = { ...p.pos }; act.yaw = p.yaw; act.alive = false; act.state = "dead";
+    act.vel = { x: p.vel.x, y: 0, z: p.vel.z };
+    act.rlV = { x: p.vel.x, y: 0, z: p.vel.z };
+    // Fall away from whatever killed you.
+    const ang = p.yaw + (game.damageAngle || 0);
+    act.deathImpulseV6 = { direction: { x: Math.sin(ang), y: 0.05, z: Math.cos(ang) }, force: 1.1, point: { x: p.pos.x, y: p.pos.y + 1.3, z: p.pos.z } };
+    rig.root.visible = true;
+    poseBody(game, 0);
+    rig.root.visible = true;
+    try {
+      const rd = _v(gfx, rig, act, "human");
+      game.rlDeath.ragdoll = rd;
+      unghost(rig);
+    } catch (err) { console.warn("[realism] death ragdoll", err); }
+  }
+  const tmpM = new e.Matrix4(), tmpQ = new e.Quaternion();
+  function deathCam(game, dt) {
+    const d = game.rlDeath;
+    if (!d) return;
+    d.t += dt;
+    const gfx = game.gfx;
+    gfx.weapon.visible = false;
+    M.fade = clamp((d.t - 0.5) / 2.5, 0, 1);
+    const rd = d.ragdoll;
+    if (!rd || rd.hidden) return;
+    if (game.phase !== "playing") ob(gfx, dt);
+    const pts = rd.points, head = pts[2].p, chest = pts[1].p;
+    const frame = mm(rd);
+    const up = new e.Vector3(head.x - chest.x, head.y - chest.y, head.z - chest.z).normalize();
+    const eye = new e.Vector3(head.x, head.y, head.z).addScaledVector(up, 0.03).addScaledVector(frame.forward, 0.06);
+    const look = eye.clone().addScaledVector(frame.forward, 1).addScaledVector(up, 0.25);
+    tmpM.lookAt(eye, look, up);
+    tmpQ.setFromRotationMatrix(tmpM);
+    const c = gfx.camera;
+    const s = 1 - Math.exp(-dt * 9);
+    c.position.lerp(eye, s);
+    c.quaternion.slerp(tmpQ, s);
+    c.updateMatrixWorld();
+  }
+
+  /* ================================================================== */
+  /* Senses pass: flash afterimage and the fade at death                 */
+  /* ================================================================== */
+  const QUAD_VERT = "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }";
+  class SensePass extends e.Pass {
+    constructor() {
+      super();
+      this.needsSwap = true;
+      this.after = new e.WebGLRenderTarget(4, 4, { type: K.HalfFloatType, depthBuffer: false });
+      this.copy = new e.ShaderMaterial({ uniforms: { tDiffuse: { value: null } }, vertexShader: QUAD_VERT, depthTest: false, depthWrite: false,
+        fragmentShader: "uniform sampler2D tDiffuse; varying vec2 vUv; void main(){ gl_FragColor = texture2D(tDiffuse, vUv); }" });
+      this.uniforms = { tDiffuse: { value: null }, tAfter: { value: this.after.texture }, after: { value: 0 }, fade: { value: 0 } };
+      this.material = new e.ShaderMaterial({
+        uniforms: this.uniforms, vertexShader: QUAD_VERT, depthTest: false, depthWrite: false,
+        fragmentShader: `
+uniform sampler2D tDiffuse; uniform sampler2D tAfter; uniform float after; uniform float fade; varying vec2 vUv;
+void main() {
+  vec4 c = texture2D(tDiffuse, vUv);
+  if (after > 0.001) {
+    // Bleached retina: the frozen frame persists as a warm ghost and the
+    // live image is washed out while the pigment recovers.
+    vec3 a = texture2D(tAfter, vUv).rgb;
+    float l = dot(a, vec3(0.2126, 0.7152, 0.0722));
+    vec3 ghost = vec3(1.0, 0.93, 0.78) * pow(clamp(l * 3.0, 0.0, 1.0), 0.7) * 2.2;
+    c.rgb = mix(c.rgb, c.rgb * 0.45 + ghost, after * 0.8) + vec3(1.0) * after * after * 1.4;
+  }
+  if (fade > 0.0) {
+    float lum = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+    c.rgb = mix(c.rgb, vec3(lum) * vec3(0.55, 0.35, 0.33), fade * 0.7) * (1.0 - fade * 0.92);
+  }
+  gl_FragColor = c;
+}`,
+      });
+      this.quad = new e.FullScreenQuad(this.material);
+      this.capture = false;
+      this.enabled = true;
+    }
+    setSize(w, h) { this.after.setSize(Math.max(4, w >> 1), Math.max(4, h >> 1)); }
+    render(renderer, writeBuffer, readBuffer) {
+      if (this.capture) {
+        this.copy.uniforms.tDiffuse.value = readBuffer.texture;
+        this.quad.material = this.copy;
+        renderer.setRenderTarget(this.after);
+        this.quad.render(renderer);
+        this.capture = false;
+      }
+      this.quad.material = this.material;
+      this.uniforms.tDiffuse.value = readBuffer.texture;
+      renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+      this.quad.render(renderer);
+    }
+  }
+  const K = a.constants;
+  const sense = { pass: null, gfx: null, after: 0, total: 1 };
+  function installSense(gfx) {
+    if (sense.gfx === gfx) return;
+    sense.gfx = gfx;
+    gfx.composer.insertPass(new GhostPass(), 1);
+    sense.pass = new SensePass();
+    const passes = gfx.composer.passes;
+    const exp = R.cameraFx?.exposure;
+    const i = exp ? passes.indexOf(exp) : -1;
+    gfx.composer.insertPass(sense.pass, i >= 0 ? i + 1 : Math.max(1, passes.length - 3));
+    const size = new e.Vector2();
+    gfx.gl.getDrawingBufferSize(size);
+    sense.pass.setSize(size.x, size.y);
+  }
+  M.afterimage = function (strength) {
+    if (!sense.pass) return;
+    sense.pass.capture = true;
+    sense.after = Math.max(sense.after, strength);
+    sense.total = 2.5 + 3.5 * strength;
+  };
+  function senseFrame(game, dt) {
+    if (!sense.pass) return;
+    sense.after = Math.max(0, sense.after - dt / sense.total);
+    sense.pass.uniforms.after.value = on("ordnance") ? sense.after : 0;
+    sense.pass.uniforms.fade.value = game.rlDeath ? M.fade || 0 : 0;
+    sense.pass.enabled = sense.after > 0.001 || !!game.rlDeath;
+  }
+
+  /* ================================================================== */
+  /* Wound HUD and cooking indicator                                     */
+  /* ================================================================== */
+  const CSS = `
+.rl-body { position: fixed; left: 136px; bottom: 14px; width: 26px; height: 52px; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .4s; }
+.rl-body.rl-on { opacity: .9; }
+.rl-body svg { width: 100%; height: 100%; }
+.rl-body path, .rl-body circle, .rl-body rect { fill: #e8e4d433; stroke: #e8e4d499; stroke-width: 1; }
+.rl-cook { position: fixed; left: 50%; bottom: 23%; transform: translateX(-50%); font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .2em; color: #f0d9a8; text-shadow: 0 1px 3px #000; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .15s; }
+.rl-cook.rl-on { opacity: 1; }
+body.rl-hud-minimal .rl-body { display: none; }`;
+  let hud = null;
+  function hudEls() {
+    if (hud) return hud;
+    if (!document.getElementById("rl121-css")) { const st = document.createElement("style"); st.id = "rl121-css"; st.textContent = CSS; document.head.append(st); }
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "rl-body";
+    bodyEl.innerHTML = `<svg viewBox="0 0 26 52"><circle data-r="head" cx="13" cy="5" r="4"/><rect data-r="torso" x="8" y="10" width="10" height="16" rx="2"/><rect data-r="arms" x="3" y="10" width="4" height="15" rx="2"/><rect data-r="arms" x="19" y="10" width="4" height="15" rx="2"/><rect data-r="legs" x="8" y="27" width="4.5" height="22" rx="2"/><rect data-r="legs" x="13.5" y="27" width="4.5" height="22" rx="2"/></svg>`;
+    const cook = document.createElement("div");
+    cook.className = "rl-cook";
+    document.body.append(bodyEl, cook);
+    hud = { body: bodyEl, cook, last: "" };
+    return hud;
+  }
+  let hudT = 0;
+  function hudFrame(game, dt) {
+    hudT -= dt;
+    if (hudT > 0) return;
+    hudT = 0.08;
+    const h = hudEls();
+    const p = game.player, w = p?.rlBody?.wounds;
+    const show = game.phase === "playing" && !a.coop?.active && on("injuries") && w && Object.values(w).some((v) => v > 0.04);
+    h.body.classList.toggle("rl-on", !!show);
+    if (show) {
+      const key = Object.values(w).map((v) => Math.round(v * 10)).join();
+      if (key !== h.last) {
+        h.last = key;
+        for (const el of h.body.querySelectorAll("[data-r]")) {
+          const v = w[el.dataset.r] || 0;
+          el.style.fill = v < 0.04 ? "#e8e4d433" : `rgba(${Math.round(220 + 20 * v)},${Math.round(150 - 120 * v)},${Math.round(80 - 60 * v)},${0.35 + 0.55 * v})`;
+        }
+      }
+    }
+    const c = game.rlCook;
+    const cooking = !!c && c.t > 0.25 && game.phase === "playing";
+    h.cook.classList.toggle("rl-on", cooking);
+    if (cooking) {
+      const left = Math.max(0, c.fuse - (c.t - 0.25));
+      h.cook.textContent = S.hud === "standard" ? `SPOON OFF · ${left.toFixed(1)}s` : "SPOON OFF";
+    }
+  }
+
+  /* ================================================================== */
+  /* Wiring                                                              */
+  /* ================================================================== */
+  a.on("attach", (game) => {
+    applyOrdnance();
+    const gfx = game.gfx;
+    installSense(gfx);
+    const build = gfx.build;
+    gfx.build = function (...args) {
+      const r = build.apply(this, args);
+      try { buildBody(gfx); vapour.pool.length = 0; } catch (err) { console.error("[realism] body build", err); }
+      return r;
+    };
+    if (gfx.map) buildBody(gfx);
+    for (const k of ["start", "restart", "menu"]) {
+      const f = game[k];
+      if (typeof f !== "function") continue;
+      game[k] = function (...args) {
+        this.rlDeath = null; this.rlDeathDone = false; this.rlCook = null;
+        M.fade = 0;
+        cam.lastYaw = null;
+        return f.apply(this, args);
+      };
+    }
+  });
+  a.on("frame", (game, dt) => {
+    try {
+      if (game.phase === "playing" || game.rlDeath) {
+        if (!game.rlDeath) {
+          poseBody(game, dt);
+          weaponInertia(game, dt);
+          cameraPhysics(game, dt);
+        } else deathCam(game, dt);
+        vapourFrame(game, dt);
+        hudFrame(game, dt);
+      } else if (body.rig) body.rig.root.visible = false;
+      senseFrame(game, dt);
+    } catch (err) {
+      console.error("[realism] v12.1 frame", err);
+    }
+  });
+  R.on(() => {
+    applyOrdnance();
+    const g = a.game?.gfx;
+    if (g && on("embodiment") && !body.rig) buildBody(g);
+  });
+  applyOrdnance();
+  if (a.game) {
+    installSense(a.game.gfx);
+    if (a.game.gfx.map) buildBody(a.game.gfx);
+  }
 })();
