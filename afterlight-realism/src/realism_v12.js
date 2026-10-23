@@ -22,9 +22,9 @@
   const KEY = "afterlight.realism.v12";
   const ASPECTS = ["surfaces", "sky", "camera", "filmic", "ballistics", "handling", "body", "injuries", "anatomy", "acoustics"];
   const PRESETS = {
-    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, ragdoll: false, ordnance: false, embodiment: false, hud: "standard", lethality: 1 },
-    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, hud: "immersive", lethality: 1 },
-    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, hud: "minimal", lethality: 1.45 },
+    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, ragdoll: false, ordnance: false, embodiment: false, bodies: false, bodycam: false, hud: "standard", lethality: 1 },
+    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, hud: "immersive", lethality: 1 },
+    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, hud: "minimal", lethality: 1.45 },
   };
   function load() {
     const s = { preset: "authentic", ...PRESETS.authentic, motionBlur: true };
@@ -35,7 +35,7 @@
     return s;
   }
   const R = (a.realismV12 = {
-    version: "12.1",
+    version: "12.2",
     settings: load(),
     stats: { photoMaterials: 0, photoTextures: 0, probes: 0, hdri: null, shots: 0, segments: 0, mantles: 0, falls: 0 },
     listeners: [],
@@ -736,7 +736,7 @@ void main() {
       // Split-screen draws several cameras into one frame; per-view
       // reprojection would be wrong there.
       const coop = !!a.coop?.active;
-      u.blur.value = S.motionBlur && game.phase === "playing" && !coop ? shutter : 0;
+      u.blur.value = S.motionBlur && game.phase === "playing" && !coop ? shutter * (S.bodycam ? 1.6 : 1) : 0;
       const scoped = game.weapon?.def.scope;
       u.focus.value = game.phase === "playing" && !scoped ? clamp(game.ads || 0, 0, 1) * 0.55 : 0;
       // Overpressure and near misses blur vision for a moment.
@@ -2051,7 +2051,7 @@ body.rl-hud-minimal .rl-stamina { display: none; }
     panel.replaceChildren(
       h("header", {}, h("div", {}, h("p", { class: "eyebrow" }, "REALISM / v" + R.version), h("h2", {}, "As real as it gets")), h("button", { type: "button", class: "af-close", onclick: close }, "CLOSE")),
       h("div", { class: "rl-presets" },
-        preset("authentic", "Authentic", "Real calibres, drop and penetration, recoil and sway, stamina, bleeding, limb wounds, cooked grenades with fragments, falling bodies that stay, photoscanned world."),
+        preset("authentic", "Authentic", "Real human bodies, bodycam lens, real calibres, drop and penetration, recoil and sway, stamina, bleeding, limb wounds, cooked grenades with fragments, falling bodies that stay, photoscanned world."),
         preset("hardcore", "Hardcore", "Authentic plus lethal soldiers, slower healing, wounds that can kill, no reticle or hit markers."),
         preset("off", "Off", "The original v11 game, untouched.")),
       h("p", { class: "rl-sub" }, p === "custom" ? "CUSTOM MIX" : "ASPECTS"),
@@ -2070,6 +2070,8 @@ body.rl-hud-minimal .rl-stamina { display: none; }
         field("Ragdolls & corpses", onOff("ragdoll")),
         field("Grenades: cooking & fragments", onOff("ordnance")),
         field("Your body: legs, head motion, prone", onOff("embodiment")),
+        field("Realistic bodies (soldiers, zombies, arms)", onOff("bodies")),
+        field("Bodycam (chest camera, wide lens)", onOff("bodycam")),
         field("HUD", seg([["standard", "STANDARD"], ["immersive", "IMMERSIVE"], ["minimal", "MINIMAL"]], S.hud, (v) => { R.save({ hud: v, preset: "custom" }); render(); }))),
       h("p", { class: "af-note" },
         "Hold breath: SHIFT while aiming (touch: hold a scoped rifle still). Vault: JUMP at a waist-high obstacle. Check the magazine: F / hold RLD. ",
@@ -2080,7 +2082,7 @@ body.rl-hud-minimal .rl-stamina { display: none; }
       h("table", { class: "rl-cal" },
         h("tr", {}, h("th", {}, "Weapon"), h("th", {}, "Cartridge"), h("th", {}, "Muzzle velocity"), h("th", {}, "Rate")),
         Object.keys(C).map((id) => h("tr", {}, h("td", {}, defs[id]?.name || id), h("td", {}, C[id].name), h("td", {}, C[id].v0 + " m/s"), h("td", {}, (W[id]?.rpm || defs[id]?.rpm) + " rpm")))),
-      h("p", { class: "af-note" }, "Surface scans and skies: Poly Haven (CC0). Gun finishes generated for this build."),
+      h("p", { class: "af-note" }, "Surface scans and skies: Poly Haven (CC0). Human bodies, skins and clothes: MakeHuman (CC0). Gun finishes and camouflage generated for this build."),
     );
   }
   function open() {
@@ -2750,16 +2752,18 @@ body.rl-hud-minimal .rl-stamina { display: none; }
       body.ghosts.push(o);
     });
     rig.head?.traverse((o) => { if (o.isMesh) o.userData.rlHead = true; });
+    R.v122?.playerGhost?.(rig, "all");
   }
   function unghost(rig) {
     // At death the arms and torso tumble into view; the head stays a ghost.
     for (const o of body.ghosts || []) {
-      if (o.userData.rlHead) continue;
+      if (o.userData.rlHead || o.userData.rlBodyV122) continue;
       o.material.dispose?.();
       o.material = o.userData.rlMat;
       o.visible = true;
     }
-    body.ghosts = (body.ghosts || []).filter((o) => o.userData.rlHead);
+    body.ghosts = (body.ghosts || []).filter((o) => o.userData.rlHead || o.userData.rlBodyV122);
+    R.v122?.playerGhost?.(rig, "head");
   }
   class GhostPass extends e.Pass {
     constructor() { super(); this.needsSwap = false; }

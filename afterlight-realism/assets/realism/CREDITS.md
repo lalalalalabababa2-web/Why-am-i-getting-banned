@@ -17,3 +17,23 @@ qwantani_moon_noon_puresky, kloppenheim_02_puresky.
 
 Generated for this build (CC0): gunmetal (phosphate finish), polymer (stippled frame),
 pores (skin micro-relief).
+
+## v12.2 bodies
+
+Human bodies (base mesh hm08, macro shape targets, the 53-bone game-engine
+skeleton and its skin weights), skins, clothes, shoes, eyes, eyebrows and hair
+come from MakeHuman / MPFB2 (http://www.makehumancommunity.org), released as
+CC0 1.0 ("makehuman_system_assets_cc0" pack and the MPFB2 data folder).
+
+For this build they were shaped (gender, age, muscle, weight, height,
+proportions and ethnicity mixes), fitted with clothes, stripped of skin hidden
+under clothing, skinned to the game-engine skeleton and baked into
+`bodies/*.bin`. Their textures were resized and repainted: the camouflage is
+generated over the original fabric detail and ambient occlusion, gloves are
+generated over the skin's hand detail, and the zombies' decay, blood, dirt and
+torn clothing are painted from 3D position.
+
+Clothes used: male_casualsuit02-06, male_worksuit01, male_elegantsuit01,
+shoes01-06. Skins used: young/middleage/old caucasian, african and asian
+male. Hair: short01, short03. Eyes: low-poly with brown and grey materials.
+Eyebrows: eyebrow001.

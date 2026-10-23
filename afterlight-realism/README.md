@@ -1,23 +1,79 @@
-# Afterlight: Blood & Steel — v12.1 Realism
+# Afterlight: Blood & Steel — v12.2 Realism
 
 A realism layer for the Afterlight v11.0.0 APK (`app.fieldline.afterlight.bloodsteel`).
 It is appended to the game's web bundle the same way the v7–v11 overhauls were,
 so every part of the original game still runs underneath it. A new **REALISM**
 tab in the main menu switches each aspect on or off.
 
-- APK: `apk/Afterlight_Blood_Steel_v12.1.0_Realism.apk` (versionCode 12100)
-- Source: `src/realism_v12.js`
-- Assets: `assets/realism/` (photoscanned surfaces, HDRI skies, credits)
+- APK: `apk/Afterlight_Blood_Steel_v12.2.0_Realism.apk` (versionCode 12200)
+- Source: `src/realism_v12.js` (v12–12.1) and `src/realism_v122.js` (bodies, arms, bodycam)
+- Assets: `assets/realism/` (photoscanned surfaces, HDRI skies, `bodies/`, credits)
 - Before / after: `screenshots/before_after_1.jpg`, `screenshots/before_after_2.jpg`
 - v12.1: `screenshots/v121_*.jpg` (corpses, body, shadow, flash, death cam)
+- v12.2: `screenshots/v122_*.jpg` (soldiers, zombies, arms, bodycam)
 
 ## Installing
 
-- **From v12.0:** install v12.1 over it. It uses the same key, so your
-  settings and victories are kept.
+- **From v12.0 or v12.1:** install v12.2 over it. It uses the same key, so
+  your settings and victories are kept.
 - **From v11:** the v11 APK was signed with a local key that isn't available,
-  so v12 uses a new key. **Uninstall v11 first**, then install v12.1.
+  so v12 uses a new key. **Uninstall v11 first**, then install v12.2.
   Uninstalling clears the game's saved settings and campaign victories.
+
+## New in 12.2
+
+Two new switches on the REALISM tab, both on in Authentic and Hardcore.
+
+### Realistic bodies
+- **Real people instead of block figures.** Soldiers, zombies and your own
+  body are full human models built from MakeHuman's CC0 anatomy: real
+  proportions, skin, eyes, fitted clothes and boots.
+- **Soldiers.**
+  - Three builds and skin tones.
+  - Woodland camouflage fatigues, generated over the cloth's real fold and
+    seam detail.
+  - Tactical gloves and combat boots.
+  - They still wear their plate carrier, helmet, goggles and rifle, refitted
+    to the new torso.
+- **Zombies.**
+  - Six people, each with a different build and age.
+  - Grey, mottled, veined skin with sunken eyes, milky irises, blood around
+    the mouth and bite wounds.
+  - They wear what they died in (tees, overalls, a business suit), dirtied,
+    bloodied and torn. Heavies and bosses are the big one, scaled up.
+- **Same game underneath.** The game's own animation, IK, ragdolls and gore
+  drive a 53-bone skeleton every frame:
+  - The trunk follows the old joints.
+  - Arms and legs are solved with two-bone IK.
+  - Elbows and knees bend on the right hinge.
+  - Fingers wrap the rifle grip and handguard.
+- **Hitboxes follow the new bodies.** The old joints are moved to the real
+  proportions, so a headshot is where the head is.
+- **Gore.** A severed limb or head leaves as real flesh, and the body keeps a
+  stump.
+- **Corpses.** Dead bodies are the realistic ones too, and a settled corpse
+  costs nothing per frame.
+- **Your arms.** First person shows camouflage sleeves and gloved hands with
+  real fingers wrapped around the weapon, following the old hand animation
+  (reloads included).
+- **Your body.** Look down and you see your real legs; your whole body still
+  casts its shadow.
+
+### Bodycam
+- **Lens.** A chest-mounted wide lens:
+  - Barrel distortion that bows straight lines, with the centre (your aim)
+    left untouched.
+  - Wider field of view, with the gun sitting bigger in frame.
+  - Colour fringing that grows toward the edges.
+  - Lens falloff in the corners.
+- **Sensor.** Over-sharpened detail, small-sensor highlight bloom, punchy
+  contrast with crushed blacks, and grain that gets heavier in the dark.
+- **Movement.** The camera rides your chest, not a stabilised head: walking
+  and running jostle it, and motion blur is heavier.
+- **Overlay.** A REC timestamp in the corner. It is generic, not any real
+  manufacturer's.
+- **Scopes.** The lens effect turns itself off while you look through a
+  scope.
 
 ## New in 12.1
 
@@ -223,5 +279,26 @@ scratch directory, so their paths are absolute.
 
 ## Credits
 
-Surface scans and HDRI skies: [Poly Haven](https://polyhaven.com), CC0. The full
-list is in `assets/realism/CREDITS.md` and is included in the APK's `LICENSES.txt`.
+Surface scans and HDRI skies: [Poly Haven](https://polyhaven.com), CC0. Human
+bodies, skins, clothes, eyes and hair: [MakeHuman / MPFB2](http://www.makehumancommunity.org),
+CC0. The full list is in `assets/realism/CREDITS.md` and is included in the
+APK's `LICENSES.txt`.
+
+The bodies in `assets/realism/bodies/` are prebuilt. To rebuild them:
+
+```bash
+# needs python3 with numpy and Pillow, and curl
+M=https://raw.githubusercontent.com/makehumancommunity/mpfb2/master/src/mpfb/data
+mkdir -p mh/a
+curl -o mh/sys.zip http://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip
+unzip -q mh/sys.zip -d mh/a
+curl -o mh/base.obj $M/3dobjs/base.obj
+curl -o mh/rig.game_engine.json $M/rigs/standard/rig.game_engine.json
+curl -o mh/weights.game_engine.json $M/rigs/standard/weights.game_engine.json
+python3 tools/builder_specs.py          # all variants; or name some: s0 z3
+```
+
+`tools/mhbuild.py` applies the macro targets (fetched from the MakeHuman
+repository on first run), fits the clothes, transfers the skin weights and
+paints the textures. `tools/builder_specs.py` defines the 3 soldiers and 6
+zombies.
