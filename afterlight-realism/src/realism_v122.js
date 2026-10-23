@@ -1,11 +1,14 @@
 ;
-/* Afterlight v12.2 — Realistic bodies.
+/* Afterlight v12.2/12.3 — Realistic bodies and hands.
  * Soldiers, zombies and your own body are skinned MakeHuman (CC0) humans:
  * real anatomy, skin, fitted clothes, boots and eyes. The game's own
  * animation, IK, ragdolls, gore and hitboxes still drive everything; each
  * frame the 53-bone skeleton is solved from the stock joints (trunk frames,
  * two-bone IK for limbs, hinge-plane twist, gripping fingers). The stock
  * joints themselves are moved to the new proportions so hitboxes match.
+ * 12.3: first-person hands grip every gun and animate (trigger, reload,
+ * grenade cook/throw, reach); soldiers reload and squeeze, zombies' fingers
+ * flex; your body is solid when you look down.
  */
 (() => {
   "use strict";
@@ -82,9 +85,9 @@
     loadImage(asset("bodies/" + file)).then((img) => { t.image = img; t.needsUpdate = true; }).catch((err) => console.warn("[realism] body texture", err));
     return t;
   }
-  const ROUGH = { skin: 0.52, glove: 0.68, suit: 0.92, boots: 0.55, eyes: 0.12, brows: 0.9, hair: 0.75 };
+  const ROUGH = { skin: 0.58, glove: 0.72, suit: 0.92, boots: 0.62, eyes: 0.32, brows: 0.9, hair: 0.8 };
   function material(m, T) {
-    const o = { roughness: ROUGH[m] ?? 0.8, metalness: 0, envMapIntensity: m === "eyes" ? 1.0 : 0.55 };
+    const o = { roughness: ROUGH[m] ?? 0.8, metalness: 0, envMapIntensity: m === "eyes" ? 0.5 : 0.5 };
     if (T[m]) o.map = texture(T[m]);
     if (m === "suit" && T.suitNormal) { o.normalMap = texture(T.suitNormal, false); o.normalScale = new e.Vector2(0.9, 0.9); }
     if (m === "brows" || m === "hair") { o.alphaTest = 0.42; o.side = 2; }
@@ -156,6 +159,35 @@
         head: sub((gr) => gr.region === "upper" && HEADMATS.has(gr.material)),
       };
       bindData(A, v);
+      // split the upper body into chest and arms (your own arms only cast a
+      // shadow: the first-person arms are the ones you see)
+      {
+        const armBone = new Uint8Array(A.bind.n);
+        A.bind.names.forEach((nm, i) => (armBone[i] = /^(upperarm|lowerarm|hand|thumb|index|middle|ring|pinky)/.test(nm) ? 1 : 0));
+        const si = g.attributes.skinIndex.array, sw = g.attributes.skinWeight.array, idx = g.index.array;
+        const arm = new Uint8Array(n);
+        for (let q = 0; q < n; q++) { let w = 0; for (let k = 0; k < 4; k++) if (armBone[si[q * 4 + k]]) w += sw[q * 4 + k]; arm[q] = w > 115 ? 1 : 0; }
+        const split = (wantArm) => {
+          const out = [], grs = [];
+          for (const gr of v.groups) {
+            if (gr.region !== "upper" || HEADMATS.has(gr.material)) continue;
+            const st = out.length;
+            for (let t = gr.start; t < gr.start + gr.count; t += 3) {
+              const isArm = arm[idx[t]] || arm[idx[t + 1]] || arm[idx[t + 2]];
+              if (!!isArm === wantArm) out.push(idx[t], idx[t + 1], idx[t + 2]);
+            }
+            if (out.length > st) grs.push([st, out.length - st, names.indexOf(gr.material)]);
+          }
+          const rg = new e.BufferGeometry();
+          for (const k of ["position", "normal", "uv", "skinIndex", "skinWeight"]) rg.setAttribute(k, g.attributes[k]);
+          rg.setIndex(new e.BufferAttribute(n < 65536 ? new Uint16Array(out) : new Uint32Array(out), 1));
+          for (const [st, c, mi] of grs) rg.addGroup(st, c, mi);
+          rg.boundingSphere = g.boundingSphere;
+          return rg;
+        };
+        A.parts.chest = split(false);
+        A.parts.arms = split(true);
+      }
       A.v = v;
       A.ready = true;
       M.stats.assets++;
@@ -194,8 +226,12 @@
       const w = H[I["hand_" + s]], mid = H[I["middle_01_" + s]], ix = H[I["index_01_" + s]], pk = H[I["pinky_01_" + s]];
       const point = new V3().subVectors(mid, w).normalize();
       const across = new V3().subVectors(ix, pk).normalize();
-      // Left hand (k=0, −x side): palm = across × point; right hand mirrored.
-      const palm = k === 0 ? new V3().crossVectors(across, point) : new V3().crossVectors(point, across);
+      // The palm is the side the fingers flex toward (left: point × across,
+      // right hand mirrored). Checked against the bind pose's finger curl.
+      const palm = k === 0 ? new V3().crossVectors(point, across) : new V3().crossVectors(across, point);
+      const tip = T[I["middle_03_" + s]], curl = new V3().subVectors(tip, mid);
+      curl.addScaledVector(point, -curl.dot(point));
+      if (curl.lengthSq() > 1e-8 && curl.dot(palm) < 0) palm.negate();
       palm.addScaledVector(point, -palm.dot(point)).normalize();
       const grip = new V3().lerpVectors(w, mid, 0.55).addScaledVector(palm, 0.022);
       const handInv = inv[I["hand_" + s]];
@@ -214,7 +250,7 @@
         const pl = hand[k].palm.clone().transformDirection(_m.copy(inv[bi]));
         return new V3().crossVectors(new V3(0, 1, 0), pl).normalize();
       });
-      fingers.push({ k, thumb: f === "thumb", chain, hinges });
+      fingers.push({ k, name: f, thumb: f === "thumb", chain, hinges });
     }
     // Relative transforms of every bone to its parent.
     const relM = B.map((x, i) => (x.parent >= 0 ? inv[x.parent].clone().multiply(bind[i]) : new M4()));
@@ -305,7 +341,7 @@
     inst.skel = new Skel(A.bind.n);
     const player = inst.kind === "player";
     if (player) {
-      for (const part of ["lower", "torso", "head"]) {
+      for (const part of ["lower", "chest", "arms", "head"]) {
         const m = new BodyMesh(A.parts[part], A.materials, inst.skel);
         m.userData.rlPart = part;
         inst.meshes.push(m);
@@ -529,7 +565,12 @@
     frame(outB, j1, yb, v1);
   }
   function setBone(i, m) { W[i].copy(m); }
-  function collapseAt(i, p) { W[i].set(0, 0, 0, p.x, 0, 0, 0, p.y, 0, 0, 0, p.z, 0, 0, 0, 1); W[i].userData = 1; }
+  // Folding a bone away: shrink it to a millimetre at the joint. Never zero —
+  // a zero matrix also zeroes the normals and the lighting becomes NaN
+  // (a white blob with a black dot).
+  const FOLD = 0.001;
+  function foldMatrix(m, p) { return m.set(FOLD, 0, 0, p.x, 0, FOLD, 0, p.y, 0, 0, FOLD, p.z, 0, 0, 0, 1); }
+  function collapseAt(i, p) { foldMatrix(W[i], p); W[i].userData = 1; }
 
   function drive(inst) {
     const { rig, kind } = inst;
@@ -563,6 +604,12 @@
       localPos(jn.hips[k], J.H[k]); localPos(jn.knees[k], J.N[k]); localPos(jn.ankles[k], J.A[k]);
       local(jn.palms[k], handM[k]); local(rig.boots[k], footM[k]);
       J.T[k].set(0, 0, -0.15).applyMatrix4(footM[k]);
+    }
+    // reloading: the support hand goes to the magazine and back
+    const act = inst.actor;
+    if (act?.reloadT > 0 && rig.magazine) {
+      const g = 1 - clamp(act.reloadT / (act.reloadTotal || 2.6), 0, 1);
+      J.Wr[0].lerp(localPos(rig.magazine, v1), clamp(Math.sin(g * Math.PI) * 1.8, 0, 1));
     }
     inst.mode = "soldier";
   }
@@ -632,9 +679,19 @@
     }
     // fingers
     const pose = mode === "soldier" ? null : mode === "zombie" ? CLAW : RELAX;
+    const now = performance.now() * 0.001, ph = (inst.actor?.id || 0) * 1.7;
     for (const f of b.fingers) {
       const s = f.k ? "r" : "l";
-      const c = pose ? (f.thumb ? pose.thumb : pose.curl) : (f.thumb ? GRIP[f.k].thumb : GRIP[f.k].curl);
+      let c = pose ? (f.thumb ? pose.thumb : pose.curl) : (f.thumb ? GRIP[f.k].thumb : GRIP[f.k].curl);
+      if (mode === "soldier" && f.k === 1 && f.name === "index") {
+        // trigger finger: on the trigger, squeezing it on each shot
+        const t = (inst.actor?.flashT || 0) > 0.001 ? 1 : 0;
+        c = [0.45 + 0.3 * t, 0.55 + 0.32 * t, 0.35 + 0.2 * t];
+      } else if (mode === "zombie" && !f.thumb) {
+        // dead hands never rest: the fingers flex and grasp
+        const w = Math.sin(now * (4.5 + f.k) + f.chain[0] * 0.9 + ph) * 0.16;
+        c = [c[0] + w, c[1] + w * 1.2, c[2] + w];
+      }
       let parent = W[I["hand_" + s]];
       for (let q = 0; q < 3; q++) {
         const bi = f.chain[q];
@@ -734,6 +791,9 @@
   function regionGeometry(A, part) {
     A.regionGeo = A.regionGeo || {};
     if (A.regionGeo[part]) return A.regionGeo[part];
+    // first-person arms: only triangles entirely on the arm, so nothing is
+    // stretched back to the folded shoulder
+    const strict = part === "arms";
     const g = A.geometry, b = A.bind, re = REGION[part].bones;
     const inRegion = new Uint8Array(b.n);
     b.names.forEach((n, i) => (inRegion[i] = re.test(n) ? 1 : 0));
@@ -742,13 +802,13 @@
     for (let v = 0; v < nv; v++) {
       let w = 0;
       for (let k = 0; k < 4; k++) if (inRegion[si[v * 4 + k]]) w += sw[v * 4 + k];
-      vin[v] = w > 110 ? 1 : 0;
+      vin[v] = w > (strict ? 200 : 110) ? 1 : 0;
     }
     const out = [], groups = [];
     for (const gr of g.groups) {
       const start = out.length;
       for (let t = gr.start; t < gr.start + gr.count; t += 3)
-        if (vin[idx[t]] || vin[idx[t + 1]] || vin[idx[t + 2]]) out.push(idx[t], idx[t + 1], idx[t + 2]);
+        if (strict ? vin[idx[t]] && vin[idx[t + 1]] && vin[idx[t + 2]] : vin[idx[t]] || vin[idx[t + 1]] || vin[idx[t + 2]]) out.push(idx[t], idx[t + 1], idx[t + 2]);
       if (out.length > start) groups.push([start, out.length - start, gr.materialIndex]);
     }
     const rg = new e.BufferGeometry();
@@ -783,7 +843,7 @@
       const cut = origin(before[b.I[REGION[part].root]], new V3()).applyMatrix4(toGroup);
       for (let i = 0; i < b.n; i++) {
         if (inRegion[i]) tmpM.multiplyMatrices(toGroup, before[i]).multiply(b.inv[i]);
-        else tmpM.set(0, 0, 0, cut.x, 0, 0, 0, cut.y, 0, 0, 0, cut.z, 0, 0, 0, 1);
+        else foldMatrix(tmpM, cut);
         tmpM.toArray(skel.boneMatrices, i * 16);
       }
       skel.boneTexture.needsUpdate = true;
@@ -807,8 +867,11 @@
     { point: new V3(0.12, 0.16, -1), palm: new V3(0.9, 0.5, 0), curl: [1.0, 1.1, 0.8], thumb: [0.35, 0.45, 0.3], offset: new V3(-0.026, 0.006, 0) },
     { point: new V3(0.02, -0.18, -1), palm: new V3(-1, 0.06, 0), curl: [1.3, 1.4, 0.95], thumb: [0.65, 0.75, 0.5] },
   ];
-  const FPSH = [new V3(-0.36, -0.44, 0.82).normalize(), new V3(0.34, -0.5, 0.8).normalize()];
-  const FPPOLE = [new V3(-0.7, -1, 0.25), new V3(0.75, -1, 0.3)];
+  // Shoulders, from each wrist: the support arm comes up from below; the
+  // shooting arm is held tactically, elbow up and out, so the forearm comes
+  // in from the right edge to the grip (the stock hides a tucked-in hand).
+  const FPSH = [new V3(-0.36, -0.44, 0.82).normalize(), new V3(0.62, 0.1, 0.78).normalize()];
+  const FPPOLE = [new V3(-0.7, -1, 0.25), new V3(1, -0.25, 0.05)];
   const IDM = new M4();
   function fpStock(gfx, hide) {
     const key = (o) => materialKey(gfx, Array.isArray(o.material) ? o.material[0] : o.material);
@@ -836,9 +899,108 @@
     return true;
   }
   const fpInv = new M4(), fpH = new M4(), fpSh = [new V3(), new V3()];
-  function updateFP(game) {
+  // Trigger finger: resting on the trigger, squeezing it when you fire.
+  const TRIG = { pull: 0, curl: [0, 0, 0] };
+  function triggerCurl(game) {
+    const firing = (game.flash || 0) > 0.001 || (game.input?.fire && game.weapon?.mag > 0);
+    TRIG.pull += ((firing ? 1 : 0) - TRIG.pull) * (firing ? 0.65 : 0.25);
+    const t = TRIG.pull;
+    TRIG.curl[0] = 0.5 + 0.28 * t; TRIG.curl[1] = 0.62 + 0.3 * t; TRIG.curl[2] = 0.38 + 0.2 * t;
+    return TRIG.curl;
+  }
+  // Long guns are framed as they're really carried: stock in the shoulder,
+  // muzzle angled in, so the shooting hand on the grip is in view. Aiming
+  // brings the stock framing back for the sights.
+  // Handguns come up and in, so both hands wrapped on the grip are in view.
+  const HANDGUN = new Set(["pistol", "revolver"]);
+  const FRAME_L = [-0.01, 0.09, 0.0, -0.03, 0.18, -0.1];
+  const FRAME_H = [-0.05, 0.12, 0.04, 0.04, 0.09, -0.045];
+  function frameWeapon(game) {
+    const w = game.gfx.weapon, id = game.weapon?.def?.id;
+    if (!w) return;
+    const k = 1 - clamp(game.ads || 0, 0, 1);
+    if (k <= 0) return;
+    const FRAME = HANDGUN.has(id) ? FRAME_H : FRAME_L;
+    w.position.x += FRAME[0] * k; w.position.y += FRAME[1] * k; w.position.z += FRAME[2] * k;
+    w.rotation.x += FRAME[3] * k; w.rotation.y += FRAME[4] * k; w.rotation.z += FRAME[5] * k;
+  }
+  /* First-person hand animation: the support hand leaves the handguard to
+   * reload, hold a cooked grenade, throw and reach for things; fingers open
+   * and close with what they hold; the trigger finger squeezes. Poses are in
+   * camera space (x right, y up, -z forward). */
+  const FPA = (M.fpa = { cook: 0, reach: 0, throwT: 9, curl: null, thumb: null, t: 0 });
+  // The viewmodel sits ~0.4 m forward of the eye, so poses are in that same
+  // space; the support shoulder is pinned at SHL while the hand is off the gun.
+  const SHL = new V3(-0.16, -0.42, -0.3);
+  const POSE = {
+    hold: { p: new V3(-0.19, -0.25, -0.5), point: new V3(0.15, 0.85, -0.5), palm: new V3(0.45, 0.1, 0.88) },
+    wind: { p: new V3(-0.3, -0.06, -0.38), point: new V3(0.1, 0.9, 0.25), palm: new V3(0.6, 0.2, 0.75) },
+    release: { p: new V3(-0.07, -0.15, -0.76), point: new V3(0.05, 0.3, -0.95), palm: new V3(0.1, -0.95, 0.2) },
+    reach: { p: new V3(-0.1, -0.3, -0.68), point: new V3(0.1, -0.2, -0.97), palm: new V3(0.2, -0.95, 0.1) },
+  };
+  const throwGrenade = e.Game.prototype.throwGrenade;
+  e.Game.prototype.throwGrenade = function (...args) {
+    const before = this.grenadeCount;
+    const r = throwGrenade.apply(this, args);
+    if (this.grenadeCount < before) FPA.throwT = 0;
+    return r;
+  };
+  function grenadeMesh() {
+    if (FP.nade) return FP.nade;
+    const g = new e.Group();
+    const olive = new e.MeshStandardMaterial({ color: 0x46502f, roughness: 0.7, metalness: 0.1 });
+    const steel = new e.MeshStandardMaterial({ color: 0x8a8d88, roughness: 0.45, metalness: 0.7 });
+    const body = new e.Mesh(new e.SphereGeometry(0.031, 18, 12), olive);
+    body.scale.set(1, 1.18, 1);
+    const fuse = new e.Mesh(new e.CylinderGeometry(0.011, 0.013, 0.026, 12), steel);
+    fuse.position.y = 0.043;
+    const spoon = new e.Mesh(new e.BoxGeometry(0.009, 0.058, 0.004), steel);
+    spoon.position.set(0.016, 0.022, 0); spoon.rotation.z = -0.25;
+    const ring = new e.Mesh(new Lo(0.011, 0.0018, 6, 16), steel);
+    ring.position.set(-0.014, 0.05, 0);
+    g.add(body, fuse, spoon, ring);
+    g.userData.spoon = spoon; g.userData.ring = ring;
+    g.visible = false;
+    return (FP.nade = g);
+  }
+  const blendM = new M4(), poseM = new M4(), qS = new Q4(), qP = new Q4(), pS = new V3(), pP = new V3();
+  const lerp3 = (out, a, b, t) => { out[0] = a[0] + (b[0] - a[0]) * t; out[1] = a[1] + (b[1] - a[1]) * t; out[2] = a[2] + (b[2] - a[2]) * t; return out; };
+  function poseFrame(pose, k, b) {
+    // camera space -> weapon space
+    const pt = v1.copy(pose.point).normalize().transformDirection(fpInv), pm = v2.copy(pose.palm).normalize().transformDirection(fpInv);
+    pm.addScaledVector(pt, -pm.dot(pt)).normalize();
+    poseM.makeBasis(v3.crossVectors(pt, pm), pt, pm).multiply(b.hand[k].toBone);
+    pP.copy(pose.p).applyMatrix4(fpInv);
+    return poseM;
+  }
+  const FPW = { inP: new V3(), outP: new V3(NaN, 0, 0), inR: null, outR: null };
+  function updateFP(game, dt) {
     const gfx = game.gfx;
     if (!ensureFP(gfx)) return;
+    dt = Math.min(0.1, dt || 0.016);
+    FPA.t += dt;
+    FPA.throwT += dt;
+    const cooking = !!game.rlCook;
+    FPA.cook += ((cooking ? 1 : 0) - FPA.cook) * (1 - Math.exp(-dt * 12));
+    const using = (game.zombies?.useProgress || 0) > 0.001;
+    FPA.reach += ((using ? 1 : 0) - FPA.reach) * (1 - Math.exp(-dt * 9));
+    const thr = FPA.throwT < 0.6 ? FPA.throwT : -1;
+    // how much the support hand is off the gun
+    const off = Math.max(FPA.cook, FPA.reach, thr >= 0 ? (thr < 0.3 ? 1 : 1 - (thr - 0.3) / 0.3) : 0);
+    // Offsets go on top of the stock weapon pose. When the stock code hasn't
+    // posed the gun this frame (paused), take ours off first so they never stack.
+    const w = gfx.weapon;
+    if (!FPW.inR) { FPW.inR = w.rotation.clone(); FPW.outR = w.rotation.clone(); }
+    else if (w.position.equals(FPW.outP) && w.rotation.equals(FPW.outR)) { w.position.copy(FPW.inP); w.rotation.copy(FPW.inR); }
+    FPW.inP.copy(w.position); FPW.inR.copy(w.rotation);
+    frameWeapon(game);
+    if (off > 0.001) {
+      // one-handed: the gun cants and drops a little
+      w.rotation.z += 0.16 * off;
+      w.position.x += 0.015 * off;
+      w.position.y -= 0.03 * off;
+    }
+    FPW.outP.copy(w.position); FPW.outR.copy(w.rotation);
     const A = FP.A, b = A.bind, I = b.I;
     gfx.weapon.updateMatrixWorld(true);
     fpInv.copy(gfx.weapon.matrixWorld).invert();
@@ -848,12 +1010,32 @@
       const pt = v1.copy(gp.point).transformDirection(fpH), pm = v2.copy(gp.palm).transformDirection(fpH);
       pm.addScaledVector(pt, -pm.dot(pt)).normalize();
       const hf = handM[k].makeBasis(v3.crossVectors(pt, pm), pt, pm).multiply(b.hand[k].toBone);
-      const grip = v4.copy(b.hand[k].gripLocal).applyMatrix4(_m.copy(hf).setPosition(0, 0, 0));
       const palmAt = origin(fpH, pB);
       if (gp.offset) palmAt.add(v6.copy(gp.offset).transformDirection(fpH).multiplyScalar(gp.offset.length()));
-      const wrist = palmAt.sub(grip).clone();
       const reach = b.L.upper[k] + b.L.fore[k];
-      const sh = fpSh[k].copy(wrist).addScaledVector(FPSH[k], reach * 0.93);
+      // shoulder from where the hand sits on the gun
+      const grip0 = v4.copy(b.hand[k].gripLocal).applyMatrix4(_m.copy(hf).setPosition(0, 0, 0));
+      const sh = fpSh[k].copy(palmAt).sub(grip0).addScaledVector(FPSH[k], reach * 0.93);
+      if (k === 0 && off > 0.001) {
+        // blend the support hand toward its animated pose
+        let pose;
+        if (thr >= 0) {
+          const a1 = clamp(thr / 0.09, 0, 1);
+          pose = a1 < 1 ? POSE.wind : POSE.release;
+          if (a1 < 1) {
+            poseFrame(POSE.wind, k, b); pS.copy(pP); qS.setFromRotationMatrix(poseM);
+            poseFrame(POSE.release, k, b); qP.setFromRotationMatrix(poseM);
+            qS.slerp(qP, a1); pP.lerp(pS, 1 - a1);
+            poseM.makeRotationFromQuaternion(qS);
+          } else poseFrame(pose, k, b);
+        } else poseFrame(FPA.cook >= FPA.reach ? POSE.hold : POSE.reach, k, b);
+        qS.setFromRotationMatrix(hf); qP.setFromRotationMatrix(poseM); qS.slerp(qP, off);
+        palmAt.lerp(pP, off);
+        hf.makeRotationFromQuaternion(qS);
+        sh.lerp(v6.copy(SHL).applyMatrix4(fpInv), off);
+      }
+      const grip = v4.copy(b.hand[k].gripLocal).applyMatrix4(_m.copy(hf).setPosition(0, 0, 0));
+      const wrist = palmAt.sub(grip).clone();
       const pole = v5.copy(sh).add(FPPOLE[k]).clone();
       const elbow = ik(v6.set(0, 0, 0), sh, wrist, b.L.upper[k], b.L.fore[k], pole).clone();
       const wr = elbow.clone().addScaledVector(v2.subVectors(wrist, elbow).normalize(), b.L.fore[k]);
@@ -861,14 +1043,48 @@
       const H = W[I["hand_" + s]].copy(hf);
       H.elements[12] = wr.x; H.elements[13] = wr.y; H.elements[14] = wr.z;
     }
+    // support-hand fingers: what is the hand doing?
+    const rig5 = gfx.weaponRigV5;
+    const reloading = (game.weapon?.reloadProgress || 0) > 0 && (game.weapon?.reloadProgress || 0) < 1;
+    let tc, tt;
+    if (thr >= 0.06 && thr < 0.45) { tc = [0.08, 0.1, 0.05]; tt = [0.05, 0.05, 0.05]; }
+    else if (FPA.cook > 0.5 || (thr >= 0 && thr < 0.06)) { tc = [0.95, 1.05, 0.85]; tt = [0.7, 0.55, 0.4]; }
+    else if (FPA.reach > 0.5) { tc = [0.25, 0.3, 0.2]; tt = [0.2, 0.2, 0.1]; }
+    else if (rig5?.magGripActive) { tc = [1.05, 1.15, 0.85]; tt = [0.6, 0.5, 0.4]; }
+    else if (reloading) { tc = [0.35, 0.45, 0.3]; tt = [0.25, 0.3, 0.2]; }
+    else { tc = FPGRIP[0].curl; tt = FPGRIP[0].thumb; }
+    if (!FPA.curl) { FPA.curl = tc.slice(); FPA.thumb = tt.slice(); }
+    const kf = 1 - Math.exp(-dt * 16);
+    lerp3(FPA.curl, FPA.curl, tc, kf); lerp3(FPA.thumb, FPA.thumb, tt, kf);
+    const sprint = !!game.player?.sprinting;
     for (const f of b.fingers) {
-      const s = f.k ? "r" : "l", c = f.thumb ? FPGRIP[f.k].thumb : FPGRIP[f.k].curl;
+      const s = f.k ? "r" : "l";
+      let c;
+      if (f.k === 0) {
+        c = f.thumb ? FPA.thumb : FPA.curl;
+        // a resting hand never holds perfectly still
+        const fid = off < 0.01 && !reloading ? Math.sin(FPA.t * 0.9 + f.chain[0]) * 0.035 : 0;
+        if (fid) c = [c[0] + fid, c[1] + fid, c[2]];
+      } else if (f.name === "index") c = sprint ? [0.12, 0.15, 0.1] : triggerCurl(game);
+      else c = f.thumb ? FPGRIP[1].thumb : FPGRIP[1].curl;
       let parent = W[I["hand_" + s]];
       for (let q = 0; q < 3; q++) {
         const bi = f.chain[q];
         W[bi].multiplyMatrices(parent, b.rel(bi)).multiply(_m.makeRotationAxis(f.hinges[q], c[q]));
         parent = W[bi];
       }
+    }
+    // the cooked grenade sits in the support hand
+    const nade = grenadeMesh();
+    if (nade.parent !== gfx.weapon) gfx.weapon.add(nade);
+    const showNade = (FPA.cook > 0.35 || (thr >= 0 && thr < 0.07)) && (game.grenadeCount > 0 || thr >= 0);
+    nade.visible = showNade;
+    if (showNade) {
+      const hm = W[I.hand_l];
+      nade.position.copy(b.hand[0].gripLocal).applyMatrix4(hm);
+      nade.quaternion.setFromRotationMatrix(hm);
+      nade.userData.spoon.visible = !(game.rlCook?.spoon);
+      nade.userData.ring.visible = !game.rlCook;
     }
     const re = REGION.arms.bones;
     const mid = v3.addVectors(fpSh[0], fpSh[1]).multiplyScalar(0.5);
@@ -922,12 +1138,33 @@
       const far = d2 > 45 * 45 && !rd;
       if (far && (inst.skip = (inst.skip || 0) + 1) % 3) return;
       for (const m of inst.meshes) m.castShadow = d2 < 30 * 30 || inst.kind === "player";
-      try { solve(inst); } catch (err) { if (!inst.err) console.error("[realism] body solve", err); inst.err = true; }
+      try {
+        solve(inst);
+        if (inst.kind === "player" && !game.rlDeath && game.player?.alive) seatEyes(inst, game.player);
+      } catch (err) { if (!inst.err) console.error("[realism] body solve", err); inst.err = true; }
     });
   }
-  a.on("frame", (game) => {
+  // Your body is placed so that its eyes are exactly where the camera is:
+  // looking down you see your chest and legs, not the inside of your neck.
+  const eyeL = new V3(), eyeW = new V3();
+  function seatEyes(inst, p) {
+    const rig = inst.rig, b = inst.A.bind, I = b.I;
+    if (!inst.eyeInHead) inst.eyeInHead = new V3(...inst.A.lm.eye).applyMatrix4(b.inv[I.head]);
+    eyeL.copy(inst.eyeInHead).applyMatrix4(W[I.head]);          // root-local, unscaled
+    const s = clamp((p.eye.y - rig.root.position.y) / Math.max(0.5, eyeL.y), 0.85, 1.12);
+    rig.root.scale.setScalar(s);
+    rig.root.updateMatrixWorld(true);
+    eyeW.copy(eyeL).applyMatrix4(rig.root.matrixWorld);
+    // looking down, the head tips forward over the chest: the eyes end up
+    // ahead of the body, so you see your chest, belly and boots below you
+    const lean = (0.04 + 0.15 * clamp(-(p.pitch || 0) / 1.2, 0, 1)) * s;
+    rig.root.position.x += p.eye.x - eyeW.x + Math.sin(p.yaw || 0) * lean;
+    rig.root.position.z += p.eye.z - eyeW.z + Math.cos(p.yaw || 0) * lean;
+    rig.root.updateMatrixWorld(true);
+  }
+  a.on("frame", (game, dt) => {
     try { frameUpdate(game); } catch (err) { console.error("[realism] bodies", err); }
-    try { if (on() && game.gfx && !a.coop?.active) updateFP(game); } catch (err) { if (!FP.err) console.error("[realism] arms", err); FP.err = true; }
+    try { if (on() && game.gfx && game.phase !== "menu" && !a.coop?.active) updateFP(game, dt); } catch (err) { if (!FP.err) console.error("[realism] arms", err); FP.err = true; }
   });
 
   // Your own body: legs are seen; torso, arms and head only cast shadows
@@ -938,11 +1175,22 @@
     if (!g) { g = mat.clone(); g.colorWrite = false; g.depthWrite = false; ghostCache.set(mat, g); }
     return g;
   }
+  // Your own body is an open shell (no head, arms apart): its inside is
+  // drawn too, so no camera angle sees through it.
+  const insideCache = new WeakMap();
+  function insideOf(mat) {
+    let m = insideCache.get(mat);
+    if (!m) { m = mat.clone(); m.side = 2; insideCache.set(mat, m); }
+    return m;
+  }
   function playerGhost(inst, which) {
     const body = R.v121?.body;
     for (const m of inst.meshes) {
-      const ghost = m.userData.rlPart === "head" || (m.userData.rlPart === "torso" && which === "all");
-      m.material = ghost ? inst.A.materials.map(ghostOf) : inst.A.materials;
+      // The head is a ghost (the camera sits in it); while you're alive so are
+      // the body's arms (the first-person arms are the ones you see), but both
+      // still cast your shadow. After death the arms tumble into view.
+      const ghost = m.userData.rlPart === "head" || (m.userData.rlPart === "arms" && which === "all");
+      m.material = ghost ? inst.A.materials.map(ghostOf) : inst.A.materials.map(insideOf);
       if (!body) continue;
       const i = body.ghosts.indexOf(m);
       if (ghost && i < 0) body.ghosts.push(m);
@@ -986,19 +1234,12 @@ void main() {
   vec2 d = uvG - 0.5;
   vec2 uvR = 0.5 + d * (1.0 + 0.0035 * ca);
   vec2 uvB = 0.5 + d * (1.0 - 0.0035 * ca);
-  vec3 col = vec3(texture2D(tDiffuse, uvR).r, texture2D(tDiffuse, uvG).g, texture2D(tDiffuse, uvB).b);
+  vec3 col = clamp(vec3(texture2D(tDiffuse, uvR).r, texture2D(tDiffuse, uvG).g, texture2D(tDiffuse, uvB).b), 0.0, 1.0);
   vec2 px = 1.0 / res;
   // camera DSP sharpening
   vec3 nb = texture2D(tDiffuse, uvG + vec2(px.x, 0.0)).rgb + texture2D(tDiffuse, uvG - vec2(px.x, 0.0)).rgb
           + texture2D(tDiffuse, uvG + vec2(0.0, px.y)).rgb + texture2D(tDiffuse, uvG - vec2(0.0, px.y)).rgb;
   col += (col - nb * 0.25) * sharp;
-  // small-sensor highlight bloom
-  vec3 glow = vec3(0.0);
-  for (int i = 0; i < 6; i++) {
-    float a = float(i) * 1.0472;
-    glow += max(texture2D(tDiffuse, uvG + vec2(cos(a), sin(a)) * px * 9.0).rgb - 0.72, 0.0);
-  }
-  col += glow * 0.16;
   // sensor response: punchy contrast, crushed blacks, a little desaturated, cool
   float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
   col = mix(vec3(l), col, 0.84);
@@ -1020,7 +1261,7 @@ void main() {
     constructor() {
       super();
       this.needsSwap = true;
-      this.uniforms = { tDiffuse: { value: null }, res: { value: new e.Vector2(1, 1) }, k: { value: 0.45 }, time: { value: 0 }, ca: { value: 1 }, grain: { value: 1 }, vig: { value: 1 }, sharp: { value: 0.55 } };
+      this.uniforms = { tDiffuse: { value: null }, res: { value: new e.Vector2(1, 1) }, k: { value: 0.45 }, time: { value: 0 }, ca: { value: 1 }, grain: { value: 1 }, vig: { value: 1 }, sharp: { value: 0.28 } };
       this.material = new e.ShaderMaterial({ uniforms: this.uniforms, vertexShader: QV, fragmentShader: BCFS, depthTest: false, depthWrite: false });
       this.quad = new e.FullScreenQuad(this.material);
     }
@@ -1062,7 +1303,8 @@ void main() {
       gfx.composer.addPass(BC.pass);
       BC.gfx = gfx;
     }
-    const active = bcOn() && (game.phase === "playing" || game.rlDeath) && !a.coop?.active;
+    const active = !!(bcOn() && (game.phase === "playing" || game.rlDeath) && !a.coop?.active);
+    // must be a real boolean: the composer only skips passes whose enabled === false
     BC.pass.enabled = active;
     bodycamOverlay(active && game.phase === "playing");
     if (!active) return;
@@ -1085,12 +1327,46 @@ void main() {
       c.rotation.x += Math.sin(BC.sway * 1.7) * j + (Math.random() - 0.5) * 0.0006 * shake;
       c.rotation.y += Math.sin(BC.sway * 0.9 + 1.3) * j * 0.8;
       c.rotation.z += Math.sin(BC.sway * 0.85) * j * 2.2;
-      c.position.y -= 0.05;
       c.updateMatrixWorld();
     }
   }
   a.on("frame", (game, dt) => { try { bodycamFrame(game, dt); } catch (err) { if (!BC.err) console.error("[realism] bodycam", err); BC.err = true; } });
   M.bodycam = BC;
+
+  /* ------------------------------------------------------------------ */
+  /* Weapon light: mounted on the gun, not between your eyes             */
+  /* ------------------------------------------------------------------ */
+  const FL = { dustTuned: null, dir: new V3(), right: new V3(), d: 6 };
+  function flashlightFrame(game, dt) {
+    const gfx = game.gfx, fl = gfx?.flashlight;
+    if (!fl || !fl.visible || game.phase !== "playing" || !on()) return;
+    const cam = gfx.camera;
+    cam.getWorldDirection(FL.dir);
+    FL.right.crossVectors(FL.dir, U).normalize();
+    // light sits on the rail of the weapon: right of and below the eye
+    fl.position.copy(cam.position).addScaledVector(FL.right, 0.16).addScaledVector(U, -0.17).addScaledVector(FL.dir, 0.35);
+    // what the beam lands on: walls, floor or a body in front of you
+    const hit = e.raycastWorld(game.map.world, { x: cam.position.x, y: cam.position.y, z: cam.position.z }, { x: FL.dir.x, y: FL.dir.y, z: FL.dir.z }, 24);
+    let d = hit?.t ?? 24;
+    for (const list of [game.zombies?.enemies, game.ai?.enemies]) for (const z of list || []) {
+      const rp = z.renderRig?.ragdollV6 ? z.renderRig.pelvis?.getWorldPosition(v1) : z.pos && v1.set(z.pos.x, z.pos.y + 1, z.pos.z);
+      if (!rp) continue;
+      const rel = v2.subVectors(rp, cam.position), along = rel.dot(FL.dir);
+      if (along > 0.2 && along < d && rel.addScaledVector(FL.dir, -along).length() < 0.5) d = along;
+    }
+    FL.d += (d - FL.d) * (1 - Math.exp(-dt * 10));
+    fl.target.position.copy(cam.position).addScaledVector(FL.dir, Math.max(2, FL.d));
+    // a camera stops down for a lit surface at arm's length: no white-out
+    fl.intensity = 46 * clamp(Math.pow(FL.d / 4.5, 1.5), 0.12, 1) * 0.8;
+    fl.penumbra = 0.82;
+    const dust = gfx.flashlightDust;
+    if (dust?.material && FL.dustTuned !== dust.material) {
+      FL.dustTuned = dust.material;
+      // motes in the beam: barely there, not sparkles
+      if (dust.material.uniforms?.strength) dust.material.uniforms.strength.value *= 0.35;
+    }
+  }
+  a.on("frame", (game, dt) => { try { flashlightFrame(game, dt); } catch (err) { if (!FL.err) console.error("[realism] flashlight", err); FL.err = true; } });
 
   M.attach = attach; M.detach = detach; M.solve = solve; M.getAsset = getAsset; M.preload = () => { for (const n of [...SOLDIERS, ...ZOMBIES]) getAsset(n); };
 

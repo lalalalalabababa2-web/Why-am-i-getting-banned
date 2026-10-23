@@ -119,7 +119,8 @@ def decay_skin(skin_path, body, lm, seed):
     below = np.clip((mouth[1] - P[:, 1]) / 0.25, 0, 1)
     front = np.clip(-(P[:, 2] - mouth[2]) / 0.08 + 0.6, 0, 1)
     drip_x = np.sin(P[:, 0] * 160 + seed) * 0.5 + 0.5
-    blood = np.clip(1 - dm / 0.065, 0, 1) * 1.3 + np.clip(1 - dm / 0.26, 0, 1) * below * front * (drip_x > 0.45) * 1.1
+    # dried blood at the lips and chin, a few thin runs down the throat
+    blood = np.clip(1 - dm / 0.042, 0, 1) * 0.95 + np.clip(1 - dm / 0.17, 0, 1) * below * front * (drip_x > 0.62) * 0.65
     # bites on forearms, neck or shoulders
     ws = [mb.BI[b] for b in ("lowerarm_l", "lowerarm_r", "neck_01", "upperarm_l")]
     for k in range(3):
@@ -137,8 +138,9 @@ def decay_skin(skin_path, body, lm, seed):
     spl = mb.fbm(n, seed + 40, octaves=5, base=14)
     B = np.clip(B * (0.6 + 0.8 * spl), 0, 1)[..., None]
     c = c * (1 - K[..., None] * 0.75) + np.array([0.16, 0.07, 0.09]) * K[..., None] * 0.45
-    bloodcol = np.array([0.30, 0.03, 0.025]) * (0.7 + 0.5 * spl[..., None])
-    c = c * (1 - B * 0.9) + bloodcol * B * 0.9
+    # old blood oxidises to a dark brown-red; only the freshest is still red
+    bloodcol = np.array([0.21, 0.045, 0.035]) * (0.7 + 0.5 * spl[..., None])
+    c = c * (1 - B * 0.78) + bloodcol * B * 0.78
     dn = mb.fbm(n, seed + 50, octaves=5, base=18)[..., None]
     Dm = (D[..., None] * (0.4 + 0.6 * dn))
     c = c * (1 - Dm * 0.5) + np.array([0.20, 0.16, 0.11]) * Dm * 0.5

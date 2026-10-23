@@ -1,24 +1,81 @@
-# Afterlight: Blood & Steel — v12.2 Realism
+# Afterlight: Blood & Steel — v12.3 Realism
 
 A realism layer for the Afterlight v11.0.0 APK (`app.fieldline.afterlight.bloodsteel`).
 It is appended to the game's web bundle the same way the v7–v11 overhauls were,
 so every part of the original game still runs underneath it. A new **REALISM**
 tab in the main menu switches each aspect on or off.
 
-- APK: `apk/Afterlight_Blood_Steel_v12.2.0_Realism.apk` (versionCode 12200)
-- Source: `src/realism_v12.js` (v12–12.1) and `src/realism_v122.js` (bodies, arms, bodycam)
+- APK: `apk/Afterlight_Blood_Steel_v12.3.0_Realism.apk` (versionCode 12300)
+- Source: `src/realism_v12.js` (v12–12.1) and `src/realism_v122.js` (bodies, arms, hands, bodycam)
 - Assets: `assets/realism/` (photoscanned surfaces, HDRI skies, `bodies/`, credits)
 - Before / after: `screenshots/before_after_1.jpg`, `screenshots/before_after_2.jpg`
 - v12.1: `screenshots/v121_*.jpg` (corpses, body, shadow, flash, death cam)
 - v12.2: `screenshots/v122_*.jpg` (soldiers, zombies, arms, bodycam)
+- v12.3: `screenshots/v123_*.jpg` (grenade cook and throw, reload, pistol grip, look down)
 
 ## Installing
 
-- **From v12.0 or v12.1:** install v12.2 over it. It uses the same key, so
-  your settings and victories are kept.
+- **From v12.0, v12.1 or v12.2:** install v12.3 over it. It uses the same
+  key, so your settings and victories are kept.
 - **From v11:** the v11 APK was signed with a local key that isn't available,
-  so v12 uses a new key. **Uninstall v11 first**, then install v12.2.
+  so v12 uses a new key. **Uninstall v11 first**, then install v12.3.
   Uninstalling clears the game's saved settings and campaign victories.
+
+## New in 12.3
+
+Hands that hold the gun, animations for what they do, and a round of glitch
+fixes. No new switches: it's all part of **Realistic bodies**.
+
+### Hands
+- **Every gun is gripped.** Both gloved hands sit on every weapon. The
+  shooting hand is on the pistol grip with its index finger on the trigger,
+  and the support hand is on the handguard. Long guns are carried stock-in,
+  muzzle angled in, so the shooting hand is in view. Pistols come up and in
+  so both hands show wrapped on the grip. Aiming restores the stock framing
+  for the sights.
+- **Trigger.** The trigger finger squeezes on each shot and comes off the
+  trigger while you sprint.
+- **Reload.** The support hand leaves the handguard, takes the magazine,
+  drops below frame to the pouch and seats the fresh one. Its fingers close
+  on the mag and open as it lets go.
+- **Grenades.** Cooking (hold G, or hold the touch button) brings the grenade
+  up in your support hand. The pin is out, and the spoon comes off once
+  it arms. Letting go winds back, throws with the fingers opening, and returns
+  to the gun. While that hand is busy, the rifle cants and drops,
+  one-handed.
+- **Reaching.** Repairing barricades or using things in Zombies reaches the
+  support hand out, fingers half-open.
+- **At rest.** The resting hand shifts its fingers a little; it is never
+  frozen.
+
+### Other people's hands
+- **Soldiers** take their support hand to the magazine when they reload,
+  and squeeze the trigger when they fire.
+- **Zombies'** fingers flex and grasp; they never rest.
+
+### Fixes
+- **Menu turning dark or green.** The bodycam pass was left enabled in the
+  menu and tinted it. It now runs only in a match.
+- **"Diamond" sparkles and glow on bodies.** Two causes:
+  - The bodycam's highlight bloom made star-shaped sparkles. It is gone, and
+    eyes are less glossy.
+  - Folded or severed limbs used zero-size bones. That made NaN lighting: a
+    white blob with a black dot. They now fold to a millimetre.
+  - The renderer now also clamps any overflowing pixel.
+- **Gas at the top of the screen.** The old cloud cards drew over the new sky
+  and are hidden now. Breath vapour starts at your mouth, low and faint.
+- **Flashlight.** It is mounted on the gun's rail, not between your eyes.
+  The beam is soft-edged, its brightness falls off with distance, and dust
+  in it is faint. Bodies no longer blow out white in front of you.
+- **Seeing through your own body.** Looking down now shows your chest, legs
+  and boots under the gun:
+  - The camera sits exactly in your body's eyes.
+  - Your head tips forward over your chest as you look down.
+  - The inside of your body is drawn.
+- **Black slivers** from the first-person sleeves are gone.
+- **Zombie faces** under the flashlight read as dried, dark blood at the
+  mouth instead of a red mask.
+- **Pausing** no longer slides the gun off screen.
 
 ## New in 12.2
 

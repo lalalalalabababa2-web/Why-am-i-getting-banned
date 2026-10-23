@@ -35,7 +35,7 @@
     return s;
   }
   const R = (a.realismV12 = {
-    version: "12.2",
+    version: "12.3",
     settings: load(),
     stats: { photoMaterials: 0, photoTextures: 0, probes: 0, hdri: null, shots: 0, segments: 0, mantles: 0, falls: 0 },
     listeners: [],
@@ -561,6 +561,14 @@ void main() {
     sky.active = true;
     R.stats.hdri = cfg.sky;
     environment(gfx);
+    stockClouds(gfx, false);
+  }
+  // The v11 sky has flat cloud cards around the map. Against a photographed
+  // sky they read as white puffs of gas hanging in the air.
+  function stockClouds(gfx, show) {
+    const tex = gfx.textures?.get("cloud");
+    if (!tex) return;
+    gfx.worldGroup?.traverse((o) => { if (o.isMesh && o.material?.map === tex) o.visible = show; });
   }
   function restoreSky(gfx) {
     if (sky.oldMaterial && gfx.skyDome === sky.oldDome) gfx.skyDome.material = sky.oldMaterial;
@@ -570,6 +578,7 @@ void main() {
     sky.active = false;
     sky.rec = null;
     R.stats.hdri = null;
+    stockClouds(gfx, true);
     environment(gfx);
   }
 
@@ -665,6 +674,12 @@ void main() {
   /* eye adaptation (after it).                                          */
   /* ------------------------------------------------------------------ */
   const QUAD_VERT = "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }";
+  // Half-float buffers overflow above ~65k: a hot specular becomes Inf and the
+  // tone curve turns that into NaN (a black dot in a white blob). Keep every
+  // value finite: overflowed or NaN -> bright, negative -> 0.
+  const SANE = `float sane1(float v){ return v >= 0.0 ? min(v, 4096.0) : (v < 0.0 ? 0.0 : 4096.0); }
+vec3 sane(vec3 c){ return vec3(sane1(c.r), sane1(c.g), sane1(c.b)); }
+`;
   class ScenePass extends e.Pass {
     constructor() {
       super();
@@ -676,7 +691,7 @@ void main() {
       this.material = new e.ShaderMaterial({
         uniforms: this.uniforms, depthTest: false, depthWrite: false,
         vertexShader: QUAD_VERT,
-        fragmentShader: `
+        fragmentShader: SANE + `
 uniform sampler2D tDiffuse;
 uniform mat4 reproj;
 uniform vec2 tanHalf;
@@ -696,12 +711,13 @@ void main() {
   // Focus on the sights narrows attention; the periphery softens slightly.
   float defocus = focus * smoothstep(0.08, 0.42, dot(d, d) * 2.2);
   vec4 c = texture2D(tDiffuse, vUv);
+  c.rgb = sane(c.rgb);
   if (len * 1.0 / max(texel.x, texel.y) > 0.6 || defocus > 0.01) {
     vec3 acc = c.rgb; float wsum = 1.0;
     for (int i = 1; i <= 6; i++) {
       float f = float(i) / 6.0 - 0.5;
       vec2 o = vel * f + vec2(cos(float(i) * 2.4), sin(float(i) * 2.4)) * texel * defocus * 3.0;
-      acc += texture2D(tDiffuse, clamp(vUv + o, texel, 1.0 - texel)).rgb;
+      acc += sane(texture2D(tDiffuse, clamp(vUv + o, texel, 1.0 - texel)).rgb);
       wsum += 1.0;
     }
     c.rgb = acc / wsum;
@@ -759,8 +775,8 @@ void main() {
       this.ping = 0;
       this.lumMat = new e.ShaderMaterial({
         uniforms: { tDiffuse: { value: null } }, depthTest: false, depthWrite: false, vertexShader: QUAD_VERT,
-        fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
-void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb; float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        fragmentShader: SANE + `uniform sampler2D tDiffuse; varying vec2 vUv;
+void main(){ vec3 c = sane(texture2D(tDiffuse, vUv).rgb); float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   // centre-weighted metering
   vec2 d = vUv - 0.5; float w = 1.0 - smoothstep(0.1, 0.5, length(d * vec2(1.0, 1.6)));
   w = 0.35 + 0.65 * w;
@@ -787,13 +803,17 @@ void main(){
     vec2 cur = s.y > 1e-3 ? vec2(s.z, s.w) / s.y : vec2(1.0);
     float n = (s.z + s.w) / max(1e-3, s.y);
     if (n < 0.2) cur = p.xy;
-    vec2 w = reset > 0.5 ? cur : mix(p.xy, cur, 1.0 - exp(-dt * 0.5));
+    bool okw = p.x > 0.0 && p.x < 100.0 && p.y > 0.0 && p.y < 100.0;
+    vec2 w = (reset > 0.5 || !okw) ? cur : mix(p.xy, cur, 1.0 - exp(-dt * 0.5));
+    if (!(w.x > 0.0 && w.x < 100.0 && w.y > 0.0 && w.y < 100.0)) w = vec2(1.0);
     gl_FragColor = vec4(w, 0.0, 1.0);
     return;
   }
   float cur = s.x / max(1e-4, s.y);
+  if (!(cur > -1e4 && cur < 1e4)) cur = 0.0;
   float eye = p.x, ref = p.y;
-  if (reset > 0.5) { eye = cur; ref = cur; }
+  // a corrupted history (NaN/Inf) would stick forever: start over
+  if (reset > 0.5 || !(eye > -1e4 && eye < 1e4) || !(ref > -1e4 && ref < 1e4)) { eye = cur; ref = cur; }
   // Pupils open slowly in the dark and close fast in bright light;
   // the long reference lets the scene settle back to its authored look.
   float k = cur > eye ? 2.2 : 0.75;
@@ -804,8 +824,9 @@ void main(){
       });
       this.applyMat = new e.ShaderMaterial({
         uniforms: { tDiffuse: { value: null }, tAdapt: { value: null }, tWhite: { value: null }, strength: { value: 0 }, balance: { value: 0.45 } }, depthTest: false, depthWrite: false, vertexShader: QUAD_VERT,
-        fragmentShader: `uniform sampler2D tDiffuse; uniform sampler2D tAdapt; uniform sampler2D tWhite; uniform float strength; uniform float balance; varying vec2 vUv;
-void main(){ vec4 c = texture2D(tDiffuse, vUv); vec3 a = texture2D(tAdapt, vec2(0.5)).xyz;
+        fragmentShader: SANE + `uniform sampler2D tDiffuse; uniform sampler2D tAdapt; uniform sampler2D tWhite; uniform float strength; uniform float balance; varying vec2 vUv;
+void main(){ vec4 c = texture2D(tDiffuse, vUv); c.rgb = sane(c.rgb); vec3 a = texture2D(tAdapt, vec2(0.5)).xyz;
+  if (!(a.x > -1e4 && a.x < 1e4)) a.x = a.y;
   float ex = exp((a.y - a.x) * 0.62 * strength);
   vec2 wb = clamp(texture2D(tWhite, vec2(0.5)).xy, vec2(0.5), vec2(2.0));
   vec3 gain = vec3(1.0 / mix(1.0, wb.x, balance), 1.0, 1.0 / mix(1.0, wb.y, balance));
@@ -2878,11 +2899,15 @@ body.rl-hud-minimal .rl-stamina { display: none; }
       vapour.pool.push(s);
     }
     if (s.sprite.parent !== gfx.fxGroup) gfx.fxGroup.add(s.sprite);
+    // Exhaled from the mouth: you only see it faintly at the bottom of your view.
     const dir = gfx.camera.getWorldDirection(new e.Vector3());
-    s.sprite.position.copy(gfx.camera.position).addScaledVector(dir, 0.28).add(new e.Vector3(0, -0.07, 0));
-    s.vel.copy(dir).multiplyScalar(0.55 + Math.random() * 0.2).add(new e.Vector3(p.vel.x * 0.8, 0.12, p.vel.z * 0.8));
-    s.life = s.total = 1.4 + Math.random() * 0.4;
-    s.base = 0.12 + (p.rlBody?.fatigue || 0) * 0.08;
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
+    dir.normalize();
+    s.sprite.position.copy(p.eye).addScaledVector(dir, 0.38).add(new e.Vector3(0, -0.26, 0));
+    s.vel.copy(dir).multiplyScalar(0.3 + Math.random() * 0.12).add(new e.Vector3(p.vel.x * 0.9, -0.03, p.vel.z * 0.9));
+    s.life = s.total = 1.1 + Math.random() * 0.3;
+    s.base = 0.05 + (p.rlBody?.fatigue || 0) * 0.07;
   }
   function vapourFrame(game, dt) {
     const gfx = game.gfx, p = game.player;
@@ -2893,11 +2918,11 @@ body.rl-hud-minimal .rl-stamina { display: none; }
       v.sprite.visible = true;
       v.sprite.position.addScaledVector(v.vel, dt);
       v.vel.multiplyScalar(Math.exp(-dt * 1.6));
-      v.sprite.scale.setScalar(0.12 + age * 0.55);
+      v.sprite.scale.setScalar(0.08 + age * 0.3);
       v.sprite.material.opacity = v.base * Math.sin(Math.min(1, age * 1.3) * Math.PI) * (1 - age);
     }
     if (!on("embodiment") || !p?.alive || game.phase !== "playing" || !COLD.has(game.map?.def.id) || p.rlBody?.holding) return;
-    const rate = 0.28 + (p.rlBody?.fatigue || 0) * 0.55;
+    const rate = 0.18 + (p.rlBody?.fatigue || 0) * 0.45;
     vapour.t -= dt;
     if (vapour.t <= 0) { vapour.t = 1 / rate; puff(gfx, p); }
   }
