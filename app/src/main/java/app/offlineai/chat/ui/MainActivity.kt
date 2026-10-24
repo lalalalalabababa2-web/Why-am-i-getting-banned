@@ -124,7 +124,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         titleBox.addView(subtitle)
         bar.addView(titleBox, lp(0, WRAP, 1f))
         bar.addView(iconButton(R.drawable.ic_add, "New chat") {
-            app.chat.newChat()
+            // the same kind of chat: working on a Roblox game, the next chat is about it too
+            app.chat.newChat(app.chat.conversation.mode)
             input.setText("")
         }.also { add ->
             // a long press starts a coding chat straight away
