@@ -240,6 +240,26 @@ class SettingsActivity : AppCompatActivity() {
         switch("Colour code", "Syntax colours in code blocks.", s.syntaxHighlight) { s.syntaxHighlight = it }
         switch("Wrap long code lines", "Off scrolls code sideways instead.", s.codeWrap) { s.codeWrap = it }
 
+        content.addView(sectionTitle("Lua and Roblox"))
+        row("Lua editor", "Write, run and check Lua, Roblox and mod scripts on the phone.") { LuaEditorActivity.open(this) }
+        choice("Roblox test: game time",
+            "How long a run in the Roblox test place lasts. Game time passes instantly: task.wait(60) takes no real time.",
+            Settings.LUA_GAME_SECONDS.map { if (it < 60) "$it seconds" else "${it / 60} minute" + (if (it >= 120) "s" else "") },
+            Settings.LUA_GAME_SECONDS.indexOf(s.luaGameSeconds).coerceAtLeast(0)) {
+            s.luaGameSeconds = Settings.LUA_GAME_SECONDS[it]
+        }
+        switch("The test player plays",
+            "Player1 joins, spawns, then touches the parts, clicks the buttons and prompts, uses the tools and presses " +
+                "the keys your scripts listen for, so their handlers run.",
+            s.luaAutoplay) { s.luaAutoplay = it }
+        choice("Time limit", "Real time a run may take before it is stopped, for loops that never end.",
+            Settings.LUA_TIME_LIMITS.map { "${it / 1000} seconds" }, Settings.LUA_TIME_LIMITS.indexOf(s.luaTimeLimitMs).coerceAtLeast(0)) {
+            s.luaTimeLimitMs = Settings.LUA_TIME_LIMITS[it]
+        }
+        content.addView(note("Lua runs in Luau, Roblox's Lua, which also runs most Lua 5.1 code. Each run is sandboxed: no files, " +
+            "no internet, no access to the phone. The Roblox test place has most of the API games use; it has no physics, " +
+            "graphics or sound, and data stores are kept only until the run ends."))
+
         content.addView(sectionTitle("Appearance"))
         choice("Theme", null, ThemeMode.values().map { it.label }, s.theme.ordinal) {
             s.theme = ThemeMode.values()[it]

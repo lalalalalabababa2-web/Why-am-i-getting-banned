@@ -89,12 +89,16 @@ class Conversation(
     val createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis(),
     val messages: MutableList<ChatMessage> = mutableListOf(),
+    /** What the chat is for (ChatMode): Roblox, Lua mods, Lua, or a plain chat. */
+    var mode: ChatMode = ChatMode.GENERAL,
 ) {
     fun toJson(): JSONObject {
         val arr = JSONArray()
         messages.forEach { arr.put(it.toJson()) }
-        return JSONObject().put("id", id).put("title", title).put("created_at", createdAt)
+        val j = JSONObject().put("id", id).put("title", title).put("created_at", createdAt)
             .put("updated_at", updatedAt).put("messages", arr)
+        if (mode != ChatMode.GENERAL) j.put("mode", mode.name)
+        return j
     }
 
     companion object {
@@ -104,6 +108,7 @@ class Conversation(
                 title = j.optString("title"),
                 createdAt = j.optLong("created_at"),
                 updatedAt = j.optLong("updated_at"),
+                mode = ChatMode.of(j.optString("mode", "")),
             )
             val arr = j.optJSONArray("messages") ?: JSONArray()
             for (i in 0 until arr.length()) c.messages.add(ChatMessage.fromJson(arr.getJSONObject(i)))
@@ -239,7 +244,7 @@ class ChatStore(context: Context) {
                 continue
             }
             val id = if (File(dir, "${c.id}.json").exists()) UUID.randomUUID().toString() else c.id
-            val copy = Conversation(id, c.title, c.createdAt, c.updatedAt, c.messages)
+            val copy = Conversation(id, c.title, c.createdAt, c.updatedAt, c.messages, c.mode)
             write(id, copy.toJson().toString())
             added++
         }

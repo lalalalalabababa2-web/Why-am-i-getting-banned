@@ -62,3 +62,28 @@ target_link_libraries(offlineai
         mtmd
         android
         log)
+
+# Lua tools: running and checking Lua code with Luau (Roblox's Lua, which also runs most Lua
+# 5.1 code), in a library of its own so it works even when the AI engine cannot start.
+set(LUAU_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/luau)
+set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_subdirectory(${LUAU_SRC} luau-build EXCLUDE_FROM_ALL)
+# the checker is most of the size and need not be fast for one script
+target_compile_options(Luau.Analysis PRIVATE -Os)
+
+add_library(luatools SHARED
+        lua_tools.cpp
+        lua_check.cpp
+        lua_bridge.cpp)
+
+target_include_directories(luatools PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${LLAMA_SRC}/vendor)
+
+target_link_libraries(luatools
+        Luau.Analysis
+        Luau.Compiler
+        Luau.VM
+        log)

@@ -31,6 +31,11 @@ jobs:
       - name: Run
         run: tools/host-test/run.sh
 
+      # Luau built for the runner: plain Lua, the Roblox test place and the checker
+      # (see tools/host-test/test_lua.cpp).
+      - name: Lua tools
+        run: tools/host-test/lua.sh
+
       # The same tiny models go into the on-device tests.
       - name: Keep the test models
         run: |
@@ -265,7 +270,7 @@ jobs:
           ls -la OfflineAI.apk
           echo "--- native libraries"
           unzip -l OfflineAI.apk 'lib/*' | awk '{print $1, $4}'
-          for lib in libofflineai.so libllama.so libllama-common.so libggml.so libggml-base.so libc++_shared.so; do
+          for lib in libofflineai.so libluatools.so libllama.so libllama-common.so libggml.so libggml-base.so libc++_shared.so; do
             unzip -l OfflineAI.apk "lib/arm64-v8a/$lib" > /dev/null || { echo "::error::$lib is missing from the APK"; exit 1; }
           done
           n=$(unzip -l OfflineAI.apk 'lib/arm64-v8a/libggml-cpu-*' | grep -c 'libggml-cpu-')

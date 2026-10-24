@@ -18,6 +18,10 @@ import android.view.View
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import app.offlineai.chat.lua.CheckResult
+import app.offlineai.chat.lua.LuaEnv
+import app.offlineai.chat.lua.LuaTools
+import app.offlineai.chat.lua.RunResult
 
 /** How replies are drawn; from the chat display settings. */
 data class RenderOptions(
@@ -48,6 +52,34 @@ object Markdown {
         fun isCollapsed(blockIndex: Int): Boolean
         fun toggleCollapsed(blockIndex: Int, anchor: View)
         fun copy(label: String, text: String)
+        /** Run, check and edit buttons for Lua blocks; null where there are none (tests, previews). */
+        fun codeTools(): CodeTools? = null
+    }
+
+    /** What a Lua block has been through: a run going on, the last run's output, the last check. */
+    class BlockRun {
+        var running = false
+        var checking = false
+        var result: RunResult? = null
+        var check: CheckResult? = null
+        var env = LuaEnv.LUA
+        /** The scripts that ran together (Roblox: every Roblox script in the reply). */
+        var scripts = 1
+        var showAll = false
+        /** Changes with every change, so a view redraws only when there is something new. */
+        var version = 0
+    }
+
+    interface CodeTools {
+        fun state(blockIndex: Int): BlockRun?
+        fun run(blockIndex: Int, lang: String, code: String, anchor: View)
+        fun check(blockIndex: Int, lang: String, code: String, anchor: View)
+        fun stop()
+        fun edit(lang: String, code: String)
+        /** Puts the output in the message box, asking the model to fix the code. */
+        fun fix(blockIndex: Int, lang: String, code: String)
+        fun close(blockIndex: Int, anchor: View)
+        fun toggleAll(blockIndex: Int, anchor: View)
     }
 
     private class State(val src: String, val blocks: List<Block>, val options: RenderOptions)
@@ -351,9 +383,17 @@ object Markdown {
      * of a long program.
      */
     class CodeBlockView(ctx: Context, private val options: RenderOptions) : LinearLayout(ctx) {
-        private val lang = ctx.text("", 12f, Palette.text3, mono = true)
+        private val lang = ctx.text("", 12f, Palette.text3, mono = true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
         private val fold = ctx.text("", 12f, Palette.accent, bold = true)
         private val copy = ctx.text("Copy", 12f, Palette.accent, bold = true)
+        private val run = ctx.text("Run", 12f, Palette.accent, bold = true)
+        private val check = ctx.text("Check", 12f, Palette.accent, bold = true)
+        private val edit = ctx.text("Edit", 12f, Palette.accent, bold = true)
+        private val output = OutputPanel(ctx)
+        private var outputVersion = -1
         private val pieces = LinearLayout(ctx).apply { orientation = VERTICAL }
         private val more = ctx.text("", 12f, Palette.accent, bold = true)
         private var code = ""
@@ -377,11 +417,12 @@ object Markdown {
                 setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(4), 0)
             }
             header.addView(lang, lp(0, WRAP, 1f))
-            for (b in listOf(fold, copy)) {
-                b.setPadding(ctx.dp(10), ctx.dp(10), ctx.dp(10), ctx.dp(10))
+            for (b in listOf(run, check, edit, fold, copy)) {
+                b.setPadding(ctx.dp(8), ctx.dp(10), ctx.dp(8), ctx.dp(10))
                 b.background = ripple(null, ctx.dp(8).toFloat())
                 header.addView(b)
             }
+            for (b in listOf(run, check, edit)) b.visibility = GONE
             addView(header)
             pieces.setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(12), ctx.dp(12))
             if (options.wrapCode) {
@@ -395,6 +436,8 @@ object Markdown {
             more.setPadding(ctx.dp(12), 0, ctx.dp(12), ctx.dp(10))
             more.visibility = GONE
             addView(more)
+            output.visibility = GONE
+            addView(output, lp(MATCH, WRAP))
         }
 
         private fun piece(i: Int) = pieces.getChildAt(i) as TextView
@@ -494,6 +537,39 @@ object Markdown {
             if (collapsed) setIfChanged(more, "Show all $lines lines")
             more.setOnClickListener { host.toggleCollapsed(index, this) }
             copy.setOnClickListener { host.copy(language, code) }
+            bindTools(index, language, closed, host)
+        }
+
+        /** Lua blocks: Run, Check and Edit, and what the last run or check said. */
+        private fun bindTools(index: Int, language: String, closed: Boolean, host: Host) {
+            val tools = host.codeTools()
+            val lua = tools != null && closed && LuaTools.isLua(language)
+            val state = if (lua) tools.state(index) else null
+            run.visibility = if (lua) VISIBLE else GONE
+            check.visibility = if (lua) VISIBLE else GONE
+            edit.visibility = if (lua) VISIBLE else GONE
+            if (!lua) {
+                output.visibility = GONE
+                outputVersion = -1
+                return
+            }
+            setIfChanged(run, if (state?.running == true) "Stop" else "Run")
+            run.setOnClickListener {
+                if (state?.running == true) tools.stop() else tools.run(index, language, code, this)
+            }
+            check.setOnClickListener { if (state?.checking != true) tools.check(index, language, code, this) }
+            edit.setOnClickListener { tools.edit(language, code) }
+            if (state == null || (state.result == null && state.check == null && !state.running && !state.checking)) {
+                output.visibility = GONE
+                outputVersion = -1
+                return
+            }
+            output.visibility = VISIBLE
+            if (state.version != outputVersion) {
+                outputVersion = state.version
+                output.show(state, onFix = { tools.fix(index, language, code) }, onClose = { tools.close(index, this) },
+                    onAll = { tools.toggleAll(index, this) })
+            }
         }
 
         /** Setting a TextView's text always lays it out again, even when nothing changed. */
@@ -538,6 +614,86 @@ object Markdown {
 
             /** Lines per piece; at least [FOLD_LINES], so a folded block shows part of the first piece only. */
             const val PIECE_LINES = 64
+        }
+    }
+
+    /** Under a Lua block: what a run printed (coloured by kind) or what a check found, and what to do next. */
+    class OutputPanel(ctx: Context) : LinearLayout(ctx) {
+        private val status = ctx.text("", 12f, Palette.text2)
+        private val fix = ctx.text("Ask AI to fix", 12f, Palette.accent, bold = true)
+        private val close = ctx.text("Close", 12f, Palette.text3, bold = true)
+        private val body = ctx.text("", 12.5f, Palette.text, mono = true)
+        private val all = ctx.text("", 12f, Palette.accent, bold = true)
+
+        init {
+            orientation = VERTICAL
+            addView(View(ctx).apply { setBackgroundColor(Palette.border) }, lp(MATCH, 1))
+            val row = LinearLayout(ctx).apply {
+                orientation = HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(ctx.dp(12), ctx.dp(2), ctx.dp(4), 0)
+            }
+            row.addView(status, lp(0, WRAP, 1f))
+            for (b in listOf(fix, close)) {
+                b.setPadding(ctx.dp(8), ctx.dp(10), ctx.dp(8), ctx.dp(10))
+                b.background = ripple(null, ctx.dp(8).toFloat())
+                row.addView(b)
+            }
+            addView(row, lp(MATCH, WRAP))
+            body.setTextIsSelectable(false)
+            body.isFocusable = false
+            body.setPadding(ctx.dp(12), 0, ctx.dp(12), ctx.dp(10))
+            addView(body, lp(MATCH, WRAP))
+            all.setPadding(ctx.dp(12), 0, ctx.dp(12), ctx.dp(10))
+            addView(all)
+        }
+
+        fun show(state: BlockRun, onFix: () -> Unit, onClose: () -> Unit, onAll: () -> Unit) {
+            fix.setOnClickListener { onFix() }
+            close.setOnClickListener { onClose() }
+            all.setOnClickListener { onAll() }
+            val r = state.result
+            val c = state.check
+            when {
+                state.running -> {
+                    status.text = if (state.env == LuaEnv.ROBLOX) "Running in the Roblox test place…" else "Running…"
+                    status.setTextColor(Palette.text2)
+                    fix.visibility = GONE
+                    body.text = ""
+                    body.visibility = GONE
+                    all.visibility = GONE
+                    return
+                }
+                state.checking -> {
+                    status.text = "Checking…"
+                    status.setTextColor(Palette.text2)
+                    fix.visibility = GONE
+                    body.visibility = GONE
+                    all.visibility = GONE
+                    return
+                }
+                c != null -> {
+                    status.text = Output.checkSummary(c)
+                    status.setTextColor(if (c.errors > 0) Palette.danger else if (c.problems.isEmpty()) Palette.positive else Palette.caution)
+                    fix.visibility = if (c.problems.isNotEmpty()) VISIBLE else GONE
+                    val text = Output.checkText(c)
+                    body.text = text
+                    body.visibility = if (text.isEmpty()) GONE else VISIBLE
+                    all.visibility = GONE
+                }
+                r != null -> {
+                    status.text = Output.runSummary(r, state.env, state.scripts)
+                    status.setTextColor(if (r.failed) Palette.danger else Palette.text2)
+                    fix.visibility = if (r.failed) VISIBLE else GONE
+                    val limit = if (state.showAll) Int.MAX_VALUE else Output.SHOWN_LINES
+                    val text = Output.runText(r, state.env, limit)
+                    body.text = text
+                    body.visibility = if (text.isEmpty()) GONE else VISIBLE
+                    val hidden = Output.lineCount(r) - Output.SHOWN_LINES
+                    all.visibility = if (hidden > 0) VISIBLE else GONE
+                    all.text = if (state.showAll) "Show less" else "Show all ${Output.lineCount(r)} lines"
+                }
+            }
         }
     }
 

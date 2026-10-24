@@ -14,6 +14,9 @@ import androidx.recyclerview.widget.RecyclerView
 import app.offlineai.chat.App
 import app.offlineai.chat.R
 import app.offlineai.chat.data.ChatMessage
+import app.offlineai.chat.lua.LuaEnv
+import app.offlineai.chat.lua.LuaScript
+import app.offlineai.chat.lua.LuaTools
 
 /**
  * The messages of the open conversation. Changes are applied precisely: a reply that grows is
@@ -31,6 +34,10 @@ class MessageAdapter(
         fun keepInPlace(anchor: View, change: () -> Unit)
         /** Whether the list is following the reply (you are at the bottom). */
         fun isFollowing(): Boolean
+        /** Puts [text] in the message box, ready to send (a Lua run's "Ask AI to fix"). */
+        fun compose(text: String)
+        /** Opens a code block in the Lua editor. */
+        fun openEditor(lang: String, code: String)
     }
 
     private val messages get() = app.chat.conversation.messages
@@ -43,6 +50,9 @@ class MessageAdapter(
     /** Thinking opened or closed by hand, and folded code blocks, per message. */
     private val thinkingOpen = HashMap<String, Boolean>()
     private val folded = HashMap<String, MutableSet<Int>>()
+
+    /** Lua blocks that were run or checked, per message and block: kept while the app is open. */
+    private val runs = HashMap<String, HashMap<Int, Markdown.BlockRun>>()
 
     var options = RenderOptions(markdown = true, wrapCode = false, highlight = true, fontScale = 1f)
 
@@ -236,6 +246,93 @@ class MessageAdapter(
 
         override fun copy(label: String, text: String) = itemView.context.copyText(label, text)
 
+        override fun codeTools(): Markdown.CodeTools = tools
+
+        /** After a run or check finishes: redraw the block where it is, or the message if it scrolled away. */
+        private fun refresh(m: ChatMessage, anchor: View) {
+            if (message === m && anchor.isAttachedToWindow) {
+                actions.keepInPlace(anchor) { bindContent(m) }
+            } else {
+                val i = messages.indexOf(m)
+                if (i >= 0) notifyItemChanged(i)
+            }
+        }
+
+        private val tools = object : Markdown.CodeTools {
+            private fun stateFor(m: ChatMessage, index: Int) = runs.getOrPut(m.id) { HashMap() }.getOrPut(index) { Markdown.BlockRun() }
+
+            override fun state(blockIndex: Int): Markdown.BlockRun? = message?.let { runs[it.id]?.get(blockIndex) }
+
+            override fun run(blockIndex: Int, lang: String, code: String, anchor: View) {
+                val m = message ?: return
+                if (LuaTools.busy) {
+                    android.widget.Toast.makeText(itemView.context, "Another run is still going.", android.widget.Toast.LENGTH_SHORT).show()
+                    return
+                }
+                val env = LuaTools.envFor(lang, code, app.chat.conversation.mode.env)
+                // Roblox: every Lua script in the reply runs together, so a LocalScript finds the
+                // RemoteEvents its Script makes and require finds the ModuleScripts
+                val scripts = if (env == LuaEnv.ROBLOX) luaBlocks(m.content).ifEmpty { listOf(code) } else listOf(code)
+                val st = stateFor(m, blockIndex)
+                st.running = true
+                st.checking = false
+                st.check = null
+                st.env = env
+                st.scripts = scripts.size
+                st.version++
+                actions.keepInPlace(anchor) { bindContent(m) }
+                LuaTools.run(itemView.context, scripts.map { LuaScript("script", it) }, env, app.settings.luaRunOptions()) { r ->
+                    st.running = false
+                    st.result = r
+                    st.showAll = false
+                    st.version++
+                    refresh(m, anchor)
+                }
+            }
+
+            override fun check(blockIndex: Int, lang: String, code: String, anchor: View) {
+                val m = message ?: return
+                if (LuaTools.busy) return
+                val env = LuaTools.envFor(lang, code, app.chat.conversation.mode.env)
+                val st = stateFor(m, blockIndex)
+                st.checking = true
+                st.env = env
+                st.version++
+                actions.keepInPlace(anchor) { bindContent(m) }
+                LuaTools.check(code, env) { c ->
+                    st.checking = false
+                    st.check = c
+                    st.version++
+                    refresh(m, anchor)
+                }
+            }
+
+            override fun stop() = LuaTools.stop()
+
+            override fun edit(lang: String, code: String) = actions.openEditor(lang, code)
+
+            override fun fix(blockIndex: Int, lang: String, code: String) {
+                val m = message ?: return
+                val st = runs[m.id]?.get(blockIndex) ?: return
+                val lastReply = messages.lastOrNull { it.role == "assistant" } === m
+                actions.compose(Output.fixRequest(lang, code, includeCode = !lastReply, run = st.result, check = st.check, env = st.env))
+            }
+
+            override fun close(blockIndex: Int, anchor: View) {
+                val m = message ?: return
+                runs[m.id]?.remove(blockIndex)
+                actions.keepInPlace(anchor) { bindContent(m) }
+            }
+
+            override fun toggleAll(blockIndex: Int, anchor: View) {
+                val m = message ?: return
+                val st = runs[m.id]?.get(blockIndex) ?: return
+                st.showAll = !st.showAll
+                st.version++
+                actions.keepInPlace(anchor) { bindContent(m) }
+            }
+        }
+
         private fun showMenu(v: View) {
             val m = message ?: return
             val pm = PopupMenu(v.context, v)
@@ -350,5 +447,10 @@ class MessageAdapter(
 
     companion object {
         const val PAYLOAD_STREAM = "stream"
+
+        /** The finished Lua code blocks of a reply, in order. */
+        fun luaBlocks(content: String): List<String> = Markdown.parse(content).mapNotNull { b ->
+            if (b is Markdown.Block.Code && b.closed && LuaTools.isLua(b.lang)) b.code else null
+        }
     }
 }

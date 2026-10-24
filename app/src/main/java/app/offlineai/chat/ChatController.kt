@@ -3,6 +3,7 @@ package app.offlineai.chat
 import android.os.SystemClock
 import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.ChatMessage
+import app.offlineai.chat.data.ChatMode
 import app.offlineai.chat.data.Conversation
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.Family
@@ -135,13 +136,24 @@ class ChatController(private val app: App) {
         }
     }
 
-    fun newChat() {
+    fun newChat(mode: ChatMode = ChatMode.GENERAL) {
         if (generating) stop()
         discardDraft()
-        conversation = Conversation()
+        conversation = Conversation(mode = mode)
         app.settings.lastChatId = conversation.id
         switched()
     }
+
+    /** What the open chat is for; it changes what the model is told from the next reply on. */
+    fun setMode(mode: ChatMode) {
+        if (conversation.mode == mode) return
+        conversation.mode = mode
+        save()
+        changed()
+    }
+
+    /** Text for the composer, from another screen (the Lua editor's "Ask the AI"). */
+    var pendingCompose: String? = null
 
     /** A conversation was deleted elsewhere. */
     fun forget(id: String) {
@@ -345,7 +357,8 @@ class ChatController(private val app: App) {
     private fun buildRequest(model: LoadedModel): JSONObject {
         val s = app.settings
         val messages = JSONArray()
-        val system = s.systemPrompt.trim()
+        // the chat's coding mode first, then your own system prompt
+        val system = listOf(conversation.mode.prompt, s.systemPrompt.trim()).filter { it.isNotBlank() }.joinToString("\n\n")
         if (system.isNotEmpty()) messages.put(JSONObject().put("role", "system").put("content", system))
 
         // Templates expect turns to alternate; a failed reply leaves two of yours in a row, so

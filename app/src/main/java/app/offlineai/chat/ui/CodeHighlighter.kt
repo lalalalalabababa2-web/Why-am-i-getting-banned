@@ -11,12 +11,14 @@ import android.text.style.ForegroundColorSpan
  * coloured as each line completes, without going over the earlier lines again.
  */
 class CodeHighlighter(lang: String) {
-    private enum class Kind { C_LIKE, HASH, MARKUP, CSS, SQL, PLAIN }
+    private enum class Kind { C_LIKE, HASH, MARKUP, CSS, SQL, LUA, PLAIN }
 
     private val kind: Kind = when (lang.lowercase().trim()) {
         "kotlin", "kt", "java", "javascript", "js", "jsx", "typescript", "ts", "tsx", "c", "cpp", "c++", "h", "hpp",
         "cs", "csharp", "go", "golang", "rust", "rs", "swift", "dart", "scala", "groovy", "gradle", "php", "json",
-        "glsl", "hlsl", "lua", "zig", "objc", "objective-c", "gdscript" -> if (lang.lowercase() == "lua") Kind.SQL else Kind.C_LIKE
+        "glsl", "hlsl", "zig", "objc", "objective-c", "gdscript" -> Kind.C_LIKE
+        "lua", "luau", "rbxlua", "roblox", "glua", "luajit", "lua5.1", "lua51", "lua5.2", "lua5.3", "lua5.4", "pico8",
+        "love" -> Kind.LUA
         "python", "py", "ruby", "rb", "sh", "bash", "zsh", "shell", "powershell", "ps1", "yaml", "yml", "toml",
         "ini", "r", "perl", "pl", "makefile", "make", "cmake", "dockerfile", "nim", "elixir", "ex" -> Kind.HASH
         "html", "xml", "svg", "vue", "svelte" -> Kind.MARKUP
@@ -28,9 +30,34 @@ class CodeHighlighter(lang: String) {
 
     /** What an unfinished construct from the previous line still needs to close, if anything. */
     private var openUntil: String? = null
+    /** Whether that construct is a string (else a comment). */
+    private var openIsString = false
 
     fun reset() {
         openUntil = null
+    }
+
+    /** The level of a Lua long bracket at [at] ("[[" is 0, "[==[" is 2), or -1 if there is none. */
+    private fun longBracket(s: CharSequence, at: Int, end: Int): Int {
+        if (at >= end || s[at] != '[') return -1
+        var j = at + 1
+        while (j < end && s[j] == '=') j++
+        return if (j < end && s[j] == '[') j - at - 1 else -1
+    }
+
+    /** Colours from [from] to the close of a long bracket of [level] (or the line's end, carrying it on). */
+    private fun longRun(text: Spannable, from: Int, open: Int, level: Int, end: Int, string: Boolean): Int {
+        val close = "]" + "=".repeat(level) + "]"
+        val at = indexOf(text, close, from + open, end)
+        val colour = if (string) Palette.synString else Palette.synComment
+        if (at < 0) {
+            color(text, from, end, colour)
+            openUntil = close
+            openIsString = string
+            return end
+        }
+        color(text, from, at + close.length, colour)
+        return at + close.length
     }
 
     /** Colours text[start, end) — one line, without its line break. */
@@ -42,13 +69,32 @@ class CodeHighlighter(lang: String) {
         openUntil?.let { close ->
             val at = indexOf(s, close, i, end)
             val stop = if (at < 0) end else at + close.length
-            color(text, i, stop, if (close == "\"\"\"" || close == "'''" || close == "`") Palette.synString else Palette.synComment)
+            color(text, i, stop, if (openIsString) Palette.synString else Palette.synComment)
             if (at < 0) return
             openUntil = null
             i = stop
         }
         while (i < end) {
             val c = s[i]
+            // Lua: -- comments, --[[ block comments ]] and [[ long strings ]]
+            if (kind == Kind.LUA) {
+                if (startsWith(s, "--", i, end)) {
+                    val level = longBracket(s, i + 2, end)
+                    if (level < 0) {
+                        color(text, i, end, Palette.synComment)
+                        return
+                    }
+                    i = longRun(text, i, level + 4, level, end, string = false)
+                    if (openUntil != null) return
+                    continue
+                }
+                val level = longBracket(s, i, end)
+                if (level >= 0) {
+                    i = longRun(text, i, level + 2, level, end, string = true)
+                    if (openUntil != null) return
+                    continue
+                }
+            }
             // comments
             val lineComment = when (kind) {
                 Kind.C_LIKE, Kind.CSS -> startsWith(s, "//", i, end)
@@ -70,6 +116,7 @@ class CodeHighlighter(lang: String) {
                 if (at < 0) {
                     color(text, i, end, Palette.synComment)
                     openUntil = blockOpen
+                    openIsString = false
                     return
                 }
                 color(text, i, at + blockOpen.length, Palette.synComment)
@@ -77,13 +124,14 @@ class CodeHighlighter(lang: String) {
                 continue
             }
             // strings
-            if (c == '"' || c == '\'' || (c == '`' && kind == Kind.C_LIKE)) {
+            if (c == '"' || c == '\'' || (c == '`' && (kind == Kind.C_LIKE || kind == Kind.LUA))) {
                 if (kind == Kind.HASH && (startsWith(s, "\"\"\"", i, end) || startsWith(s, "'''", i, end))) {
                     val q = s.substring(i, i + 3)
                     val at = indexOf(s, q, i + 3, end)
                     if (at < 0) {
                         color(text, i, end, Palette.synString)
                         openUntil = q
+                        openIsString = true
                         return
                     }
                     color(text, i, at + 3, Palette.synString)
@@ -96,9 +144,10 @@ class CodeHighlighter(lang: String) {
                     if (s[j] == '\\') j++
                     j++
                 }
-                if (c == '`' && j >= end) {
+                if (c == '`' && j >= end && kind == Kind.C_LIKE) {
                     color(text, i, end, Palette.synString)
                     openUntil = "`"
+                    openIsString = true
                     return
                 }
                 val stop = minOf(end, j + 1)
@@ -129,7 +178,8 @@ class CodeHighlighter(lang: String) {
                 var j = i + 1
                 while (j < end && isWordChar(s[j])) j++
                 val word = s.substring(i, j)
-                if (kind != Kind.MARKUP && (word in KEYWORDS || (c == '@' && j > i + 1))) {
+                val keyword = if (kind == Kind.LUA) word in LUA_KEYWORDS else word in KEYWORDS
+                if (kind != Kind.MARKUP && (keyword || (c == '@' && j > i + 1))) {
                     color(text, i, j, Palette.synKeyword)
                 }
                 i = j
@@ -161,6 +211,12 @@ class CodeHighlighter(lang: String) {
     }
 
     companion object {
+        // Lua and Luau's own words; the general list would colour Vector3.new's "new"
+        private val LUA_KEYWORDS = hashSetOf(
+            "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local",
+            "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "continue", "export", "type",
+            "typeof", "self",
+        )
         private val KEYWORDS = hashSetOf(
             "if", "else", "for", "while", "do", "return", "break", "continue", "switch", "case", "default", "when",
             "try", "catch", "finally", "throw", "throws", "raise", "except", "with", "as", "is", "in", "not", "and", "or",

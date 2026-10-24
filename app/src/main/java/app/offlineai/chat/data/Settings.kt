@@ -203,6 +203,27 @@ class Settings(context: Context) {
         get() = float("font_scale", 1.0f)
         set(v) = put("font_scale", v)
 
+    // ---- Lua tools
+    /** Game seconds a run in the Roblox test place lasts at most (task.wait takes no real time). */
+    var luaGameSeconds: Int
+        get() = int("lua_game_seconds", 60)
+        set(v) = put("lua_game_seconds", v)
+    /** The test player joins, spawns and tries what the scripts set up. */
+    var luaAutoplay: Boolean
+        get() = bool("lua_autoplay", true)
+        set(v) = put("lua_autoplay", v)
+    /** Real time a run may take before it is stopped (a loop that never ends). */
+    var luaTimeLimitMs: Int
+        get() = int("lua_time_limit", 5000)
+        set(v) = put("lua_time_limit", v)
+
+    /** The script the Lua editor opens with. */
+    var lastScriptId: String?
+        get() = prefs.getString("last_script_id", null)
+        set(v) = put("last_script_id", v)
+
+    fun luaRunOptions() = app.offlineai.chat.lua.RunOptions(luaTimeLimitMs, luaGameSeconds, luaAutoplay)
+
     // ---- appearance
     var theme: ThemeMode
         get() = runCatching { ThemeMode.valueOf(str("theme", "DARK")) }.getOrDefault(ThemeMode.DARK)
@@ -252,6 +273,8 @@ class Settings(context: Context) {
         val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)
         val DRAFT_TOKENS = intArrayOf(0, 1, 2, 3)
         val VIDEO_FRAMES = intArrayOf(4, 6, 8, 12)
+        val LUA_GAME_SECONDS = intArrayOf(10, 30, 60, 120, 300)
+        val LUA_TIME_LIMITS = intArrayOf(2000, 5000, 15000, 30000)
 
         /** How long one recorded or picked sound may be (Gemma 4 hears up to 30 seconds). */
         const val MAX_SOUND_SECONDS = 30

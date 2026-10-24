@@ -33,12 +33,14 @@ import app.offlineai.chat.App
 import app.offlineai.chat.ChatController
 import app.offlineai.chat.R
 import app.offlineai.chat.data.Attachment
+import app.offlineai.chat.data.ChatMode
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Settings
 import app.offlineai.chat.data.SoundRecorder
 import app.offlineai.chat.engine.EngineController
+import app.offlineai.chat.lua.LuaTools
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -60,6 +62,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var attach: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
+    private lateinit var modeRow: LinearLayout
+    private lateinit var modeAbout: TextView
 
     /** Attachments still being copied in (a video's frames take a moment). */
     private var preparing = 0
@@ -122,6 +126,22 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         bar.addView(iconButton(R.drawable.ic_add, "New chat") {
             app.chat.newChat()
             input.setText("")
+        }.also { add ->
+            // a long press starts a coding chat straight away
+            add.setOnLongClickListener {
+                val pm = PopupMenu(this, add)
+                for ((i, m) in ChatMode.values().withIndex()) pm.menu.add(0, i, i, if (m == ChatMode.GENERAL) "New chat" else "New ${m.label} chat")
+                pm.menu.add(0, 100, 100, "Lua editor")
+                pm.setOnMenuItemClickListener { item ->
+                    if (item.itemId == 100) LuaEditorActivity.open(this) else {
+                        app.chat.newChat(ChatMode.values()[item.itemId])
+                        input.setText("")
+                    }
+                    true
+                }
+                pm.show()
+                true
+            }
         })
         bar.addView(iconButton(R.drawable.ic_settings, "Settings") {
             startActivity(Intent(this, SettingsActivity::class.java))
@@ -147,6 +167,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             override fun selectText(text: String) = SelectTextActivity.open(this@MainActivity, text)
             override fun keepInPlace(anchor: View, change: () -> Unit) = scroller.keepInPlace(anchor, change)
             override fun isFollowing() = scroller.following
+            override fun compose(text: String) = composeText(text)
+            override fun openEditor(lang: String, code: String) =
+                LuaEditorActivity.openCode(this@MainActivity, lang, code, LuaTools.envFor(lang, code, app.chat.conversation.mode.env))
         })
         adapter.options = renderOptions()
         lm = ChatLayoutManager(this)
@@ -178,7 +201,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(32), 0, dp(32), dp(48))
+            setPadding(dp(24), dp(16), dp(24), dp(48))
         }
         empty.addView(text("✦", 34f, Palette.accent).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
         empty.addView(text("Offline AI", 22f, bold = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)) }, lp(MATCH, WRAP))
@@ -188,7 +211,29 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             startActivity(Intent(this, ModelsActivity::class.java))
         }
         empty.addView(emptyButton, lp(WRAP, WRAP).apply { topMargin = dp(20); gravity = Gravity.CENTER_HORIZONTAL })
-        middle.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
+        // what the chat is for: a plain chat, or code for Roblox, a game mod or plain Lua
+        modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val modeScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(modeRow)
+        }
+        empty.addView(modeScroll, lp(WRAP, WRAP).apply { topMargin = dp(24); gravity = Gravity.CENTER_HORIZONTAL })
+        modeAbout = text("", 13f, Palette.text3).apply { gravity = Gravity.CENTER }
+        empty.addView(modeAbout, lp(MATCH, WRAP).apply { topMargin = dp(10) })
+        empty.addView(text("Lua editor", 14f, Palette.accent, bold = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = ripple(null, dp(10).toFloat())
+            setOnClickListener { LuaEditorActivity.open(this@MainActivity) }
+        }, lp(WRAP, WRAP).apply { topMargin = dp(6); gravity = Gravity.CENTER_HORIZONTAL })
+        // scrolls when the keyboard leaves it too little room
+        middle.addView(android.widget.ScrollView(this).apply {
+            isFillViewport = true
+            addView(empty, FrameLayout.LayoutParams(MATCH, WRAP))
+        }, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(middle, lp(MATCH, 0, 1f))
 
         // attachments waiting to go with the next message
@@ -456,6 +501,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         app.models.poll()
         app.reloadIfNeeded()
         refreshAll()
+        app.chat.pendingCompose?.let {
+            app.chat.pendingCompose = null
+            composeText(it)
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -548,9 +597,33 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
+    /** Text from elsewhere (a run's "Ask AI to fix", the Lua editor) in the message box, ready to send. */
+    private fun composeText(text: String) {
+        input.setText(text)
+        input.setSelection(text.length)
+        input.requestFocus()
+        updateSend()
+    }
+
+    private fun refreshModes() {
+        val mode = app.chat.conversation.mode
+        if (modeRow.tag != mode) {
+            modeRow.tag = mode
+            modeRow.removeAllViews()
+            for (m in ChatMode.values()) {
+                modeRow.addView(pill(m.chip, primary = m == mode) { app.chat.setMode(m) }, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
+            }
+        }
+        modeAbout.text = mode.about
+        modeAbout.visibility = if (mode.about.isEmpty()) View.GONE else View.VISIBLE
+        input.hint = mode.hint
+    }
+
     private fun refreshEmpty() {
         val noMessages = app.chat.conversation.messages.isEmpty()
-        empty.visibility = if (noMessages) View.VISIBLE else View.GONE
+        // the scroller around it, which would otherwise take the chat's touches
+        (empty.parent as View).visibility = if (noMessages) View.VISIBLE else View.GONE
+        refreshModes()
         val loaded = app.engine.loaded
         when {
             app.nativeError != null -> {
@@ -596,7 +669,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 e.lastError
             }
             loaded == null -> "No model loaded · tap to choose"
-            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
+            else -> (if (c.conversation.mode != ChatMode.GENERAL) "${c.conversation.mode.label} chat · " else "") +
+                "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
                 (if (loaded.info.vision) " · sees pictures" else "") + " · tap to change"
         }
         val showProgress = e.isLoading || (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)

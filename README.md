@@ -11,6 +11,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 | | |
 |---|---|
 | Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp) release b11700, as a submodule in `third_party/llama.cpp` |
+| Lua | [Luau](https://github.com/luau-lang/luau) 0.742 (Roblox's Lua), as a submodule in `third_party/luau` |
 | Model format | GGUF, any architecture llama.cpp supports (Gemma 4, Qwen3.5 and its fine-tunes, Llama, Mistral, …) |
 | Platform | Android 11+ (API 30), arm64-v8a |
 | Language | Kotlin (UI) and C++ (engine) |
@@ -43,6 +44,54 @@ browser when Android asks. New builds install over old ones and keep models and 
   seconds while it is written, so if Android closes the app anyway, what was written is kept.
 - **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
   sampling (each model's recommended values by default), drafting, picture detail.
+- **Lua, game mods and Roblox**: see below.
+
+## Making Lua, mods and Roblox games
+
+- **Coding chats**: a new chat can be a *Roblox game*, *Lua mod* or *Lua script* chat (the
+  buttons on an empty chat, or a long press on +). Each tells the model how to write for that
+  platform: for Roblox, Luau with services from `GetService`, the `task` library, one block per
+  script with where it goes in its first line, logic and data on the server, checked
+  RemoteEvents, saved DataStores; for mods, the game's own API and Lua version and every file
+  the mod needs; for Lua, complete code that runs here.
+- **Run** on any Lua code block in a reply runs it on the phone. Plain Lua runs in a sandbox
+  (print and io.write work; no files, network or require). Roblox code runs in the *Roblox test
+  place*: every Lua block of the reply together, each placed where its first comment says
+  (`-- LocalScript in StarterPlayerScripts`, `-- ModuleScript in ReplicatedStorage/Config`), so a
+  LocalScript finds the RemoteEvents its Script makes and `require` finds the modules. The test
+  player, Player1, joins, spawns and then tries what the scripts set up: touches the parts with
+  Touched handlers, clicks ClickDetectors, buttons and prompts, equips and uses tools, presses
+  the keys the scripts mention, says the chat commands they look for, buys what they prompt for,
+  and leaves at the end (so saving on leaving runs too). The output shows prints, warnings,
+  errors with their lines, the leaderboard as it changes and data store writes, each with its
+  game time. Game time passes instantly: a round loop with `task.wait(20)` takes milliseconds.
+- **Check** finds problems without running anything: syntax and type errors and the lints
+  Roblox Studio shows, from Luau's own analysis. For mods, the globals that come from the game
+  are listed instead of reported.
+- **Ask AI to fix** puts the output (and the code, if it is not in the last reply) in the
+  message box, asking for a corrected version.
+- **Lua editor** (on an empty chat, or Settings): scripts kept on the phone, line numbers,
+  colours, a row of the keys code needs, Run and Check with the failing line marked, save to and
+  open from a file, and *Ask the AI* to take a script back to the chat.
+
+The test place is a stand-in written in Luau (`app/src/main/assets/lua/roblox.luau`), not
+Roblox: there is no physics (nothing falls or collides; Touched fires only when the test
+player touches something), nothing is drawn, sounds last two seconds, data stores start empty
+and last one run, and there is one player and no internet. It has the parts of the API games
+use most: the instance tree with its events, attributes and tags, over 200 classes with their
+properties, the datatypes (Vector3, CFrame with its full math, Color3, UDim2, TweenInfo, Enum,
+Random, raycasts against parts' boxes), signals, `task`, RemoteEvents and RemoteFunctions
+(calls from the wrong side fail as in Roblox), DataStores, TweenService, RunService frames,
+HttpService JSON, MarketplaceService, CollectionService, Debris, input. Mistakes are reported
+the way Roblox words them (`Velocityy is not a valid member of Part "Workspace.Part"`,
+`Unable to assign property CFrame. CFrame expected, got Vector3`, `Infinite yield possible`,
+`FireServer can only be called from the client`, LocalPlayer being nil on the server); when a
+member or class is missing, the output says it may be the test place that lacks it.
+
+Mods run as plain Lua: the Lua itself is checked and run, but the game's functions (`hook.Add`,
+`love.graphics`, `script.on_event`) are not there, so code that calls them stops at the first
+call. Luau runs Lua 5.1 code, LuaJIT's `bit` library is provided, and `goto` and Lua 5.3's
+bitwise operators are not supported.
 
 | Group | Models |
 |---|---|
@@ -89,6 +138,20 @@ thread.
   draft can use.
 - Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
   Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
+
+## How the Lua tools work
+
+`app/src/main/cpp/lua_tools.cpp` runs code in a fresh Luau state for every run, in its own
+library (`libluatools.so`, so it works even when the AI engine cannot start): the standard
+libraries are read-only, each script has its own globals, and there are limits on real time
+(5 s by default; an interrupt stops loops that never yield, and keeps stopping them through
+pcall), memory (64 MB, through the allocator), output (2000 lines) and a Stop button. A
+prelude runs first: `base.luau` for plain Lua (Lua 5.1 names Luau dropped, LuaJIT's `bit`,
+quiet answers for files) or `roblox.luau`, which builds the place and returns two hooks: one
+places each script and gives it `script`, the other is a scheduler that runs everything in game
+time (a heap of timers, coroutines for every script thread and handler, 60 frames per game
+second while something listens for them). `lua_check.cpp` uses Luau's Frontend with Roblox's
+globals known.
 
 ## Changes to llama.cpp
 
@@ -137,6 +200,15 @@ what a phone without enough free memory sees: the model is read from storage aga
 A phone's CPU has more and differently sized cores and less memory bandwidth, so expect other
 numbers there; Settings has a drafting test that measures the phone itself.
 
+`tools/host-test/lua.sh` builds Luau for the computer and runs `test_lua.cpp` under
+AddressSanitizer and UBSan: plain Lua (output, loadstring, error lines, each limit, Stop from
+another thread), the test place with scripts as models write them (leaderstats in game time,
+datatypes and CFrame math, tweens and frames, a Script, LocalScript and ModuleScript trading a
+RemoteEvent and saving to a DataStore when the player leaves, a kill brick, a GUI button, a
+prompt that gives a tool) and the mistakes it must report as Roblox does, and the checker. Five
+game minutes of Heartbeat take about 0.3 s there. `LuaToolsTest` runs the native library on the
+emulator and taps Run on a Lua block in the chat.
+
 ## Building
 
 CI (`.github/workflows/build.yml`) builds and publishes the APK on every push to this branch.
@@ -155,3 +227,5 @@ git submodule update --init
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
+- The Lua tools have been tested on desktop (and the on-device test is in CI), not on a phone
+  yet; the test place covers much of Roblox's API but not all of it.
