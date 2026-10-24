@@ -1,25 +1,105 @@
-# Afterlight: Blood & Steel — v12.3 Realism
+# Afterlight: Blood & Steel — v12.4 Realism
 
 A realism layer for the Afterlight v11.0.0 APK (`app.fieldline.afterlight.bloodsteel`).
 It is appended to the game's web bundle the same way the v7–v11 overhauls were,
 so every part of the original game still runs underneath it. A new **REALISM**
 tab in the main menu switches each aspect on or off.
 
-- APK: `apk/Afterlight_Blood_Steel_v12.3.0_Realism.apk` (versionCode 12300)
-- Source: `src/realism_v12.js` (v12–12.1) and `src/realism_v122.js` (bodies, arms, hands, bodycam)
+- APK: `apk/Afterlight_Blood_Steel_v12.4.0_Realism.apk` (versionCode 12400)
+- Source: `src/realism_v12.js` (v12–12.1), `src/realism_v122.js` (bodies, gait, arms, hands, bodycam) and `src/realism_v124.js` (touch layout, HUD)
 - Assets: `assets/realism/` (photoscanned surfaces, HDRI skies, `bodies/`, credits)
 - Before / after: `screenshots/before_after_1.jpg`, `screenshots/before_after_2.jpg`
 - v12.1: `screenshots/v121_*.jpg` (corpses, body, shadow, flash, death cam)
 - v12.2: `screenshots/v122_*.jpg` (soldiers, zombies, arms, bodycam)
 - v12.3: `screenshots/v123_*.jpg` (grenade cook and throw, reload, pistol grip, look down)
+- v12.4: `screenshots/v124_*` (touch layouts, gait films as GIFs)
 
 ## Installing
 
-- **From v12.0, v12.1 or v12.2:** install v12.3 over it. It uses the same
-  key, so your settings and victories are kept.
+- **From any 12.x:** install v12.4 over it. It uses the same key, so your
+  settings and victories are kept.
 - **From v11:** the v11 APK was signed with a local key that isn't available,
-  so v12 uses a new key. **Uninstall v11 first**, then install v12.3.
+  so v12 uses a new key. **Uninstall v11 first**, then install v12.4.
   Uninstalling clears the game's saved settings and campaign victories.
+
+## New in 12.4
+
+A touch layout where nothing overlaps, and people who walk instead of glide.
+Two new switches on the REALISM tab, both on in Authentic and Hardcore:
+**Natural movement** and **Touch layout**.
+
+### Touch controls
+- **Floating stick.** Put your thumb down anywhere in the lower left and the
+  movement stick appears under it. There's nothing beside it to hit by
+  mistake, and it springs back home when you let go. Mirrored layouts float
+  on the right.
+- **Sprint lock.** Inside the ring you walk at any speed. Push past the ring,
+  straight ahead, and you run until you pull back. An arrow above the stick
+  lights up when the lock is on. This works in both control styles.
+- **Spaced controls.**
+  - RUN and the second FIRE moved above the stick, out of the moving thumb's
+    path. On short screens they go in a column beside the health readout.
+  - FIRE sits low in the right corner with JUMP under it.
+  - AIM, RELOAD and GEAR ring FIRE at one thumb-reach, and USE sits on a
+    second ring.
+  - Crouch, throw and swap run along the bottom edge.
+  - Every pair of buttons keeps a gap at every phone size, checked at
+    640×320, 740×360, 851×393 and 1024×600.
+- **Clearer buttons.** They have depth, press feedback and a ringed FIRE.
+  The stick is larger.
+- Layouts you dragged into place yourself in the layout editor are kept.
+
+### HUD
+- **Ammo** moved next to the fire hand, clear of both thumbs.
+- **Bodycam stamp** is one compact line beside pause instead of a block over
+  the HUD. It no longer runs into the zombies round counter.
+- **Equipment** opens in the space left of the right-hand buttons, three
+  across, and always fits on screen.
+- **Stamina bar and wound figure** moved under the health readout. They used
+  to sit on the stick and the second FIRE button.
+- **Legible text.** Nothing on the HUD is smaller than 8 px. The 7-second
+  controls hint hides on very short screens instead of covering the
+  crosshair.
+
+### Natural movement
+- **Planted feet.** The old walk swung the legs a fixed ±18 cm at a rate
+  that ignored ground speed, so everyone skated. Now each foot is planted in
+  the world while it carries weight, then swings to where the hip will be
+  halfway through its next step, so feet never slide.
+- **Stride and cadence follow speed.** A walk takes ~0.75 m steps at
+  ~1.8 steps/s and a run ~1.25 m steps at ~2.9 steps/s, with a flight phase
+  when running.
+- **Heel to toe.**
+  - Heel strike lands with the toe up.
+  - The foot rolls over and the heel lifts for toe-off.
+  - The toes trail and then lead through the swing.
+  - A running heel kicks up behind.
+- **The body.**
+  - The pelvis bobs: it rises over the standing leg when walking and dips
+    into each landing when running.
+  - The pelvis sways over the standing foot and twists with the swinging
+    leg, while the chest counter-rotates.
+  - Bodies lean into speed and acceleration.
+- **Standing and turning.** Feet finish their step when someone stops, then
+  step back under the hips. Turning on the spot shuffles the feet around one
+  at a time.
+- **Stairs and air.** Feet find stair treads. Jumping and falling tuck them
+  under the body until landing.
+- **Zombies.** Walkers favour one leg, drag it and lurch. Their heads hang
+  and roll with each step, and their reaching arms swing against the legs.
+  Runners lean in and take long strides.
+- **Never still.** Standing soldiers and zombies breathe and shift their
+  weight. A hit rocks a soldier back.
+- **Soldiers' footsteps** now sound in time with their feet.
+- **Your own legs.** Looking down while you walk, you see them step, and the
+  view's bob dips with each of your footfalls.
+
+### First-person gun movement
+- **Sprinting** carries the rifle canted across your chest, muzzle low and
+  in. Pistols drop to a low carry.
+- **Walking and running** give the gun a figure-eight bounce, timed to your
+  feet.
+- **Jumping** makes the gun lag in the air and dip with a spring on landing.
 
 ## New in 12.3
 

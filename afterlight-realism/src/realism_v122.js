@@ -622,11 +622,252 @@
   const RELAX = { curl: [0.32, 0.42, 0.3], thumb: [0.15, 0.2, 0.1] };
   const CLAW = { curl: [0.55, 0.75, 0.6], thumb: [0.25, 0.3, 0.2] };
 
+  /* ------------------------------------------------------------------ */
+  /* Natural locomotion                                                  */
+  /* ------------------------------------------------------------------ */
+  // The stock walk swings the feet a fixed ±18 cm at a rate that isn't tied
+  // to ground speed, so bodies skate. Here each foot is planted in the world
+  // while it carries weight and swings to where the hip will be at the
+  // middle of its next stance, so it never slides; cadence and stride follow
+  // speed (walk ~0.75 m steps at 1.8 steps/s, run ~1.25 m at 2.9 steps/s).
+  // Heel strike, roll-over and toe-off pitch the foot; the pelvis bobs,
+  // sways over the standing leg and twists with the swinging one while the
+  // chest counter-rotates. Zombies drag a leg and lurch.
+  const GAIT = { game: null };
+  const gq = new Q4(), gq2 = new Q4(), gm = new M4(), gv = new V3(), gw = new V3(), gu = new V3(), gr = new V3(), gf = new V3();
+  const frac = (x) => x - Math.floor(x);
+  const smooth = (x) => x * x * (3 - 2 * x);
+  function gaitStyle(inst) {
+    const act = inst.actor;
+    if (inst.kind !== "zombie") return { kind: "human", lean: inst.kind === "player" ? 0.02 : 0.05, crouch: inst.kind === "soldier" ? 0.03 : 0, drag: -1, sway: 1, lurch: 0 };
+    const id = act?.id || 0, runner = act?.kind === "runner";
+    return {
+      kind: runner ? "runner" : "walker",
+      lean: runner ? 0.32 : 0.16, crouch: runner ? 0.06 : 0.04,
+      // most walkers favour one leg: it drags, barely lifting
+      drag: !runner && id % 3 !== 0 ? id % 2 : -1,
+      sway: runner ? 1.3 : 1.9, lurch: runner ? 0.4 : 1,
+    };
+  }
+  function groundAt(x, y, z) {
+    const w = GAIT.game?.map?.world;
+    if (!w || !e.floorHeight) return y;
+    // floorHeight hands back the probe height when no walkable box is under it
+    try { const q = y + 0.4, h = e.floorHeight(w, { x, y: q, z }); return Number.isFinite(h) && h !== q && h > y - 0.6 ? h : y; } catch { return y; }
+  }
+  function gait(inst) {
+    const rig = inst.rig, act = inst.actor, dt = Math.min(0.15, inst.gdt || 0);
+    inst.gdt = 0;
+    const G = inst.gait || (inst.gait = { phi: 0, vel: new V3(), last: new V3(), feet: [0, 1].map(() => ({ p: new V3(), from: new V3(), to: new V3(), yaw: 0, swing: false, t: 0, idle: false })), init: false, style: gaitStyle(inst), lean: 0, spd: 0 });
+    const st = G.style;
+    const root = rig.root, yaw = root.rotation.y;
+    const sc = root.scale.x || 1;
+    // body position and velocity (world, horizontal)
+    // your own feet go under your (seated) hips, not under the camera
+    const src = inst.kind === "player" ? GAIT.game?.player : act;
+    const pos = inst.kind === "player" ? gv.set(root.position.x, src?.pos?.y ?? root.position.y, root.position.z)
+      : gv.set(src?.pos?.x ?? root.position.x, src?.pos?.y ?? root.position.y, src?.pos?.z ?? root.position.z);
+    if (!G.init || pos.distanceToSquared(G.last) > 4) {
+      G.init = true; G.last.copy(pos); G.vel.set(0, 0, 0);
+      for (let k = 0; k < 2; k++) { const f = G.feet[k]; restFoot(f.p, pos, yaw, k, sc, 0); f.p.y = pos.y; f.yaw = yaw; f.swing = false; }
+    }
+    if (dt > 0) {
+      const vx = src?.vel ? src.vel.x : (pos.x - G.last.x) / dt, vz = src?.vel ? src.vel.z : (pos.z - G.last.z) / dt;
+      const kf = 1 - Math.exp(-dt * 10);
+      G.vel.x += (vx - G.vel.x) * kf; G.vel.z += (vz - G.vel.z) * kf;
+    }
+    G.last.copy(pos);
+    const v = Math.hypot(G.vel.x, G.vel.z);
+    G.spd += (v - G.spd) * (1 - Math.exp(-dt * 6));
+    const moving = v > 0.22;
+    // cadence (cycles/s), stance share, foot lift
+    let f = clamp(0.62 + 0.24 * v, 0.72, 1.6), duty = clamp(0.64 - 0.075 * v, 0.36, 0.62), lift = clamp(0.06 + 0.03 * v, 0.07, 0.18);
+    if (st.kind === "walker") { f = clamp(0.5 + 0.22 * v, 0.55, 1.1); duty = 0.68; lift = 0.05; }
+    else if (st.kind === "runner") { f = clamp(0.7 + 0.24 * v, 0.8, 1.7); lift = clamp(lift * 1.2, 0.09, 0.2); }
+    const run = clamp((v - 2.3) / 1.3, 0, 1);
+    const fwd = gf.set(-Math.sin(yaw), 0, -Math.cos(yaw)), right = gr.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    if (moving) G.phi = frac(G.phi + f * dt);
+    // the soldier's footstep sounds (stock walk phase) tick with these feet
+    if (act && inst.kind === "soldier") { act.rlGaitRate = moving ? 2 * Math.PI * f : 0; act.rlGaitT = performance.now(); }
+    // off the ground (jumping, falling, climbing through a window): the feet
+    // hang under the body and plant again on landing
+    const vy = src?.vel?.y || 0;
+    const air = (src && src.grounded === false) || Math.abs(vy) > 1.6;
+    for (let k = 0; k < 2; k++) {
+      const ft = G.feet[k];
+      if (air || Math.abs(ft.p.y - pos.y) > 0.5) {
+        restFoot(ft.p, pos, yaw, k, sc, 0);
+        ft.p.y = pos.y + (air ? 0.08 + 0.06 * k : 0);
+        ft.p.addScaledVector(fwd, air ? (k ? 0.12 : -0.1) : 0);
+        ft.swing = false; ft.idle = false; ft.yaw = yaw;
+        footPose(inst, k, ft, air ? -0.3 : 0, sc);
+        continue;
+      }
+      const psi = frac(G.phi + 0.5 * k);
+      const dragLeg = st.drag === k;
+      if (moving) {
+        ft.idle = false;
+        const stance = psi < duty;
+        if (stance && ft.swing) { ft.swing = false; ft.p.y = groundAt(ft.p.x, pos.y, ft.p.z); ft.yaw = yaw; }
+        else if (!stance && !ft.swing) { ft.swing = true; ft.from.copy(ft.p); }
+        if (ft.swing) {
+          const s = (psi - duty) / (1 - duty);
+          // land so the hip passes over the foot mid-stance
+          const tLand = (1 - psi) / f, half = duty / (2 * f);
+          restFoot(ft.to, pos, yaw, k, sc, run);
+          ft.to.x += G.vel.x * (tLand + half); ft.to.z += G.vel.z * (tLand + half);
+          const e2 = smooth(s);
+          ft.p.lerpVectors(ft.from, ft.to, e2);
+          const gy = pos.y;
+          // running: the heel kicks up behind before the knee drives through
+          const kick = run * 0.2 * Math.pow(Math.sin(Math.PI * Math.min(1, s * 1.7)), 2) * (1 - s);
+          ft.p.y = ft.from.y + (gy - ft.from.y) * e2 + (dragLeg ? 0.018 : lift) * Math.pow(Math.sin(Math.PI * s), 0.85) + kick;
+          ft.yaw = yaw;
+        }
+      } else {
+        // standing: finish any step, then step back under the hips if a foot
+        // is far out or the body has turned over it
+        restFoot(ft.to, pos, yaw, k, sc, 0);
+        if (ft.swing && !ft.idle) { ft.swing = true; ft.idle = true; ft.t = 0; ft.from.copy(ft.p); }
+        const other = G.feet[1 - k];
+        const off = Math.hypot(ft.p.x - ft.to.x, ft.p.z - ft.to.z), turn = Math.abs(Math.atan2(Math.sin(yaw - ft.yaw), Math.cos(yaw - ft.yaw)));
+        if (!ft.swing && !other.swing && (off > 0.2 || turn > 0.6)) { ft.swing = true; ft.idle = true; ft.t = 0; ft.from.copy(ft.p); ft.fromYaw = ft.yaw; }
+        if (ft.swing) {
+          ft.t += dt / 0.32;
+          const s = Math.min(1, ft.t), e2 = smooth(s);
+          ft.p.lerpVectors(ft.from, ft.to, e2);
+          ft.p.y = ft.from.y + (pos.y - ft.from.y) * e2 + 0.06 * Math.sin(Math.PI * s);
+          ft.yaw = (ft.fromYaw ?? yaw) + Math.atan2(Math.sin(yaw - (ft.fromYaw ?? yaw)), Math.cos(yaw - (ft.fromYaw ?? yaw))) * e2;
+          if (s >= 1) { ft.swing = false; ft.idle = false; ft.p.y = groundAt(ft.p.x, pos.y, ft.p.z); ft.yaw = yaw; }
+        }
+      }
+      // never leave a planted foot so far behind that the leg would tear
+      const hipX = pos.x + right.x * (k ? 1 : -1) * 0.1 * sc, hipZ = pos.z + right.z * (k ? 1 : -1) * 0.1 * sc;
+      const dx = ft.p.x - hipX, dz = ft.p.z - hipZ, dh = Math.hypot(dx, dz), lim = (0.62 + 0.25 * run) * sc;
+      if (dh > lim) { ft.p.x = hipX + dx / dh * lim; ft.p.z = hipZ + dz / dh * lim; }
+      // ankle and toe in root space, pitched for heel strike / toe-off
+      let pitch = 0;
+      if (moving && !ft.swing) {
+        const q = psi / duty;
+        if (q < 0.12) pitch = 0.28 * (1 - q / 0.12);                 // heel strike, toe up
+        else if (q > 0.62) pitch = -0.75 * smooth((q - 0.62) / 0.38); // heel rises, rolls onto the toes
+        if (dragLeg) pitch *= 0.3;
+      } else if (moving && ft.swing) {
+        const s = (psi - duty) / (1 - duty);
+        pitch = dragLeg ? -0.35 : -0.55 * (1 - s) + 0.2 * smooth(s);  // toes trail, then lead into the strike
+      }
+      footPose(inst, k, ft, pitch, sc);
+    }
+    // pelvis and chest
+    const ph = G.phi * Math.PI * 2, mid = duty * Math.PI;
+    const amt = clamp(v / 1.2, 0, 1);
+    const bobA = (0.026 * (1 - run) - 0.04 * run) * amt;
+    const bob = bobA * Math.cos(2 * (ph - mid)) - (st.crouch + 0.035 * run) * amt;
+    const sway = -(0.028 * (1 - run) + 0.01 * run) * st.sway * amt * Math.cos(ph - mid);
+    const twist = -(0.09 + 0.05 * run) * amt * Math.cos(ph);
+    const roll = -0.05 * amt * Math.cos(ph - mid) * (st.kind === "walker" ? 1.6 : 1);
+    // lean into speed and into acceleration
+    const leanT = st.lean * clamp(v / 2.5, 0, 1.3) + 0.06 * run + clamp((v - G.spd) * 0.15, -0.08, 0.12);
+    G.lean += (leanT - G.lean) * (1 - Math.exp(-dt * 5));
+    const lurch = st.lurch * amt * 0.06 * Math.sin(ph * 2 + 0.6);
+    // standing still is never perfectly still: breathing and a slow shift
+    // of weight from foot to foot
+    G.t = (G.t || 0) + dt;
+    const idle = 1 - amt, seed = (act?.id || 0) * 1.37;
+    const idleSway = idle * 0.012 * Math.sin(G.t * 0.55 + seed);
+    const breath = idle * 0.006 * Math.sin(G.t * 1.6 + seed);
+    // a hit rocks the body back; the feet step to catch it
+    const hitT = act?.hitFlinch || 0;
+    G.hit = Math.max((G.hit || 0) * Math.exp(-dt * 5), hitT);
+    const hitLean = -0.22 * G.hit, hitBack = 0.07 * G.hit;
+    applyTrunk(G.lean + lurch + hitLean, (bob + breath) * sc, (sway + idleSway) * sc, twist, roll, inst, hitBack * sc);
+    if (inst.mode === "zombie" && amt > 0.05) {
+      // the head hangs and rolls with each lurch
+      const hp = st.kind === "walker" ? 1 : 0.5;
+      P.head.decompose(tpos, tq, tsc);
+      gq.setFromAxisAngle(gu.set(0, 0, 1), 0.11 * hp * amt * Math.sin(ph));
+      gq2.setFromAxisAngle(gu.set(1, 0, 0), -(0.1 + 0.05 * Math.sin(2 * ph)) * hp * amt);
+      tq.premultiply(gq.multiply(gq2));
+      P.head.compose(tpos, tq, tsc);
+    }
+    if (inst.mode === "zombie") {
+      // arms: the zombie's reach, swinging against the legs
+      const swing = (st.kind === "runner" ? 0.22 : 0.08) * amt;
+      for (let k = 0; k < 2; k++) {
+        J.Wr[k].z += Math.sin(ph + (k ? 0 : Math.PI)) * swing;
+        J.Wr[k].y += bob * sc; J.Wr[k].x += sway * sc;
+        J.E[k].y += bob * sc;
+      }
+    }
+    if (inst.kind === "player") M.playerGait = { phi: G.phi, v, duty, run, t: performance.now() };
+  }
+  function restFoot(out, pos, yaw, k, sc, run) {
+    const side = (k ? 1 : -1) * (0.1 - 0.035 * run) * sc;
+    return out.set(pos.x + Math.cos(yaw) * side, pos.y, pos.z - Math.sin(yaw) * side);
+  }
+  // world foot (ankle ground point, yaw, pitch) -> J.A, J.T, footM in root space
+  function footPose(inst, k, ft, pitch, sc) {
+    const toeL = 0.15 * sc, heelL = 0.05 * sc, ankleH = (inst.A.dims?.ankle?.[k]?.y || 0.09) * sc;
+    const fy = ft.yaw;
+    const fx = -Math.sin(fy), fz = -Math.cos(fy);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    // forward along the sole and the sole's up, pitched about the foot's right axis
+    const sfx = fx * cp, sfy = sp, sfz = fz * cp;
+    const ux = -fx * sp, uy = cp, uz = -fz * sp;
+    // pivot: the heel when the toe is up, the ball when the heel is up
+    let ax, ay, az;
+    const gx = ft.p.x, gy = ft.p.y, gz = ft.p.z;
+    if (pitch >= 0) {
+      const hx = gx - fx * heelL, hz = gz - fz * heelL;
+      ax = hx + sfx * heelL + ux * ankleH; ay = gy + sfy * heelL + uy * ankleH; az = hz + sfz * heelL + uz * ankleH;
+    } else {
+      const bx = gx + fx * toeL, bz = gz + fz * toeL;
+      ax = bx - sfx * toeL + ux * ankleH; ay = gy - sfy * toeL + uy * ankleH; az = bz - sfz * toeL + uz * ankleH;
+    }
+    J.A[k].set(ax, ay, az).applyMatrix4(invRoot);
+    J.T[k].set(ax + sfx * toeL, ay + sfy * toeL, az + sfz * toeL).applyMatrix4(invRoot);
+    // foot frame: up = sole up (root space), used by the solver for the sole
+    gu.set(ux, uy, uz).transformDirection(invRoot);
+    gw.subVectors(J.T[k], J.A[k]);
+    frame(footM[k], J.A[k], gu, gw.negate());
+    // knees point where the foot points
+    const hip = v5.copy(inst.off.hip[k]).applyMatrix4(P.pelvis);
+    J.N[k].copy(hip).add(gw.set(sfx, 0, sfz).transformDirection(invRoot).multiplyScalar(0.6)).add(v6.set(0, -0.15, 0));
+  }
+  // bob/sway/twist the pelvis about its origin; carry the chest and head
+  // with it, lean the chest forward and counter-rotate it
+  const tpos = new V3(), tq = new Q4(), tsc = new V3(), tq2 = new Q4(), tpv = new V3();
+  function applyTrunk(lean, bob, sway, twist, roll, inst, back = 0) {
+    // pelvis
+    P.pelvis.decompose(tpos, tq, tsc);
+    gq.setFromAxisAngle(U, twist); gq2.setFromAxisAngle(gu.set(0, 0, 1), roll); gq.multiply(gq2);
+    tq.premultiply(gq);
+    tpos.y += bob; tpos.x += sway; tpos.z += back;
+    P.pelvis.compose(tpos, tq, tsc);
+    const pv = tpv.copy(tpos);
+    // chest: follows the pelvis, leans over it, turns against it
+    P.chest.decompose(tpos, tq, tsc);
+    tpos.y += bob; tpos.x += sway; tpos.z += back;
+    gq.setFromAxisAngle(gu.set(1, 0, 0), -lean);
+    gw.subVectors(tpos, pv).applyQuaternion(gq); tpos.copy(pv).add(gw);
+    gq2.setFromAxisAngle(U, -twist * 0.55);
+    tq.premultiply(gq2.multiply(gq));
+    const chestShift = gw.copy(tpos);
+    P.chest.decompose(gv, tq2, tsc);
+    const dShift = chestShift.sub(gv);
+    P.chest.compose(tpos, tq, tsc);
+    // head rides on the chest but keeps its own aim
+    P.head.elements[12] += dShift.x; P.head.elements[13] += dShift.y; P.head.elements[14] += dShift.z;
+    // the shoulders move with the chest, so the arms' targets do too (zombies)
+  }
   function solve(inst) {
     const { A } = inst, b = A.bind, I = b.I, o = inst.off;
     drive(inst);
     const mode = inst.mode;
     const sev = inst.actor?.severedV8 || {};
+    if (mode !== "ragdoll" && S.gait && !(inst.actor?.kind === "crawler") && !inst.actor?.rlProne) {
+      try { gait(inst); } catch (err) { if (!inst.gerr) console.error("[realism] gait", err); inst.gerr = true; }
+    }
     // trunk
     W[I.Root].copy(b.bind[I.Root]);
     W[I.pelvis].multiplyMatrices(P.pelvis, o.pelvisP);
@@ -974,6 +1215,49 @@
     return poseM;
   }
   const FPW = { inP: new V3(), outP: new V3(NaN, 0, 0), inR: null, outR: null };
+  // How the gun moves with your body: carried canted across the chest at a
+  // sprint, a figure-eight bounce on each footfall (timed to your own feet),
+  // lagging in the air and dipping on landing.
+  const FPM = { sprint: 0, air: 0, land: 0, landV: 0, vyPrev: 0, grounded: true, phase: 0 };
+  function weaponMotion(game, w, dt) {
+    const p = game.player;
+    if (!p?.vel) return;
+    const ads = clamp(game.ads || 0, 0, 1);
+    const grounded = p.grounded !== false;
+    const sprinting = !!p.sprinting && grounded && ads < 0.2 && !game.weapon?.reloading && !game.rlCook;
+    FPM.sprint += ((sprinting ? 1 : 0) - FPM.sprint) * (1 - Math.exp(-dt * (sprinting ? 7 : 11)));
+    const sp = Math.hypot(p.vel.x, p.vel.z);
+    const pg = M.playerGait;
+    let phi;
+    if (pg && performance.now() - pg.t < 250) phi = pg.phi;
+    else phi = FPM.phase = (FPM.phase + dt * (0.62 + 0.24 * sp)) % 1;
+    const k = FPM.sprint, hand = HANDGUN.has(game.weapon?.def?.id);
+    if (k > 0.001) {
+      if (hand) {
+        w.position.x += -0.03 * k; w.position.y += -0.085 * k; w.position.z += 0.07 * k;
+        w.rotation.x += -0.55 * k; w.rotation.y += 0.25 * k; w.rotation.z += 0.12 * k;
+      } else {
+        w.position.x += -0.05 * k; w.position.y += -0.06 * k; w.position.z += 0.05 * k;
+        w.rotation.x += -0.3 * k; w.rotation.y += 0.5 * k; w.rotation.z += 0.42 * k;
+      }
+    }
+    const amt = clamp(sp / 1.4, 0, 1.5) * (grounded ? 1 : 0) * (1 - ads * 0.85) * (game.settings?.reducedMotion ? 0.3 : 1);
+    const ph = phi * Math.PI * 2;
+    w.position.y += (0.004 + 0.013 * k) * amt * Math.cos(2 * ph);
+    w.position.x += (0.004 + 0.011 * k) * amt * Math.sin(ph);
+    w.rotation.z += (0.012 + 0.05 * k) * amt * Math.sin(ph);
+    w.rotation.x += (0.006 + 0.03 * k) * amt * Math.cos(2 * ph);
+    // air and landing
+    const vy = p.vel.y || 0;
+    if (!grounded) FPM.air += (clamp(-vy * 0.006, -0.025, 0.03) - FPM.air) * (1 - Math.exp(-dt * 8));
+    else FPM.air *= Math.exp(-dt * 10);
+    if (grounded && !FPM.grounded && FPM.vyPrev < -2) FPM.landV -= clamp(-FPM.vyPrev * 0.02, 0, 0.14);
+    FPM.grounded = grounded; FPM.vyPrev = vy;
+    FPM.landV += (-130 * FPM.land - 15 * FPM.landV) * dt;
+    FPM.land += FPM.landV * dt;
+    w.position.y += FPM.air + FPM.land;
+    w.rotation.x += FPM.land * 1.6;
+  }
   function updateFP(game, dt) {
     const gfx = game.gfx;
     if (!ensureFP(gfx)) return;
@@ -994,6 +1278,7 @@
     else if (w.position.equals(FPW.outP) && w.rotation.equals(FPW.outR)) { w.position.copy(FPW.inP); w.rotation.copy(FPW.inR); }
     FPW.inP.copy(w.position); FPW.inR.copy(w.rotation);
     frameWeapon(game);
+    if (game.phase === "playing") weaponMotion(game, w, dt);
     if (off > 0.001) {
       // one-handed: the gun cants and drops a little
       w.rotation.z += 0.16 * off;
@@ -1120,9 +1405,10 @@
     const pb = R.v121?.body?.rig;
     if (pb) fn(pb);
   }
-  function frameUpdate(game) {
+  function frameUpdate(game, dt) {
     const gfx = game.gfx;
     if (!gfx || !on()) return;
+    GAIT.game = game;
     const cam = gfx.camera.position;
     eachRig(gfx, (rig) => {
       const inst = rig.realBodyV122;
@@ -1130,6 +1416,7 @@
       // soldiers far away: the stock LOD swaps to the static low model; keep the animated one
       if (inst.kind === "soldier" && rig.low.visible) { rig.low.visible = false; rig.high.visible = true; }
       if (inst.kind !== "zombie") inst.actor = inst.actor || null;
+      inst.gdt = (inst.gdt || 0) + (dt || 0);
       const rd = rig.ragdollV6;
       // a settled corpse keeps its last pose
       if (rd && rd.sleeping && !rd.hidden) { if (inst.slept) return; inst.slept = true; } else inst.slept = false;
@@ -1139,8 +1426,16 @@
       if (far && (inst.skip = (inst.skip || 0) + 1) % 3) return;
       for (const m of inst.meshes) m.castShadow = d2 < 30 * 30 || inst.kind === "player";
       try {
+        // your body is seated under the camera before it is solved, so feet
+        // planted in the world stay put when the seat moves
+        const seat = inst.kind === "player" && !game.rlDeath && game.player?.alive;
+        if (seat && inst.eyeLocal) seatEyes(inst, game.player);
         solve(inst);
-        if (inst.kind === "player" && !game.rlDeath && game.player?.alive) seatEyes(inst, game.player);
+        if (seat) {
+          const first = !inst.eyeLocal;
+          inst.eyeLocal = (inst.eyeLocal || new V3()).copy(inst.eyeInHead || (inst.eyeInHead = new V3(...inst.A.lm.eye).applyMatrix4(inst.A.bind.inv[inst.A.bind.I.head]))).applyMatrix4(W[inst.A.bind.I.head]);
+          if (first) seatEyes(inst, game.player);
+        }
       } catch (err) { if (!inst.err) console.error("[realism] body solve", err); inst.err = true; }
     });
   }
@@ -1150,7 +1445,7 @@
   function seatEyes(inst, p) {
     const rig = inst.rig, b = inst.A.bind, I = b.I;
     if (!inst.eyeInHead) inst.eyeInHead = new V3(...inst.A.lm.eye).applyMatrix4(b.inv[I.head]);
-    eyeL.copy(inst.eyeInHead).applyMatrix4(W[I.head]);          // root-local, unscaled
+    eyeL.copy(inst.eyeLocal);                                   // root-local, unscaled (last solve)
     const s = clamp((p.eye.y - rig.root.position.y) / Math.max(0.5, eyeL.y), 0.85, 1.12);
     rig.root.scale.setScalar(s);
     rig.root.updateMatrixWorld(true);
@@ -1163,7 +1458,7 @@
     rig.root.updateMatrixWorld(true);
   }
   a.on("frame", (game, dt) => {
-    try { frameUpdate(game); } catch (err) { console.error("[realism] bodies", err); }
+    try { frameUpdate(game, dt); } catch (err) { console.error("[realism] bodies", err); }
     try { if (on() && game.gfx && game.phase !== "menu" && !a.coop?.active) updateFP(game, dt); } catch (err) { if (!FP.err) console.error("[realism] arms", err); FP.err = true; }
   });
 
@@ -1279,7 +1574,8 @@ void main() {
       st.textContent = `.rl-bodycam{position:fixed;top:calc(env(safe-area-inset-top,0px) + 68px);right:calc(env(safe-area-inset-right,0px) + 16px);z-index:40;pointer-events:none;font:600 12px/1.35 "IBM Plex Mono",ui-monospace,monospace;color:#f4f4ef;text-align:right;text-shadow:0 0 2px #000,0 1px 2px #000;letter-spacing:.04em;opacity:.92}
 .rl-bodycam b{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e33;margin-right:6px;vertical-align:1px;animation:rlrec 1s steps(2,start) infinite}
 @keyframes rlrec{to{visibility:hidden}}
-@media (max-width:700px){.rl-bodycam{font-size:10px;top:calc(env(safe-area-inset-top,0px) + 56px)}}`;
+@media (max-width:700px){.rl-bodycam{font-size:10px;top:calc(env(safe-area-inset-top,0px) + 56px)}}
+body.rl-touch .rl-bodycam{top:calc(max(22px,env(safe-area-inset-top,0px)) + 3px);right:calc(max(12px,env(safe-area-inset-right,0px)) + 56px);font-size:10px;line-height:1.45}`;
       document.head.appendChild(st);
       BC.el = document.createElement("div");
       BC.el.className = "rl-bodycam";
@@ -1292,7 +1588,7 @@ void main() {
     BC.lastSec = sec;
     const z = (n) => String(n).padStart(2, "0");
     const ts = `${now.getUTCFullYear()}-${z(now.getUTCMonth() + 1)}-${z(now.getUTCDate())} T${z(now.getUTCHours())}:${z(now.getUTCMinutes())}:${z(now.getUTCSeconds())}Z`;
-    BC.el.innerHTML = `<div><b></b>REC  FIELDLINE BC-4</div><div>X7A0${(BC.unit ||= 1000 + Math.floor(Math.random() * 8999))}</div><div>${ts}</div>`;
+    BC.el.innerHTML = `<div><b></b>REC  BC-4 X7A0${(BC.unit ||= 1000 + Math.floor(Math.random() * 8999))}</div><div>${ts}</div>`;
   }
   const bcOn = () => !!S.bodycam;
   function bodycamFrame(game, dt) {

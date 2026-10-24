@@ -22,9 +22,9 @@
   const KEY = "afterlight.realism.v12";
   const ASPECTS = ["surfaces", "sky", "camera", "filmic", "ballistics", "handling", "body", "injuries", "anatomy", "acoustics"];
   const PRESETS = {
-    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, ragdoll: false, ordnance: false, embodiment: false, bodies: false, bodycam: false, hud: "standard", lethality: 1 },
-    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, hud: "immersive", lethality: 1 },
-    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, hud: "minimal", lethality: 1.45 },
+    off: { surfaces: false, sky: false, camera: false, filmic: false, ballistics: false, handling: false, body: false, injuries: false, anatomy: false, acoustics: false, ragdoll: false, ordnance: false, embodiment: false, bodies: false, bodycam: false, gait: false, touchUi: false, hud: "standard", lethality: 1 },
+    authentic: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, gait: true, touchUi: true, hud: "immersive", lethality: 1 },
+    hardcore: { surfaces: true, sky: true, camera: true, filmic: true, ballistics: true, handling: true, body: true, injuries: true, anatomy: true, acoustics: true, ragdoll: true, ordnance: true, embodiment: true, bodies: true, bodycam: true, gait: true, touchUi: true, hud: "minimal", lethality: 1.45 },
   };
   function load() {
     const s = { preset: "authentic", ...PRESETS.authentic, motionBlur: true };
@@ -35,7 +35,7 @@
     return s;
   }
   const R = (a.realismV12 = {
-    version: "12.3",
+    version: "12.4",
     settings: load(),
     stats: { photoMaterials: 0, photoTextures: 0, probes: 0, hdri: null, shots: 0, segments: 0, mantles: 0, falls: 0 },
     listeners: [],
@@ -2048,7 +2048,7 @@ body.rl-hud-minimal .rl-ammo.rl-idle { opacity: 0; transition: opacity .6s; }
 .rl-breath { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%); width: 120px; height: 3px; background: #ffffff1a; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .25s; }
 .rl-breath i { display: block; height: 100%; background: #e8e4d4; }
 .rl-breath.rl-on { opacity: .8; }
-.rl-stamina { position: fixed; left: 12px; bottom: 54px; width: 110px; height: 2px; background: #ffffff1a; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .4s; }
+.rl-stamina { position: fixed; left: max(12px, env(safe-area-inset-left)); top: calc(max(22px, env(safe-area-inset-top)) + 113px); width: 98px; height: 2px; background: #ffffff1a; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .4s; }
 .rl-stamina i { display: block; height: 100%; background: #d6d2bf; }
 .rl-stamina.rl-on { opacity: .85; }
 body.rl-hud-minimal .rl-stamina { display: none; }
@@ -2093,6 +2093,8 @@ body.rl-hud-minimal .rl-stamina { display: none; }
         field("Your body: legs, head motion, prone", onOff("embodiment")),
         field("Realistic bodies (soldiers, zombies, arms)", onOff("bodies")),
         field("Bodycam (chest camera, wide lens)", onOff("bodycam")),
+        field("Natural movement (planted feet, real gait)", onOff("gait")),
+        field("Touch layout: spaced controls, floating stick", onOff("touchUi")),
         field("HUD", seg([["standard", "STANDARD"], ["immersive", "IMMERSIVE"], ["minimal", "MINIMAL"]], S.hud, (v) => { R.save({ hud: v, preset: "custom" }); render(); }))),
       h("p", { class: "af-note" },
         "Hold breath: SHIFT while aiming (touch: hold a scoped rifle still). Vault: JUMP at a waist-high obstacle. Check the magazine: F / hold RLD. ",
@@ -2821,7 +2823,11 @@ body.rl-hud-minimal .rl-stamina { display: none; }
     const ads = clamp(game.ads || 0, 0, 1);
     const moving = p.grounded ? clamp(p.speed / 3.7, 0, 1.8) : 0;
     // Step-locked bob: two vertical dips and one lateral sway per stride.
-    cam.phase += p.speed * dt * (2 * Math.PI / (p.sprinting ? 2.3 : p.crouching ? 1.1 : 1.55));
+    // with natural movement on, the bob follows your own feet: it dips as a
+    // heel strikes (walking) or as you land on a stride (running)
+    const pg = R.v122?.playerGait;
+    if (pg && performance.now() - pg.t < 250) cam.phase = 2 * Math.PI * (pg.phi - pg.run * pg.duty * 0.5) + Math.PI / 2;
+    else cam.phase += p.speed * dt * (2 * Math.PI / (p.sprinting ? 2.3 : p.crouching ? 1.1 : 1.55));
     const amp = (p.sprinting ? 0.034 : p.crouching ? 0.009 : 0.016) * moving * (1 - ads * 0.75) * k;
     const bobY = -amp * (1 - Math.cos(cam.phase * 2)) * 0.5;
     const bobX = amp * 0.65 * Math.sin(cam.phase);
@@ -3071,7 +3077,7 @@ void main() {
   /* Wound HUD and cooking indicator                                     */
   /* ================================================================== */
   const CSS = `
-.rl-body { position: fixed; left: 136px; bottom: 14px; width: 26px; height: 52px; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .4s; }
+.rl-body { position: fixed; left: calc(max(12px, env(safe-area-inset-left)) + 104px); top: calc(max(22px, env(safe-area-inset-top)) + 64px); width: 22px; height: 44px; pointer-events: none; z-index: 4; opacity: 0; transition: opacity .4s; }
 .rl-body.rl-on { opacity: .9; }
 .rl-body svg { width: 100%; height: 100%; }
 .rl-body path, .rl-body circle, .rl-body rect { fill: #e8e4d433; stroke: #e8e4d499; stroke-width: 1; }
