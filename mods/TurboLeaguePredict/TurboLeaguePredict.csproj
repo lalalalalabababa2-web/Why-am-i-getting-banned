@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>TurboLeaguePredict</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <!-- Point this at the game folder: the one holding BepInEx/ after you install it. -->
+    <GameDir Condition="'$(GameDir)' == ''">$(HOME)/Library/Application Support/Steam/steamapps/common/Turbo League</GameDir>
+    <!-- macOS app bundle layout; on Windows/CrossOver it is TurboLeague_Data/Managed instead. -->
+    <ManagedDir Condition="'$(ManagedDir)' == ''">$(GameDir)/Turbo League.app/Contents/Resources/Data/Managed</ManagedDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx"><HintPath>$(GameDir)/BepInEx/core/BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(ManagedDir)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDir)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(ManagedDir)/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ManagedDir)/UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="Exists('$(GameDir)/BepInEx/plugins')">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)/BepInEx/plugins" />
+  </Target>
+
+</Project>
