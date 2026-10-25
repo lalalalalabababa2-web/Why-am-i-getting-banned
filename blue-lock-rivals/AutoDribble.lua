@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v8 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v9 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -73,6 +73,9 @@ local CFG = {
     -- keeper
     ShotSpeed    = 60,     -- dive at balls this fast; real shots were ~150 studs/s, passes ~40
     SlowBall     = 20,     -- slower than this is a roll, not a shot
+    ReleaseDist  = 6,      -- fakes: a ball still this close to whoever just had it hasn't been shot...
+    SureShot     = 110,    -- ...unless it's this fast already (studs/s)
+    ShotConfirm  = 0.08,   -- a slower ball gets this long after the kick to show it's dying out
     GoalWidth    = 30,     -- half the goal's width, used until the goal itself is found in the map
     DiveRange    = 35,     -- dive at shots passing this close to you
     DiveLead     = 0.2,    -- dive this long before the ball arrives, plus ping and travel time
@@ -124,6 +127,7 @@ local fieldExact     -- true when it came from the pitch itself, not guessed fro
 local fieldSum, fieldN = Vector3.zero, 0 -- running average of where play happens, seen from your spot
 local lastInput      -- a real InputObject, for ContextActionService handlers that expect one
 local curHolder, heldSince = nil, 0 -- who had the ball last frame, and since when
+local lastCarrier, lastCarriedAt = nil, -math.huge -- the last enemy with the ball, and when
 local shotPlan       -- the keeper's read of a ball coming in: { at = where it passes you, t = when }
 local slideReach = CFG.SlideReach
 local goalCentre, goalHalf = nil, CFG.GoalWidth -- your goal, once it's found in the map
@@ -1235,6 +1239,9 @@ local function onTarget(s)
     if closing <= 1 then return false end
     local tc = p:Dot(fieldDir) / closing
     if tc < 0 or tc > 1.5 then return false end
+    -- slowing enough to stop before the line (a touch, a push, a feint that rolls dead): no shot
+    local slowing = s.acc:Dot(fieldDir)
+    if slowing > 1 and closing * closing / (2 * slowing) < p:Dot(fieldDir) then return false end
     local cross = p + v * tc
     return (cross - fieldDir * cross:Dot(fieldDir)).Magnitude <= goalHalf + 3
 end
@@ -1244,15 +1251,31 @@ local function keeper(root, hum, ball, s, holder, lead)
     if holder == LP then return end
     local now, myPos = os.clock(), root.Position
     if holder then
-        -- 1v1: an enemy carrying the ball close enough to smother
-        if CFG.Smother > 0 and isEnemy(holder) and (ball.Position - myPos).Magnitude <= CFG.Smother
-            and ready("dive") then
-            dive(root, hum, ball.Position)
+        -- 1v1: an enemy carrying the ball right at you, close enough to smother. Standing still
+        -- in front of you (winding up a shot, faking one) only gets it right on top of you.
+        local r = isEnemy(holder) and holder.Character and holder.Character:FindFirstChild("HumanoidRootPart")
+        local gap = (ball.Position - myPos).Magnitude
+        if r and CFG.Smother > 0 and gap <= CFG.Smother and ready("dive") then
+            local toMe = flat(myPos - r.Position)
+            local coming = toMe.Magnitude > 0 and flat(velocityOf(r)):Dot(toMe.Unit) > 3
+            if coming or gap <= 4 then dive(root, hum, ball.Position) end
         end
         return
     end
     local speed = s.vel.Magnitude
-    if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 or not onTarget(s) then return end
+    if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 then return end
+    -- A fake: a touch or a push keeps the ball at the feet of whoever just had it, while a shot
+    -- leaves them. Anything shot-fast counts straight away.
+    local cr = lastCarrier and now - lastCarriedAt < 1 and lastCarrier.Character
+        and lastCarrier.Character:FindFirstChild("HumanoidRootPart")
+    if cr and speed < CFG.SureShot and (s.pos - cr.Position).Magnitude < CFG.ReleaseDist then
+        dbg.last = "fake? ball still at their feet"
+        return
+    end
+    -- right after the kick its slowing hasn't shown yet: a push that dies out looks like a shot for
+    -- a few frames. Shot-fast balls count straight away.
+    if speed < CFG.SureShot and now - s.kickAt < CFG.ShotConfirm then return end
+    if not onTarget(s) then return end
     local t, d, at = closestApproach(s, myPos)
     shotPlan = { at = at, t = now + t } -- positioning walks you onto its path
     local side, up = flat(at - myPos).Magnitude, at.Y - myPos.Y
@@ -1448,6 +1471,7 @@ bind(RunService.Heartbeat, function(dt)
     end
     local holder = ball and holderOf(ball)
     if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
+    if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
     showInfo(root, ball, holder, lead)
     if not ball then return end
     if on.dive and home and not fieldExact then

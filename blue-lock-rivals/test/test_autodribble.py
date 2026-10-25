@@ -80,6 +80,7 @@ class Game:
         self.my_lunge = None
         self.ball_vel = Vector3()
         self.gravity = 0.0
+        self.friction = 0.0  # studs/s lost per second while the ball rolls (a touch dies out)
         self.shiftlock = False  # turns you to face the camera (-z) every frame, like shift lock
         self.press_look = {}
 
@@ -300,6 +301,9 @@ class Game:
             self.ball.props["AssemblyLinearVelocity"] = hr.props["AssemblyLinearVelocity"]
         else:
             self.ball_vel = self.ball_vel + Vector3(0, -self.gravity * DT, 0)
+            if self.friction and self.ball_vel.flat().mag() > 0:
+                sp = self.ball_vel.flat().mag()
+                self.ball_vel = self.ball_vel * (max(0.0, sp - self.friction * DT) / sp)
             self.ball.props["Position"] = self.ball.props["Position"] + self.ball_vel * DT
             self.ball.props["AssemblyLinearVelocity"] = self.ball_vel
         self.update_hud()
@@ -802,6 +806,45 @@ def infinite_stamina_from_a_script_table():
     g.load()
     g.run(0.2)
     check(t.get("Stamina") == 100, f"the game's table held at max ({t.get('Stamina')})")
+
+
+def carrier_in_front(g, z=165, speed=0.0):
+    c = g.bot("Striker", Vector3(0, 3, z))
+    g.holder = c.player
+    c.brain = lambda bot, now: setattr(bot, "vel", Vector3(0, 0, speed))
+    g.run(0.5)
+    return c
+
+
+@test
+def keeper_ignores_a_push_toward_goal():
+    g = keeper_game()
+    c = carrier_in_front(g, 168)
+    # a hard push toward goal that dies out about 9 studs in front of you
+    g.holder = None
+    g.friction = 450
+    g.ball.props["Position"] = c.pos + Vector3(0, -2, 1.5)
+    g.ball_vel = Vector3(0, 0, 100)
+    g.run(0.6)
+    check(not g.presses("dive"), f"didn't fall for the touch ({g.events}, {g.readout()!r})")
+
+
+@test
+def keeper_still_saves_a_real_shot_from_a_carrier():
+    g = keeper_game()
+    c = carrier_in_front(g, 150)
+    g.shoot(c.pos + Vector3(0, -1, 2), Vector3(4, 2, 193), 75)  # under SureShot: has to leave them first
+    g.run(0.7)
+    check(g.presses("dive", "ok"), f"dove at the real shot ({g.events})")
+
+
+@test
+def keeper_doesnt_smother_a_standing_shooter():
+    g = keeper_game()
+    c = carrier_in_front(g, 184)  # winding up 6 studs out, not moving
+    c.anim.play("ShootCharge", "Action", 1.0)
+    g.run(1.0)
+    check(not g.presses("dive"), f"no dive at someone faking a shot in front of you ({g.events})")
 
 
 @test

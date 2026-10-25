@@ -44,6 +44,16 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v9
+
+- **No falling for fake shots.** The keeper reacts to the ball, never the wind-up, so a feint kick
+  on its own does nothing. What could still bait it is now filtered out:
+  - A push toward goal that dies out: a ball under shot pace (110 studs/s) gets 0.08s after the
+    kick for its slowing to show, and a ball that would stop before your line isn't a shot.
+  - A ball still at the feet of whoever just had it hasn't been shot.
+  - A carrier standing in front of you winding up isn't smothered. Only one coming at you is, or
+    one right on top of you.
+
 ## v8
 
 - **Keeper:** finds your goal in the map (a part named like a goal or net) and guards all of it,
@@ -88,7 +98,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 33 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 36 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:
