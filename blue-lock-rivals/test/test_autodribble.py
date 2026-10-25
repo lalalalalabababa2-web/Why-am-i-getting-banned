@@ -1864,6 +1864,87 @@ def spins_stay_on_across_a_rerun():
     check(len(server["fired"]) == 1 and not server["saves"](), "and left them that way")
 
 
+def spin_screen(g, left, lucky=0):
+    """The game's spin screen, as the recording shows it."""
+    sg = ScreenGui(g.W, "StylesSpin")
+    sg.set_parent(g.pg)
+    for text in (f"SPINS LEFT: {left}", f"LUCKY SPINS: {lucky}", "SPIN $2,500"):
+        TextLabel(g.W, "Label", Text=text).set_parent(sg)
+
+
+@test
+def spins_tell_you_when_you_have_none():
+    g = Game().load()
+    customization_service(g)
+    spin_screen(g, 0)
+    g.tap("spins")
+    check(g.pill_text("spins") == "0 SPINS", f"pill reads {g.pill_text('spins')!r}")
+    check(any("0 spins" in n for n in g.W.notes), f"and says why nothing will spin ({g.W.notes})")
+    g.run(1.2)
+    check(g.pill_text("spins") == "SPINS ON", "still on: buy a spin with yen and it rolls back too")
+
+
+@test
+def spins_say_nothing_when_you_have_some():
+    g = Game().load()
+    customization_service(g)
+    spin_screen(g, 3)
+    g.tap("spins")
+    check(g.pill_text("spins") == "SPINS ON" and not any("0 spins" in n for n in g.W.notes),
+          f"just on ({g.pill_text('spins')!r}, {g.W.notes})")
+
+
+def queued(g):
+    q = []
+    g.I.G.set("queue_on_teleport", lambda code: q.append(tostr(code)))
+    return q
+
+
+@test
+def spins_rollback_brings_the_script_back():
+    g = Game().load()
+    customization_service(g)
+    q = queued(g)
+    g.tap("spins", hold=1.0)
+    g.run(1.2)
+    check(len(q) == 1 and "AutoDribbleRolledBack = 5" in q[0] and "ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua" in q[0],
+          f"the next server runs it again, told it's a rollback ({q})")
+
+
+def arrive_from_rollback(g, tries=5):
+    """What the code queued by a rollback sets before running the script in the next server."""
+    env = g.I.call(g.I.G.get("getgenv"), [])
+    env = env[0] if isinstance(env, list) else env
+    env.set("AutoDribbleRolledBack", tries)
+
+
+@test
+def spins_carry_on_after_a_rollback():
+    g = Game()
+    arrive_from_rollback(g)
+    server = customization_service(g)
+    g.load()
+    g.run(0.5)
+    check(g.pill_text("spins") == "SPINS ON" and not server["saves"](), "saves off again on arrival: keep spinning")
+    q = queued(g)
+    g.W.guisvc.signal("ErrorMessageChanged").fire("Data Error")
+    g.run(0.1)
+    check(len(g.W.teleports) == 1, f"a Data Error kick gets another rejoin ({g.W.teleports})")
+    check(q and "AutoDribbleRolledBack = 4" in q[0], f"one try fewer each time ({q})")
+    g.W.guisvc.signal("ErrorMessageChanged").fire("Data Error")
+    g.run(0.1)
+    check(len(g.W.teleports) == 1, "once per server")
+
+
+@test
+def spins_dont_rejoin_on_an_ordinary_error():
+    g = Game().load()
+    customization_service(g)
+    g.W.guisvc.signal("ErrorMessageChanged").fire("Disconnected")
+    g.run(0.1)
+    check(not g.W.teleports, "only after a rollback")
+
+
 @test
 def stop_and_rerun():
     g = Game().load()

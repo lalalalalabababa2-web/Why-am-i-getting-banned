@@ -1059,6 +1059,15 @@ class TeleportServiceC(Service):
         self.world.teleports.append(("TeleportToPlaceInstance", place_id, job_id, player))
 
 
+class StarterGuiC(Service):
+    CLASS = "StarterGui"
+    ISA = ("StarterGui",)
+
+    def m_SetCore(self, name, value=None):
+        if name == "SendNotification" and isinstance(value, LuaTable):
+            self.world.notes.append(tostr(value.get("Text")))
+
+
 class PlayersService(Service):
     CLASS = "Players"
     ISA = ("Players",)
@@ -1145,6 +1154,7 @@ class CASC(Service):
 class GuiServiceC(Service):
     CLASS = "GuiService"
     ISA = ("GuiService",)
+    EVENTS = ("ErrorMessageChanged",)
 
     def m_GetGuiInset(self):
         return Multi([Vector2(0, INSET), Vector2(0, 0)])
@@ -1286,13 +1296,15 @@ class World:
         self.coregui.CLASS = "CoreGui"
         self.teleport = TeleportServiceC(self, "TeleportService")
         self.teleports = []
+        self.startergui = StarterGuiC(self, "StarterGui")
+        self.notes = []
         self.hui = Folder(self, "HiddenUI")
         self.hui.set_parent(self.coregui)
         self.services = {"Workspace": self.workspace, "Players": self.players, "RunService": self.run,
                          "UserInputService": self.uis, "ContextActionService": self.cas,
                          "GuiService": self.guisvc, "HttpService": self.http,
                          "VirtualInputManager": self.vim, "CoreGui": self.coregui, "ReplicatedStorage": self.rs,
-                         "TeleportService": self.teleport}
+                         "TeleportService": self.teleport, "StarterGui": self.startergui}
         for s in self.services.values():
             if s.parent is None:
                 s.set_parent(self.game)

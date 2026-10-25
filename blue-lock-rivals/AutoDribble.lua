@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v22 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v23 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -25,12 +25,13 @@
              Aimed at their goal, it bends for the corner away from their keeper. It rides out
              bumps, and lets go when someone takes it, it's back at your feet, or 8s pass; then the
              camera comes back to you. Look up to lift it, down to dip it.
-    SPINS    Infinite spins, as a rollback. Tap on BEFORE spinning: from then on nothing from this
-             session saves, so spin as much as you like in the game's own wheel. Got the style you
-             wanted? Tap it off: saves work again and the game's next save keeps it. Didn't? Hold
-             the pill: you rejoin, and everything since the last save (the spins) is undone. A
-             "Data Error" kick on the way back in is the old server still holding your save:
-             rejoin again. Blue = saves are off, so don't play matches with it on.
+    SPINS    Infinite spins, as a rollback: it re-uses the spins you have, it can't make new ones
+             (with 0 spins it says so). Tap on BEFORE spinning: from then on nothing from this
+             session saves, so spin in the game's own wheel. Got the style you wanted? Tap it off:
+             saves work again and the game's next save keeps it. Didn't? Hold the pill: you rejoin
+             with the spins back, the script runs itself again there (queue_on_teleport) with
+             saves already off, and a "Data Error" kick on the way in gets another rejoin by
+             itself. Blue = saves are off, so don't play matches with it on.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -151,6 +152,10 @@ local CFG = {
     -- setting the game's data store can't save (not valid text), the second puts it right again
     SpinPoison   = { "Emotes", "Default", "2\255" },
     SpinCure     = { "Emotes", "Default", "2" },
+    -- after a SPINS rejoin the executor runs this again in the server you land in (queue_on_teleport),
+    -- with saves off again, so you carry straight on spinning. "" = don't
+    ReloadUrl    = "https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua",
+    RejoinTries  = 5,      -- "Data Error" kicks on the way back in get this many rejoins on their own
 
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
     SaveFile     = "AutoDribble_buttons.json",
@@ -2290,7 +2295,7 @@ do
 end
 
 ---------------------------------------------------------------- infinite spins
-local setSpins, rollback -- set in the block below, used further down
+local setSpins, rollback, spinsLeft -- set in the block below, used further down
 do
 
     -- SPINS: a rollback, the way the public "infinite spin" scripts do it. While it's on, your save
@@ -2316,14 +2321,68 @@ do
         return ok
     end
 
+    -- The executor runs this script again in the server you land in, told it came from a rollback
+    -- (and how many more "Data Error" rejoins it may make)
+    local function comeBack(tries)
+        if type(queue_on_teleport) ~= "function" or CFG.ReloadUrl == "" then return end
+        pcall(queue_on_teleport, ("getgenv().AutoDribbleRolledBack = %d\n"):format(tries)
+            .. 'loadstring(game:HttpGet("' .. CFG.ReloadUrl .. '"))()')
+    end
+
+    local function rejoin()
+        pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
+    end
+
     -- saves off if they aren't, then into a fresh server: everything since the last save is undone
     function rollback()
         if not on.spins and not setSpins(true) then return false end
         on.spins = true
-        task.delay(1, function() -- (the server needs the setting before you leave)
-            pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
-        end)
+        comeBack(CFG.RejoinTries)
+        task.delay(1, rejoin) -- (the server needs the setting before you leave)
         return true
+    end
+
+    -- How many spins you have (plus lucky spins), read off the game's spin screen; nil when it isn't
+    -- there to read. A rollback only gives back what you had, so 0 is worth knowing.
+    function spinsLeft()
+        local pg = playerGui()
+        if not pg then return nil end
+        local total
+        for _, d in ipairs(pg:GetDescendants()) do
+            if d:IsA("TextLabel") or d:IsA("TextButton") then
+                local ok, text = pcall(function() return d.ContentText end) -- (without rich-text tags)
+                text = ((ok and type(text) == "string" and text ~= "") and text or d.Text):upper()
+                local n = text:match("SPINS LEFT:%s*(%d+)") or text:match("LUCKY SPINS:%s*(%d+)")
+                if n then total = (total or 0) + tonumber(n) end
+            end
+        end
+        return total
+    end
+
+    -- Landed here from a rollback: saves off again as soon as the game's remote is there, so you can
+    -- carry on spinning. A "Data Error" kick on the way in is the old server still holding your save:
+    -- rejoin again, a few times.
+    local tries = env.AutoDribbleRolledBack
+    if type(tries) == "number" then
+        env.AutoDribbleRolledBack = nil
+        task.spawn(function()
+            for _ = 1, 60 do
+                if on.spins or setSpins(true) then
+                    on.spins = true
+                    refresh()
+                    return
+                end
+                task.wait(0.5)
+            end
+        end)
+        local arrived = os.clock()
+        bind(GuiService.ErrorMessageChanged, function(msg)
+            if tries > 0 and type(msg) == "string" and msg ~= "" and os.clock() - arrived < 90 then
+                comeBack(tries - 1)
+                tries = 0
+                rejoin()
+            end
+        end)
     end
 end
 
@@ -2380,6 +2439,17 @@ do
             elseif setSpins(not on.spins) then
                 on.spins = not on.spins
                 refresh()
+                if on.spins and spinsLeft() == 0 then
+                    -- nothing to roll back: the game won't spin without a spin (or the yen for one)
+                    notify(kind, "0 SPINS", COLORS.noBall)
+                    pcall(function()
+                        game:GetService("StarterGui"):SetCore("SendNotification", {
+                            Title = "SPINS", Duration = 8,
+                            Text = "You have 0 spins. A rollback gives back spins you had, it can't make new ones: "
+                                .. "get 1 spin (or the yen for one) first, spin, then hold SPINS to get it back.",
+                        })
+                    end)
+                end
             else
                 notify(kind, "NO REMOTE", COLORS.off)
             end
@@ -2408,7 +2478,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v22", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v23", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end

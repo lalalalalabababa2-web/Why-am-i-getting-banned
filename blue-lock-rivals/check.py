@@ -38,7 +38,7 @@ KNOWN_GLOBALS = {
     "settings", "UserSettings", "PathWaypoint", "SharedTable",
     # executors (sUNC and common extras)
     "getgenv", "getrenv", "getsenv", "gethui", "getconnections", "firesignal", "fireclickdetector",
-    "firetouchinterest", "isnetworkowner", "fireproximityprompt", "hookfunction", "hookmetamethod", "newcclosure",
+    "firetouchinterest", "isnetworkowner", "queue_on_teleport", "fireproximityprompt", "hookfunction", "hookmetamethod", "newcclosure",
     "checkcaller", "getnamecallmethod", "readfile", "writefile", "appendfile", "isfile",
     "listfiles", "makefolder", "delfile", "isfolder", "setclipboard", "identifyexecutor",
     "getrawmetatable", "setreadonly", "cloneref", "getgc", "getinstances", "getnilinstances",
