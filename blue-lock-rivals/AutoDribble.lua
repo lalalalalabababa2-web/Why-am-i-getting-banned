@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v21 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v22 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -25,6 +25,12 @@
              Aimed at their goal, it bends for the corner away from their keeper. It rides out
              bumps, and lets go when someone takes it, it's back at your feet, or 8s pass; then the
              camera comes back to you. Look up to lift it, down to dip it.
+    SPINS    Infinite spins, as a rollback. Tap on BEFORE spinning: from then on nothing from this
+             session saves, so spin as much as you like in the game's own wheel. Got the style you
+             wanted? Tap it off: saves work again and the game's next save keeps it. Didn't? Hold
+             the pill: you rejoin, and everything since the last save (the spins) is undone. A
+             "Data Error" kick on the way back in is the old server still holding your save:
+             rejoin again. Blue = saves are off, so don't play matches with it on.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -38,7 +44,7 @@
     before the press. Until then it uses the guesses in CFG.Cooldowns.
 
     Pills: tap = on/off, drag = move them all (they stay on screen).
-           hold ~1s and let go, then tap the game's button = force that button (not CONTROL)
+           hold ~1s and let go, then tap the game's button = force that button (not CONTROL/SPINS)
            hold ~1s and let go, then tap the same pill = forget the forced button
     Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap
     (CONTROL: blue = steering).
@@ -141,6 +147,11 @@ local CFG = {
     ControlAssistAngle = 25, -- how close to the goal your aim has to be for that (degrees)
     ControlAssistRange = 160, -- and how near the goal (studs)
 
+    -- infinite spins (the SPINS pill): sent to CustomizationService.RE.Customize. The first is a
+    -- setting the game's data store can't save (not valid text), the second puts it right again
+    SpinPoison   = { "Emotes", "Default", "2\255" },
+    SpinCure     = { "Emotes", "Default", "2" },
+
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
     SaveFile     = "AutoDribble_buttons.json",
 }
@@ -169,8 +180,9 @@ local function bind(signal, fn)
 end
 
 local KINDS = { "dribble", "tackle", "dive" } -- the game's moves
-local PILLS = { "dribble", "tackle", "dive", "control" }
-local on = { dribble = false, tackle = false, dive = false, control = false }
+local PILLS = { "dribble", "tackle", "dive", "control", "spins" }
+local on = { dribble = false, tackle = false, dive = false, control = false,
+             spins = env.AutoDribbleNoSave == true } -- (saves stay blocked across a re-run)
 local learning -- nil or one of KINDS
 local lastDive, diveUntil = -math.huge, -math.huge
 local lastJump, lastFlick = -math.huge, -math.huge
@@ -220,7 +232,7 @@ local COLORS = {
     hit    = Color3.fromRGB(235, 235, 235),
 }
 local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
-local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK", control = "CONTROL" }
+local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK", control = "CONTROL", spins = "SPINS" }
 local MOVES = { dribble = "DRIBBLE", tackle = "SLIDE", dive = "DIVE" }
 local DONE  = { dribble = "DRIBBLED", tackle = "SLID", dive = "DIVED" }
 
@@ -234,16 +246,16 @@ if not pcall(function() screen.Parent = (gethui and gethui()) or game:GetService
 end
 
 local bar = Instance.new("Frame")
-bar.Size = UDim2.fromOffset(217, CFG.Debug and 78 or 22)
+bar.Size = UDim2.fromOffset(192, CFG.Debug and 103 or 47)
 bar.Position = UDim2.new(0, 12, 0.22, 0)
 bar.BackgroundTransparency = 1
 bar.Parent = screen
 Instance.new("UIScale", bar).Scale = CFG.UiScale
 
-local function makePill(x)
+local function makePill(x, y)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.fromOffset(52, 22)
-    b.Position = UDim2.fromOffset(x, 0)
+    b.Size = UDim2.fromOffset(62, 22)
+    b.Position = UDim2.fromOffset(x, y)
     b.AutoButtonColor = false
     b.BackgroundTransparency = 0.15
     b.Font = Enum.Font.GothamBold
@@ -254,11 +266,12 @@ local function makePill(x)
     Instance.new("UITextSizeConstraint", b).MaxTextSize = 10
     return b
 end
-local pills = { dribble = makePill(0), tackle = makePill(55), dive = makePill(110), control = makePill(165) }
+local pills = { dribble = makePill(0, 0), tackle = makePill(65, 0), dive = makePill(130, 0),
+                control = makePill(0, 25), spins = makePill(65, 25) }
 
 local info = Instance.new("TextLabel")
-info.Size = UDim2.fromOffset(217, 53)
-info.Position = UDim2.fromOffset(0, 25)
+info.Size = UDim2.fromOffset(192, 53)
+info.Position = UDim2.fromOffset(0, 50)
 info.BackgroundColor3 = BLACK
 info.BackgroundTransparency = 0.35
 info.TextColor3 = WHITE
@@ -278,6 +291,8 @@ local function paint(kind)
         pill.Text, pill.BackgroundColor3 = "TAP " .. MOVES[kind], COLORS.learn
     elseif not on[kind] then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " OFF", COLORS.off
+    elseif kind == "spins" then
+        pill.Text, pill.BackgroundColor3 = "SPINS ON", COLORS.learn -- (blue: nothing saves while it's on)
     elseif (kind == "dribble" or kind == "tackle") and on.dive then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " PAUSED", COLORS.paused
     else
@@ -2274,6 +2289,44 @@ do
     end)
 end
 
+---------------------------------------------------------------- infinite spins
+local setSpins, rollback -- set in the block below, used further down
+do
+
+    -- SPINS: a rollback, the way the public "infinite spin" scripts do it. While it's on, your save
+    -- holds a setting the game's data store can't store (a string that isn't valid text), so nothing
+    -- from this session saves: spin as much as you like, then hold the pill to rejoin with the spins
+    -- back. Got the style you wanted? Tap it off first: the setting is put right, and the game's next
+    -- save (every so often, and when you leave) keeps the style. A "Data Error" kick on the way back
+    -- in is the old server still holding your save: rejoin again.
+    local function customize()
+        local r = game:GetService("ReplicatedStorage"):FindFirstChild("Packages")
+        for _, name in ipairs({ "Knit", "Services", "CustomizationService", "RE", "Customize" }) do
+            r = r and r:FindFirstChild(name)
+        end
+        return r
+    end
+
+    -- saves off (true) or back on (false); false back when the game's remote isn't there
+    function setSpins(block)
+        local r = customize()
+        if not r then return false end
+        local ok = pcall(function() r:FireServer(unpack(block and CFG.SpinPoison or CFG.SpinCure)) end)
+        if ok then env.AutoDribbleNoSave = block or nil end
+        return ok
+    end
+
+    -- saves off if they aren't, then into a fresh server: everything since the last save is undone
+    function rollback()
+        if not on.spins and not setSpins(true) then return false end
+        on.spins = true
+        task.delay(1, function() -- (the server needs the setting before you leave)
+            pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
+        end)
+        return true
+    end
+end
+
 ---------------------------------------------------------------- pills: tap / hold / drag
 do
 
@@ -2320,6 +2373,16 @@ do
             else
                 refresh()
             end
+        elseif kind == "spins" then
+            -- tap: saves off / on; hold: roll back
+            if os.clock() - pressedAt >= CFG.LongPress then
+                if rollback() then notify(kind, "REJOINING", COLORS.learn) else notify(kind, "NO REMOTE", COLORS.off) end
+            elseif setSpins(not on.spins) then
+                on.spins = not on.spins
+                refresh()
+            else
+                notify(kind, "NO REMOTE", COLORS.off)
+            end
         elseif os.clock() - pressedAt >= CFG.LongPress and kind ~= "control" then
             startLearning(kind)
         else
@@ -2345,7 +2408,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v21", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v22", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end

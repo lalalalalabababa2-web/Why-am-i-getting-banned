@@ -1048,6 +1048,17 @@ class Service(Inst):
     ISA = ("Service",)
 
 
+class TeleportServiceC(Service):
+    CLASS = "TeleportService"
+    ISA = ("TeleportService",)
+
+    def m_Teleport(self, place_id, player=None, *rest):
+        self.world.teleports.append(("Teleport", place_id, player))
+
+    def m_TeleportToPlaceInstance(self, place_id, job_id, player=None, *rest):
+        self.world.teleports.append(("TeleportToPlaceInstance", place_id, job_id, player))
+
+
 class PlayersService(Service):
     CLASS = "Players"
     ISA = ("Players",)
@@ -1273,12 +1284,15 @@ class World:
         self.rs.CLASS = "ReplicatedStorage"
         self.coregui = Service(self, "CoreGui")
         self.coregui.CLASS = "CoreGui"
+        self.teleport = TeleportServiceC(self, "TeleportService")
+        self.teleports = []
         self.hui = Folder(self, "HiddenUI")
         self.hui.set_parent(self.coregui)
         self.services = {"Workspace": self.workspace, "Players": self.players, "RunService": self.run,
                          "UserInputService": self.uis, "ContextActionService": self.cas,
                          "GuiService": self.guisvc, "HttpService": self.http,
-                         "VirtualInputManager": self.vim, "CoreGui": self.coregui, "ReplicatedStorage": self.rs}
+                         "VirtualInputManager": self.vim, "CoreGui": self.coregui, "ReplicatedStorage": self.rs,
+                         "TeleportService": self.teleport}
         for s in self.services.values():
             if s.parent is None:
                 s.set_parent(self.game)

@@ -1,4 +1,4 @@
-# Auto Dribble + Auto Tackle + Auto GK + Ball Control — Blue Lock: Rivals
+# Auto Dribble + Auto Tackle + Auto GK + Ball Control + Infinite Spins — Blue Lock: Rivals
 
 | | |
 |---|---|
@@ -17,10 +17,10 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v21 Loaded" when it starts.
+notification says "AutoDribble v22 Loaded" when it starts.
 
-Running it again replaces the old copy. Four pills appear on the left: **DRIBBLE**, **TACKLE**,
-**AUTO GK**, **CONTROL**. Tap to toggle, drag to move. Hold about a second and let go, then tap
+Running it again replaces the old copy. Five pills appear on the left in two rows: **DRIBBLE**,
+**TACKLE**, **AUTO GK**, then **CONTROL**, **SPINS**. Tap to toggle, drag to move. Hold about a second and let go, then tap
 the game's button to force which button that pill presses. Turn AUTO GK on standing in your goal;
 it pauses dribble and tackle.
 
@@ -46,6 +46,20 @@ it pauses dribble and tackle.
   it. It lets go when the ball hits something, someone takes it, or 4 seconds pass, and the camera
   comes back to you.
 
+- **Spins** is infinite spins as a rollback, the way the public scripts do it: it sends
+  `CustomizationService.RE.Customize("Emotes", "Default", "2\255")`, a setting the game's data
+  store can't save (`\255` isn't valid text), so nothing from that session saves.
+  1. Tap SPINS on (blue) **before** spinning.
+  2. Spin in the game's own wheel (styles, flow, golden wheel).
+  3. Got what you wanted? Tap SPINS off. The setting goes back to `"2"` and the game's next save
+     keeps the style.
+  4. Didn't? Hold SPINS: you rejoin a fresh server and the spins are back. A "Data Error" kick on
+     the way in is the old server still holding your save; rejoin again.
+
+  Unchecked: whether `"2"` really puts the setting right in your version. The first time, after
+  tapping it off, leave and come back to check the style stayed. Don't play matches with it on,
+  since nothing you earn saves.
+
 ## The readout box
 
 - **Line 1**: what the executor allows (`conn` getconnections, `sig` firesignal, `tap` virtual
@@ -56,6 +70,13 @@ it pauses dribble and tackle.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v22
+
+- **SPINS pill: infinite spins** (see above). Tap = saves off/on, hold = rejoin and roll back.
+  Saves stay off across a re-run of the script (it remembers). With no `Customize` remote in the
+  game, it says `NO REMOTE` and does nothing.
+- The pills are two rows now (DRIBBLE TACKLE AUTO GK / CONTROL SPINS), 192 pixels wide again.
 
 ## v21
 
@@ -275,7 +296,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 93 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 97 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

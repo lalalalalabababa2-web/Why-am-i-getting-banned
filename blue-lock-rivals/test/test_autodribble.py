@@ -255,7 +255,7 @@ class Game:
 
     def pill(self, kind):
         pills = [c for c in self.bar().children if isinstance(c, TextButton)]
-        return pills[["dribble", "tackle", "dive", "control"].index(kind)]
+        return pills[["dribble", "tackle", "dive", "control", "spins"].index(kind)]
 
     def readout(self):
         return [c for c in self.bar().children if isinstance(c, TextLabel)][0].props["Text"]
@@ -454,18 +454,18 @@ def script_compiles_within_luaus_limits():
 
 
 @test
-def loads_and_shows_four_pills():
+def loads_and_shows_five_pills():
     g = Game().load()
     g.run(0.5)
-    kinds = ("dribble", "tackle", "dive", "control")
-    check([g.pill_text(k) for k in kinds] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF", "CONTROL OFF"],
+    kinds = ("dribble", "tackle", "dive", "control", "spins")
+    check([g.pill_text(k) for k in kinds] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF", "CONTROL OFF", "SPINS OFF"],
           f"pills read {[g.pill_text(k) for k in kinds]}")
     line1 = g.readout().split("\n")[0]
     check("conn Y sig Y tap ?" in line1, f"readout line 1 is {line1!r}")
     check(not [v for v in g.W.vim.log if v[1] == "touch"], "no test touch on the screen at startup")
     check(g.readout().count("\n") == 4, "the readout has five lines")
     size = g.bar().get_AbsoluteSize()
-    check(size.x <= 220 and size.y <= 80, f"the UI is small ({size})")
+    check(size.x <= 200 and size.y <= 105, f"the UI is small: two rows and the readout ({size})")
 
 
 @test
@@ -1273,7 +1273,7 @@ def readout_hidden_by_default():
     g.run(0.3)
     label = [c for c in g.bar().children if isinstance(c, TextLabel)][0]
     check(label.props["Visible"] is False, "no black box")
-    check(g.bar().get_AbsoluteSize().y <= 30, f"just the pills ({g.bar().get_AbsoluteSize()})")
+    check(g.bar().get_AbsoluteSize().y <= 50, f"just the two rows of pills ({g.bar().get_AbsoluteSize()})")
 
 
 @test
@@ -1388,7 +1388,7 @@ def no_hitbox_extender_left():
     g.ball.props["Position"] = Vector3(0, 1, -3.5)
     g.run(0.5)
     texts = [c.props["Text"] for c in g.bar().children if isinstance(c, TextButton)]
-    check(len(texts) == 4 and "R" not in texts, f"four pills, no R button ({texts})")
+    check(len(texts) == 5 and "R" not in texts, f"five pills, no R button ({texts})")
     check(not [c for c in g.bar().children if isinstance(c, Frame)], "no slider panel")
     check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True, "enemy hitboxes left alone")
     check(not touches_of(g), "no fake touches on the ball")
@@ -1783,6 +1783,85 @@ def control_lets_go_when_the_server_keeps_the_ball():
     g.run(1.2)
     check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
     check(not our_movers(g) and bv.props["MaxForce"].mag() > 0, "and the game's kick left as it was")
+
+
+def customization_service(g):
+    """BLR's CustomizationService.RE.Customize, and a server whose saves fail once your data holds
+    a string that isn't valid UTF-8 (the data store can't store it)."""
+    from roblox import RemoteEvent
+    path = g.W.rs
+    for name in ("Packages", "Knit", "Services", "CustomizationService", "RE"):
+        f = path.m_FindFirstChild(name)
+        if f is None:
+            f = Folder(g.W, name)
+            f.set_parent(path)
+        path = f
+    remote = RemoteEvent(g.W, "Customize")
+    remote.set_parent(path)
+    server = {"slot": "1", "fired": []}
+
+    def saves():
+        try:
+            server["slot"].encode("latin-1").decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+    server["saves"] = saves
+
+    def on_customize(category, item, slot):
+        server["fired"].append((category, item, slot))
+        server["slot"] = slot
+    remote.server.append(on_customize)
+    return server
+
+
+@test
+def spins_tap_stops_saves_and_tap_again_lets_them_back():
+    g = Game().load()
+    server = customization_service(g)
+    g.tap("spins")
+    check(g.pill_text("spins") == "SPINS ON", f"pill reads {g.pill_text('spins')!r}")
+    check(server["fired"] == [("Emotes", "Default", "2\xff")], f"sent the unsaveable setting ({server['fired']})")
+    check(not server["saves"](), "so nothing from now on saves: spin away")
+    g.tap("spins")
+    check(g.pill_text("spins") == "SPINS OFF", f"pill reads {g.pill_text('spins')!r}")
+    check(server["saves"](), f"and saves work again, with the style you got ({server['fired']})")
+    check(not g.W.teleports, "no rejoin from a tap")
+
+
+@test
+def spins_hold_rolls_back():
+    g = Game().load()
+    server = customization_service(g)
+    g.tap("spins", hold=1.0)
+    check(not server["saves"](), "saves off first")
+    check(g.pill_text("spins") == "REJOINING", f"pill reads {g.pill_text('spins')!r}")
+    g.run(1.2)
+    check(g.W.teleports and g.W.teleports[0][1] == 1 and g.W.teleports[0][2] is g.lp,
+          f"then back into the game: this session's spins never saved ({g.W.teleports})")
+
+
+@test
+def spins_say_so_when_the_game_has_no_remote():
+    g = Game().load()
+    g.tap("spins")
+    check(g.pill_text("spins") == "NO REMOTE", f"pill reads {g.pill_text('spins')!r}")
+    g.run(1.2)
+    check(g.pill_text("spins") == "SPINS OFF", "and stays off")
+    g.tap("spins", hold=1.0)
+    g.run(1.2)
+    check(not g.W.teleports, "no rejoin without saves off: that would just lose nothing and gain nothing")
+
+
+@test
+def spins_stay_on_across_a_rerun():
+    g = Game().load()
+    server = customization_service(g)
+    g.tap("spins")
+    g.load()  # running the script again replaces the old copy
+    g.run(0.3)
+    check(g.pill_text("spins") == "SPINS ON", f"the new copy knows saves are off ({g.pill_text('spins')!r})")
+    check(len(server["fired"]) == 1 and not server["saves"](), "and left them that way")
 
 
 @test
