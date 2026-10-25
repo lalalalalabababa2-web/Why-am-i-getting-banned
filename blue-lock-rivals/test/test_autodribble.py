@@ -216,7 +216,7 @@ class Game:
         src = src.replace("Blatant      = false", "Blatant      = " + ("true" if self.blatant else "false"), 1)
         import re
         for key, value in self.cfg.items():
-            src, n = re.subn(r"(\n    %s\s*=\s*)[^,]+," % key, r"\g<1>%s," % value, src, count=1)
+            src, n = re.subn(r"(\n    %s\s*=\s*)(\{[^}]*\}|[^,]+)," % key, lambda m: m.group(1) + value + ",", src, count=1)
             assert n == 1, key
         f = self.I.load(src, "AutoDribble")
         if self.hide_functions:
@@ -404,7 +404,7 @@ def loads_and_shows_three_pills():
     check("conn Y sig Y tap Y" in line1, f"readout line 1 is {line1!r}")
     check(g.readout().count("\n") == 4, "the readout has five lines")
     size = g.bar().get_AbsoluteSize()
-    check(size.x <= 200 and size.y <= 80, f"the UI is small ({size})")
+    check(size.x <= 220 and size.y <= 80, f"the UI is small ({size})")
 
 
 @test
@@ -1187,6 +1187,175 @@ def stamina_in_a_script_table_by_any_name():
     g.load()
     g.run(0.3)
     check(t.get("sprintStamina") == 60, f"found and held ({t.get('sprintStamina')}, {g.readout()!r})")
+
+
+def touches_of(g, ball=True):
+    return [t for t in g.W.touches if (t[2] is g.ball) == ball]
+
+
+def press_on(g, btn, x=None):
+    inp = InputObject(g.W, "InputObject", UserInputType=ENUM.item("UserInputType", "Touch"),
+                      UserInputState=ENUM.item("UserInputState", "Begin"),
+                      Position=Vector3(x if x is not None else 0, 0, 0))
+    btn.signal("InputBegan").fire(inp)
+    return inp
+
+
+@test
+def reach_sliders_open_move_and_save():
+    g = Game(debug=False).load()
+    panel = [c for c in g.bar().children if isinstance(c, Frame)][0]
+    check(panel.props["Visible"] is False, "sliders start closed")
+    r_btn = [c for c in g.bar().children if isinstance(c, TextButton)][3]
+    check(r_btn.props["Text"] == "R", "the R button")
+    press_on(g, r_btn)
+    g.step()
+    check(panel.props["Visible"] is True, "R opens them")
+    rows = [c for c in panel.children if isinstance(c, Frame)]  # the three tracks
+    labels = [c.props["Text"] for c in panel.children if isinstance(c, TextLabel)]
+    check(labels == ["GK 6", "DRB 4", "TKL 5"], f"labels {labels}")
+    track = rows[0]
+    x0, w = track.get_AbsolutePosition().x, track.get_AbsoluteSize().x
+    inp = press_on(g, track, x0 + w * 0.2)
+    inp.props["Position"] = Vector3(x0 + w * 0.6, 0, 0)
+    g.W.uis.signal("InputChanged").fire(inp, False)
+    g.W.uis.signal("InputEnded").fire(inp, False)
+    g.step()
+    labels = [c.props["Text"] for c in panel.children if isinstance(c, TextLabel)]
+    check(labels[0] == "GK 15", f"dragged to 60% of 25 ({labels})")
+    import json
+    saved = json.loads(g.W.files.get("AutoDribble_buttons.json", "{}"))
+    check(saved.get("reach", {}).get("dive") == 15, f"saved ({saved})")
+    g2 = Game(debug=False)
+    g2.W.files["AutoDribble_buttons.json"] = json.dumps(saved)
+    g2.load()
+    panel2 = [c for c in g2.bar().children if isinstance(c, Frame)][0]
+    labels2 = [c.props["Text"] for c in panel2.children if isinstance(c, TextLabel)]
+    check(labels2[0] == "GK 15", f"and back next time ({labels2})")
+
+
+@test
+def reach_sphere_shows_your_reach():
+    g = keeper_game()
+    cam = g.W.workspace.props["CurrentCamera"]
+    sphere = cam.m_FindFirstChild("AutoDribbleReach")
+    check(sphere is not None, "a sphere in your camera (only you see it)")
+    check(sphere.props["Size"].x == 12 and sphere.props["Transparency"] < 1, f"GK reach 6 -> 12 across ({sphere.props['Size']})")
+    g.tap("dive")
+    g.step()
+    check(sphere.props["Transparency"] == 1, "hidden when nothing is on")
+
+
+@test
+def gk_reach_touches_a_ball_in_reach_only():
+    g = keeper_game()
+    g.shoot(g.root.props["Position"] + Vector3(12, 0, 0), g.root.props["Position"], 1)
+    g.ball_vel = Vector3()
+    g.run(0.3)
+    check(not touches_of(g), "nothing at 12 studs")
+    g.ball.props["Position"] = g.root.props["Position"] + Vector3(4.5, 0, 0)
+    g.ball_vel = Vector3()
+    g.run(0.15)
+    ts = touches_of(g)
+    check(ts and any(t[1].name == "HumanoidRootPart" for t in ts), f"touched at 5 studs ({len(ts)})")
+    check({t[3] for t in ts} == {0, 1}, "a touch and its end, like a real one")
+
+
+@test
+def dribble_reach_picks_up_a_loose_ball():
+    g = Game().load()
+    g.tap("dribble")
+    g.holder = None
+    g.ball.props["Position"] = Vector3(0, 1, -3.5)
+    g.run(0.2)
+    check(touches_of(g), "touched the loose ball 3.5 studs away")
+
+
+@test
+def tackle_reach_grows_enemy_hitboxes_and_puts_them_back():
+    g = Game().load()
+    foe = g.bot("Rin", Vector3(30, 3, 0))
+    mate = g.bot("Chigiri", Vector3(-30, 3, 0), enemy=False)
+    g.tap("tackle")
+    g.step()
+    check(foe.root.props["Size"].x == 5, f"enemy hitbox grown to 5 ({foe.root.props['Size']})")
+    check(foe.root.props["Transparency"] < 1 and foe.root.props["CanCollide"] is False, "and drawn see-through red")
+    check(mate.root.props["Size"].x == 2, "teammates left alone")
+    g.tap("tackle")
+    g.step()
+    check(foe.root.props["Size"].x == 2 and foe.root.props["Transparency"] == 0, f"put back ({foe.root.props['Size']})")
+
+
+@test
+def tackle_reaches_further_with_a_bigger_hitbox():
+    g = Game(cfg={"Hitbox": "{ dive = 6, dribble = 4, tackle = 12 }"}).load()
+    carrier = g.bot("Barou", Vector3(0, 3, -18))
+    g.holder = carrier.player
+    g.run(0.4)
+    carrier.dribble()
+    g.run(1.2)  # their dribble is cooling
+    g.tap("tackle")
+    g.run(0.1)
+    ok = g.presses("tackle", "ok")
+    check(ok, f"slid at 18 studs: 14 of reach plus half a 12-stud hitbox ({g.events})")
+
+
+def stamina_service(g):
+    """BLR's way: the client fires StaminaService.RE.DecreaseStamina, the server keeps the number."""
+    from roblox import RemoteEvent
+    path = g.W.rs
+    for name in ("Packages", "Knit", "Services", "StaminaService", "RE"):
+        f = Folder(g.W, name)
+        f.set_parent(path)
+        path = f
+    remote = RemoteEvent(g.W, "DecreaseStamina")
+    remote.set_parent(path)
+    server = {"stamina": 100.0}
+
+    def on_decrease(amount):
+        server["stamina"] = server["stamina"] - amount
+    remote.server.append(on_decrease)
+    # the game's own client script, draining while you sprint
+    client = g.I.load("""
+        local remote = game:GetService("ReplicatedStorage").Packages.Knit.Services.StaminaService.RE.DecreaseStamina
+        while true do
+            task.wait(0.1)
+            remote:FireServer(5)
+        end
+    """, "GameClient")
+    return remote, server, client
+
+
+@test
+def stamina_drain_blocked_at_the_remote():
+    from roblox import install_hooks
+    g = Game()
+    install_hooks(g.W)
+    remote, server, client = stamina_service(g)
+    g.I.sched.spawn(client, [])
+    g.run(0.35)
+    check(server["stamina"] < 100, "the game drains it on its own")
+    g.load()
+    g.run(3.5)
+    level = server["stamina"]
+    g.run(1.0)
+    check(server["stamina"] == level, f"drain stopped once the script found the remote ({level} -> {server['stamina']})")
+    check("stamina blocked DecreaseStamina" in g.readout(), f"readout: {g.readout()!r}")
+    g.I.call(g.I.G.get("getgenv")().get("AutoDribbleStop"), [])
+    g.run(0.5)
+    check(server["stamina"] < level, "and drains again after the script stops")
+
+
+@test
+def stamina_nan_without_hooks():
+    import math
+    g = Game()
+    remote, server, client = stamina_service(g)
+    g.I.sched.spawn(client, [])
+    g.load()
+    g.run(3.5)
+    check(math.isnan(server["stamina"]), f"0/0 sent: the server's stamina is NaN and never runs out ({server})")
+    check("stamina NaN DecreaseStamina" in g.readout(), f"readout: {g.readout()!r}")
 
 
 @test

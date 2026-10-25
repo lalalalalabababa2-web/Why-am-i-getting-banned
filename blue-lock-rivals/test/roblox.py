@@ -626,7 +626,7 @@ class BasePart(Inst):
     ISA = ("BasePart", "PVInstance", "Part")
     DEFAULTS = {"Position": lambda: Vector3(), "Size": lambda: Vector3(2, 2, 2), "AssemblyLinearVelocity": lambda: Vector3(),
                 "Anchored": False, "CanCollide": True, "Transparency": 0, "Color": lambda: Color3(1, 1, 1),
-                "Material": None, "Shape": None}
+                "Material": None, "Shape": None, "CanTouch": True, "CanQuery": True, "CastShadow": True}
     EVENTS = ("Touched", "TouchEnded")
 
     def __init__(self, world, name=None, **props):
@@ -911,6 +911,21 @@ class IntValue(Inst):
     DEFAULTS = {"Value": 0}
 
 
+class RemoteEvent(Inst):
+    CLASS = "RemoteEvent"
+    ISA = ("RemoteEvent", "BaseRemoteEvent")
+    EVENTS = ("OnClientEvent", "OnServerEvent")
+
+    def __init__(self, world, name=None, **props):
+        super().__init__(world, name, **props)
+        self.server = []  # the fake server's handlers
+
+    def m_FireServer(self, *args):
+        self.world.fired.append((self.world.sched.now, self, args))
+        for h in self.server:
+            h(*args)
+
+
 class BindableEvent(Inst):
     CLASS = "BindableEvent"
     ISA = ("BindableEvent",)
@@ -1159,7 +1174,8 @@ class DataModel(Inst):
 
 CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animator, Animation, Player, ScreenGui,
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
-                                 BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue]}
+                                 BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue,
+                                 RemoteEvent]}
 CLASSES["Part"] = BasePart
 
 
@@ -1302,4 +1318,33 @@ class World:
         def writefile(path, data):
             self.files[path] = tostr(data)
         G.set("readfile", readfile)
+        self.fired = []
+        self.touches = []
+
+        def firetouchinterest(a, b, toggle):
+            self.touches.append((self.sched.now, a, b, toggle))
+        G.set("firetouchinterest", firetouchinterest)
         G.set("writefile", writefile)
+
+
+def install_hooks(world, script_chunk="AutoDribble"):
+    """hookmetamethod(game, "__namecall"), getnamecallmethod, checkcaller and newcclosure."""
+    I, G = world.interp, world.interp.G
+
+    def hookmetamethod(obj, name, fn):
+        if obj is not world.game or name != "__namecall":
+            raise LuaError("only game's __namecall can be hooked in the test world")
+        prev = I.namecall_hook
+
+        def old(o, *a):
+            if prev is not None:
+                return Multi(I.call(prev, [o] + list(a)))
+            f = I.index(o, I.sched.tls.namecall)
+            return Multi(I.call(f, [o] + list(a)))
+        I.namecall_hook = fn
+        return old
+
+    G.set("hookmetamethod", hookmetamethod)
+    G.set("getnamecallmethod", lambda: getattr(I.sched.tls, "namecall", None))
+    G.set("checkcaller", lambda: getattr(I.sched.tls, "thread_chunk", None) == script_chunk)
+    G.set("newcclosure", lambda f: f)

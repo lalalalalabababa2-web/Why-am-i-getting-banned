@@ -9,6 +9,7 @@ string interpolation is rejected) and reports:
   - locals that are never read
   - calls to local functions with a different number of arguments than they take
   - `...` outside a vararg function, `break`/`continue` outside a loop, code after `return`
+  - the same key set twice in one table constructor (the later one silently wins)
 
 Usage: python3 check.py AutoDribble.lua [more.lua ...]   (exit status 1 on errors)
 """
@@ -166,7 +167,7 @@ class Parser:
         self.t, self.p = tokens, 0
         self.fs = FuncState(None, True)  # the main chunk is vararg
         self.globals_read, self.globals_written = {}, {}
-        self.unused, self.arity = [], []
+        self.unused, self.arity, self.duplicates = [], [], []
 
     # tokens
     def peek(self, k=0):
@@ -598,7 +599,13 @@ class Parser:
 
     def table(self):
         self.expect_op("{")
+        keys = {}
         while not self.op("}"):
+            if self.peek()[0] == "name" and self.peek(1)[0] == "op" and self.peek(1)[1] == "=":
+                name, line = self.peek()[1], self.peek()[2]
+                if name in keys:
+                    self.duplicates.append((line, name, keys[name]))
+                keys[name] = line
             if self.op("["):
                 self.next()
                 self.expr()
@@ -643,6 +650,9 @@ def check(path):
             ok = False
     for name, line in sorted(parser.globals_written.items(), key=lambda kv: kv[1]):
         print(f"{path}:{line}: ERROR assigns global '{name}'")
+        ok = False
+    for line, name, first in parser.duplicates:
+        print(f"{path}:{line}: ERROR '{name}' is set twice in one table (first at line {first}); the later one wins")
         ok = False
     for line, name, nargs, nparams, open_ended in parser.arity:
         print(f"{path}:{line}: WARN {name}() takes {nparams} argument(s), called with {nargs}"

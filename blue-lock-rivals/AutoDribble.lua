@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v13 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v14 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -26,6 +26,14 @@
 
     Cooldowns are learned: after a hit it watches the game's button until it looks the way it did
     before the press. Until then it uses the guesses in CFG.Cooldowns.
+
+    REACH (the R button opens three sliders, saved): how far the ball counts as touching you.
+      GK   while you keep, any ball this close is touched by your hands, feet and middle
+      DRB  a loose ball this close is touched, so it's yours
+      TKL  enemies' hitboxes grow to this size so slides land, and the ball at their feet this
+           close is touched
+    A see-through sphere shows your GK or DRB reach, red boxes the enemies' TKL hitboxes (only
+    you see them). It uses the executor's firetouchinterest: the game gets a real touch.
 
     Pills: tap = on/off, drag = move them all (they stay on screen).
            hold ~1s and let go, then tap the game's button = force that button
@@ -61,6 +69,9 @@ local CFG = {
     Cooldowns    = { dribble = 3, tackle = 3, dive = 1.5 }, -- first guesses (s), replaced once learned
     UiScale      = 1,      -- size of the pills and readout: 1.3 = bigger, 0.8 = smaller
     InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side (always on)
+    Hitbox       = { dive = 6, dribble = 4, tackle = 5 }, -- reach sizes in studs; the sliders change these
+    HitboxMax    = 25,
+    ShowReach    = true,   -- the sphere and the red boxes
     Retry        = 0.5,    -- gap between tries of a ready move, in case the game swallowed a press
 
     -- dribble
@@ -198,7 +209,7 @@ if not pcall(function() screen.Parent = (gethui and gethui()) or game:GetService
 end
 
 local bar = Instance.new("Frame")
-bar.Size = UDim2.fromOffset(192, CFG.Debug and 78 or 22)
+bar.Size = UDim2.fromOffset(217, 22)
 bar.Position = UDim2.new(0, 12, 0.22, 0)
 bar.BackgroundTransparency = 1
 bar.Parent = screen
@@ -220,9 +231,67 @@ local function makePill(x)
 end
 local pills = { dribble = makePill(0), tackle = makePill(65), dive = makePill(130) }
 
+-- R: opens the reach sliders
+local reachBtn = makePill(195)
+reachBtn.Size = UDim2.fromOffset(22, 22)
+reachBtn.Text = "R"
+reachBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.fromOffset(217, 52)
+panel.Position = UDim2.fromOffset(0, 25)
+panel.BackgroundColor3 = BLACK
+panel.BackgroundTransparency = 0.45
+panel.Visible = false
+panel.Parent = bar
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 6)
+
+local SLIDER_NAMES = { dive = "GK", dribble = "DRB", tackle = "TKL" }
+local SLIDER_ORDER = { "dive", "dribble", "tackle" }
+local REACH_COLORS = { dive = Color3.fromRGB(60, 140, 255), dribble = Color3.fromRGB(60, 220, 120),
+                       tackle = Color3.fromRGB(255, 70, 70) }
+local sliders = {}
+for i, kind in ipairs(SLIDER_ORDER) do
+    local y = 4 + (i - 1) * 16
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromOffset(44, 14)
+    label.Position = UDim2.fromOffset(4, y)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.TextScaled = true
+    label.TextColor3 = WHITE
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = panel
+    local track = Instance.new("Frame")
+    track.Size = UDim2.fromOffset(160, 6)
+    track.Position = UDim2.fromOffset(50, y + 4)
+    track.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+    track.Active = true
+    track.Parent = panel
+    local fill = Instance.new("Frame")
+    fill.BackgroundColor3 = REACH_COLORS[kind]
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(10, 10)
+    knob.BackgroundColor3 = WHITE
+    knob.Parent = track
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+    sliders[kind] = { label = label, track = track, fill = fill, knob = knob }
+end
+
+local function setReach(kind, v)
+    CFG.Hitbox[kind] = math.clamp(math.floor(v + 0.5), 0, CFG.HitboxMax)
+    local sl, f = sliders[kind], CFG.Hitbox[kind] / CFG.HitboxMax
+    sl.fill.Size = UDim2.new(f, 0, 1, 0)
+    sl.knob.Position = UDim2.new(f, -5, 0.5, -5)
+    sl.label.Text = SLIDER_NAMES[kind] .. " " .. CFG.Hitbox[kind]
+end
+for _, kind in ipairs(SLIDER_ORDER) do setReach(kind, CFG.Hitbox[kind]) end
+
 local info = Instance.new("TextLabel")
 info.Size = UDim2.fromOffset(192, 53)
-info.Position = UDim2.fromOffset(0, 25)
+info.Position = UDim2.fromOffset(0, 25) -- (layout() moves it under the sliders when they're open)
 info.BackgroundColor3 = BLACK
 info.BackgroundTransparency = 0.35
 info.TextColor3 = WHITE
@@ -675,6 +744,7 @@ end
 local function save()
     local data = {}
     for kind, t in pairs(saved) do data[kind] = t.path end
+    data.reach = CFG.Hitbox
     pcall(writefile, CFG.SaveFile, HttpService:JSONEncode(data))
 end
 
@@ -711,6 +781,11 @@ end
 pcall(function()
     for kind, path in pairs(HttpService:JSONDecode(readfile(CFG.SaveFile))) do
         if NAMES[kind] and type(path) == "table" and #path > 0 then saved[kind] = { path = path } end
+        if kind == "reach" and type(path) == "table" then
+            for k, v in pairs(path) do
+                if sliders[k] and type(v) == "number" then setReach(k, v) end
+            end
+        end
     end
 end)
 
@@ -1187,6 +1262,11 @@ end
 -- Where to slide at the carrier, or nil when it isn't time. Their dribble decides it: an open
 -- protection window would ankle-break you, a cooling one can't stop you, and a ready one only
 -- loses to a slide that gets there before they can react.
+-- the size enemies' hitboxes are grown to while tackle is on (0 = left alone)
+local function tackleBox()
+    return (on.tackle and not on.dive and CFG.Hitbox.tackle >= 2) and CFG.Hitbox.tackle or 0
+end
+
 local function tackleAim(root, holder, lead)
     local char = holder.Character
     local r = char and char:FindFirstChild("HumanoidRootPart")
@@ -1195,7 +1275,7 @@ local function tackleAim(root, holder, lead)
     local dist = flat(r.Position - root.Position).Magnitude
     -- Blatant: you're put 3 studs from them before the slide, so it reaches from much further.
     -- Otherwise a carrier a little past the slide's reach gets glided at first.
-    local reach = CFG.Blatant and CFG.TeleportReach or slideReach
+    local reach = CFG.Blatant and CFG.TeleportReach or slideReach + tackleBox() / 2
     local extra = CFG.Blatant and 0 or CFG.TackleGlide
     if dist > reach + extra + 8 then return nil end
     -- where they'll be when the slide gets there; you see them a round trip late, so plus ping
@@ -1563,6 +1643,74 @@ local function deepStep()
     end
 end
 
+-- Blue Lock: Rivals keeps stamina on its server: your client tells it how much to take through a
+-- remote (Knit's StaminaService.RE.DecreaseStamina). Those calls are dropped before they leave
+-- (hookmetamethod), so the server never takes any. Any remote named like a stamina decrease gets
+-- the same. Without hookmetamethod, the remote gets 0/0 now and then instead, the trick public
+-- scripts use: the server's stamina turns into NaN, which never runs out.
+local DECREASE_WORDS = { "decrease", "use", "consume", "drain", "reduce", "take", "remove", "lose", "spend",
+                         "deplete" }
+local blocked = env.AutoDribbleBlocked or setmetatable({}, { __mode = "k" }) -- shared with a re-run's hook
+env.AutoDribbleBlocked = blocked
+
+local function isStaminaRemote(inst)
+    if not (inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")) then return false end
+    local name = inst.Name:lower()
+    local around = name
+    local parent = inst.Parent
+    for _ = 1, 2 do
+        if parent then
+            around ..= " " .. parent.Name:lower()
+            parent = parent.Parent
+        end
+    end
+    if not around:find("stamina", 1, true) then return false end
+    for _, w in ipairs(DECREASE_WORDS) do
+        if name:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+local function hookRemotes()
+    if env.AutoDribbleHooked then return true end
+    if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then return false end
+    local wrap = type(newcclosure) == "function" and newcclosure or function(f) return f end
+    local ok = pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+            if blocked[self] and getnamecallmethod() == "FireServer"
+                and not (type(checkcaller) == "function" and checkcaller()) then
+                return nil
+            end
+            return old(self, ...)
+        end))
+    end)
+    env.AutoDribbleHooked = ok
+    return ok
+end
+
+local function staminaRemotes()
+    if not stam.remotes then
+        local found = {}
+        pcall(function()
+            for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+                if isStaminaRemote(d) then table.insert(found, d) end
+            end
+        end)
+        if #found == 0 then return end
+        stam.remotes = found
+        stam.hooked = hookRemotes()
+        for _, r in ipairs(found) do
+            if stam.hooked then blocked[r] = true end
+        end
+        stam.how = (stam.hooked and "blocked " or "NaN ") .. found[1].Name
+    end
+    if not stam.hooked and os.clock() >= (stam.nextNaN or 0) then
+        stam.nextNaN = os.clock() + 10 -- again after a respawn or a new match
+        for _, r in ipairs(stam.remotes) do pcall(function() r:FireServer(0 / 0) end) end
+    end
+end
+
 local function readStamina(e)
     if e.kind == "attr" then return e.inst:GetAttribute(e.name) end
     if e.kind == "value" then return e.inst.Value end
@@ -1579,6 +1727,8 @@ local function holdStamina()
     if os.clock() >= stam.nextScan then
         stam.nextScan = os.clock() + 3 -- new characters, new values
         pcall(scanStamina)
+        pcall(staminaRemotes)
+        if stam.how then stam.found = stam.how end
     end
     pcall(deepStep)
     for _, list in ipairs({ stam.list, stam.gc }) do
@@ -1590,6 +1740,92 @@ local function holdStamina()
                 if cur < e.top then writeStamina(e, e.top) end
             end)
         end
+    end
+end
+
+---------------------------------------------------------------- reach
+
+-- The game's own touch between the ball and your feet, hands and middle, as if one of them had
+-- reached it (firetouchinterest): whatever the game does with a touch, it does from further away.
+local LIMBS = { "RightFoot", "LeftFoot", "Right Leg", "Left Leg", "RightHand", "LeftHand", "HumanoidRootPart" }
+local lastTouch = 0
+local function touchBall(ball)
+    if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.1 then return end
+    lastTouch = os.clock()
+    local char = LP.Character
+    if not char then return end
+    for _, name in ipairs(LIMBS) do
+        local part = char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            pcall(firetouchinterest, part, ball, 0)
+            pcall(firetouchinterest, part, ball, 1)
+        end
+    end
+end
+
+-- Enemies' hitboxes (their root parts, on your side only) grown so slides land: the game sees the
+-- slide touching them from further. Each is put back the way it was when tackle goes off.
+local grown = setmetatable({}, { __mode = "k" }) -- part -> how it was
+local function growHitboxes(size)
+    local want = Vector3.new(size, size, size)
+    for _, p in ipairs(Players:GetPlayers()) do
+        local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if r and r.Size ~= want then
+            grown[r] = grown[r] or { Size = r.Size, Transparency = r.Transparency, Color = r.Color,
+                                     Material = r.Material, CanCollide = r.CanCollide }
+            r.Size, r.CanCollide = want, false
+            if CFG.ShowReach then
+                r.Transparency, r.Color, r.Material = 0.75, REACH_COLORS.tackle, Enum.Material.ForceField
+            end
+        end
+    end
+end
+
+local function shrinkHitboxes()
+    for part, was in pairs(grown) do
+        pcall(function()
+            for k, v in pairs(was) do part[k] = v end
+        end)
+        grown[part] = nil
+    end
+end
+
+-- your reach, drawn around you: a see-through sphere that only you see (it lives in your camera)
+local sphere = Instance.new("Part")
+sphere.Name = "AutoDribbleReach"
+sphere.Shape = Enum.PartType.Ball
+sphere.Anchored, sphere.CanCollide, sphere.CanTouch, sphere.CanQuery, sphere.CastShadow = true, false, false, false, false
+sphere.Material = Enum.Material.ForceField
+sphere.Transparency = 1
+pcall(function() sphere.Parent = workspace.CurrentCamera end)
+
+local function reachStep(root, ball, holder)
+    local kind = on.dive and "dive" or on.dribble and "dribble" or nil
+    local r = kind and CFG.Hitbox[kind] or 0
+    if CFG.ShowReach and r > 0 then
+        sphere.Size = Vector3.new(r * 2, r * 2, r * 2)
+        sphere.Color = REACH_COLORS[kind]
+        sphere.Transparency = 0.35
+        sphere.CFrame = CFrame.new(root.Position)
+    else
+        sphere.Transparency = 1
+    end
+    if tackleBox() > 0 then growHitboxes(tackleBox()) elseif next(grown) then shrinkHitboxes() end
+    if not ball then return end
+    -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
+    -- a couple of studs under your middle and still at your feet)
+    local off = ball.Position - root.Position
+    local dist = math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+    local enemyHas = holder and holder ~= LP and isEnemy(holder)
+    -- a few studs from you counts as yours to this script, but the game may not think so yet; only
+    -- a ball already at your feet is left alone
+    local loose = not holder or (holder == LP and dist >= 3)
+    if on.dive and dist <= CFG.Hitbox.dive and (loose or enemyHas) then
+        touchBall(ball)
+    elseif on.dribble and not on.dive and loose and dist <= CFG.Hitbox.dribble then
+        touchBall(ball)
+    elseif on.tackle and not on.dive and enemyHas and dist <= CFG.Hitbox.tackle then
+        touchBall(ball)
     end
 end
 
@@ -1627,8 +1863,8 @@ end
 local function showInfo(root, ball, holder, lead)
     if not CFG.Debug or os.clock() < nextInfo then return end
     nextInfo = os.clock() + 0.1
-    local line1 = ("conn %s sig %s tap %s key %s | %dms"):format(yn(caps.conn), yn(caps.sig), yn(caps.touch),
-        yn(caps.key), math.floor(lead * 1000 + 0.5))
+    local line1 = ("conn %s sig %s tap %s key %s fti %s | %dms"):format(yn(caps.conn), yn(caps.sig),
+        yn(caps.touch), yn(caps.key), yn(type(firetouchinterest) == "function"), math.floor(lead * 1000 + 0.5))
     local line2 = "no ball"
     if ball then
         local who = holder == LP and "YOU" or holder and (isEnemy(holder) and "FOE" or "TEAM") or "free"
@@ -1670,6 +1906,7 @@ bind(RunService.Heartbeat, function(dt)
     if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
     if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
     showInfo(root, ball, holder, lead)
+    reachStep(root, ball, holder)
     if not ball then return end
     if on.dive and home and not fieldExact then
         -- No pitch part to read: play happens out on the pitch, so the average direction of the
@@ -1778,6 +2015,49 @@ end)
 
 local dragInput, dragKind, dragStart, startAbs, moved, pressedAt
 
+-- the bar's height and the readout's place follow what's open
+local function layout()
+    local y = 25 + (panel.Visible and 55 or 0)
+    info.Position = UDim2.fromOffset(0, y)
+    bar.Size = UDim2.fromOffset(217, CFG.Debug and y + 53 or (panel.Visible and 77 or 22))
+end
+layout()
+
+bind(reachBtn.InputBegan, function(input)
+    local t = input.UserInputType
+    if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+        panel.Visible = not panel.Visible
+        layout()
+    end
+end)
+
+-- a slider follows your finger from where it touches the track until you let go
+local slideInput, slideKind
+local function slideTo(kind, x)
+    local t = sliders[kind].track
+    setReach(kind, (x - t.AbsolutePosition.X) / math.max(1, t.AbsoluteSize.X) * CFG.HitboxMax)
+end
+for _, kind in ipairs(SLIDER_ORDER) do
+    bind(sliders[kind].track.InputBegan, function(input)
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            slideInput, slideKind = input, kind
+            slideTo(kind, input.Position.X)
+        end
+    end)
+end
+bind(UIS.InputChanged, function(input)
+    if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
+        slideTo(slideKind, input.Position.X)
+    end
+end)
+bind(UIS.InputEnded, function(input)
+    if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseButton1) then
+        slideInput = nil
+        save()
+    end
+end)
+
 for kind, pill in pairs(pills) do
     bind(pill.InputBegan, function(input)
         local t = input.UserInputType
@@ -1831,6 +2111,9 @@ end)
 env.AutoDribbleStop = function()
     for _, kind in ipairs(KINDS) do on[kind] = false end
     stopLearning()
+    shrinkHitboxes()
+    for r in pairs(blocked) do blocked[r] = nil end
+    sphere:Destroy()
     pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
     for _, c in ipairs(conns) do c:Disconnect() end
     screen:Destroy()

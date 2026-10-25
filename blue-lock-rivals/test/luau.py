@@ -71,10 +71,11 @@ def normkey(k):
 
 
 class LuaFunction:
-    __slots__ = ("params", "vararg", "body", "env", "name", "interp")
+    __slots__ = ("params", "vararg", "body", "env", "name", "interp", "chunk")
 
-    def __init__(self, params, vararg, body, env, name, interp):
+    def __init__(self, params, vararg, body, env, name, interp, chunk=None):
         self.params, self.vararg, self.body, self.env, self.name, self.interp = params, vararg, body, env, name, interp
+        self.chunk = chunk  # which loaded script it came from (checkcaller tells the executor's apart)
 
     def __call__(self, *args):
         # host code calling a Lua function gets its first result, like a Python call would
@@ -206,10 +207,14 @@ class LThread:
         self.started = False
         self.wake = None
         self.waited_from = 0.0
+        # whose thread this is (checkcaller): the script of the function it runs, or else whoever
+        # started it
+        self.origin = fn.chunk if isinstance(fn, LuaFunction) else getattr(sched.tls, "thread_chunk", None)
 
     def _run(self):
         self.go.acquire()
         self.sched.tls.current = self
+        self.sched.tls.thread_chunk = self.origin
         try:
             self.sched.interp.call(self.fn, self.args)
         except LuaError as e:
@@ -882,8 +887,10 @@ class Compiler:
         body = self.block()
         self.expect("kw", "end")
 
+        chunk = self.chunkname
+
         def make(env):
-            return LuaFunction(params, vararg, body, env, name, I)
+            return LuaFunction(params, vararg, body, env, name, I, chunk)
         return make
 
     # ---- expressions
@@ -1042,6 +1049,10 @@ class Compiler:
 
                 def many_m(env, objf=objf, name=name, args=args):
                     obj = objf(env)
+                    if I.namecall_hook is not None and hasattr(obj, "lua_index"):
+                        # an executor's __namecall hook sees every method call on an instance
+                        I.sched.tls.namecall = name
+                        return I.call(I.namecall_hook, [obj] + args(env))
                     f = I.index(obj, name)
                     if f is None:
                         raise LuaError(f"attempt to call missing method '{name}' of {luatype(obj)}")
@@ -1127,6 +1138,7 @@ class Interp:
         self.G = LuaTable()
         self.sched = Scheduler(self)
         self.string_meta = LuaTable()
+        self.namecall_hook = None
         self.install_stdlib()
 
     # variables
@@ -1196,6 +1208,17 @@ class Interp:
 
     def call(self, f, args):
         if isinstance(f, LuaFunction):
+            tls = self.sched.tls
+            prev = getattr(tls, "chunk", None)
+            tls.chunk = f.chunk
+            try:
+                return self.call_lua(f, args)
+            finally:
+                tls.chunk = prev
+        return self.call_other(f, args)
+
+    def call_lua(self, f, args):
+        if True:
             env = Env(f.env)
             v = env.vars
             np = len(f.params)
@@ -1211,6 +1234,8 @@ class Interp:
             except (BreakEx, ContinueEx):
                 raise LuaError("break/continue outside a loop")
             return []
+
+    def call_other(self, f, args):
         if isinstance(f, LuaTable) and f.meta is not None and f.meta.get("__call") is not None:
             return self.call(f.meta.get("__call"), [f] + list(args))
         if callable(f) and not hasattr(f, "lua_index"):
@@ -1311,7 +1336,7 @@ class Interp:
         if not comp.check("eof"):
             tok = comp.peek()
             raise LuaSyntaxError(tok[2], f"unexpected {tok[1]!r}")
-        return LuaFunction([], True, body, None, chunkname, self)
+        return LuaFunction([], True, body, None, chunkname, self, chunkname)
 
     # stdlib
     def install_stdlib(self):

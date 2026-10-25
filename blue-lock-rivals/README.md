@@ -44,6 +44,26 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v14
+
+- **Reach sliders (the R button):** GK, DRB and TKL, 0–25 studs, saved between runs.
+  - **GK:** while you keep, any ball within reach gets the game's own touch from your hands, feet
+    and middle (`firetouchinterest`), as if you'd got to it.
+  - **DRB:** a loose ball within reach gets touched, so it's yours.
+  - **TKL:** enemies' hitboxes grow to that size (on your side only) so slides land, the ball at a
+    carrier's feet within reach gets touched, and auto-tackle slides from half the hitbox further.
+  - **What you see:** a see-through sphere shows your GK or DRB reach, see-through red boxes the
+    enemies' hitboxes. They're in your camera, so only you see them. Hitboxes go back to normal
+    when tackle goes off.
+- **Infinite stamina that reaches the server:** BLR keeps stamina on its server, and your client
+  tells it how much to take through `StaminaService.RE.DecreaseStamina`. Those calls are now
+  dropped before they leave (`hookmetamethod`), so the server never takes any. Without
+  `hookmetamethod`, the remote gets `0/0` every 10s instead (the trick public scripts use: the
+  server's stamina turns into NaN, which never runs out). Any remote named like a stamina decrease
+  is treated the same. The value-holding from v10 stays as a fallback.
+- `check.py` flags a key set twice in one table (a second `Reach` in CFG silently replaced the
+  first while this was being written).
+
 ## v13
 
 - **Keeper jumps for high shots.** It reads how high the ball crosses your line (curve and dip
@@ -152,7 +172,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 56 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 64 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:
