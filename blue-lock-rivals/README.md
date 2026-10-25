@@ -49,6 +49,20 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v17
+
+- **Camera: the stamina hook is off by default.** v15 was the first version that ran, and the
+  camera glitch started with it. It was also the first to run the `__namecall` hook that blocks
+  the stamina remote, and on some mobile executors that hook breaks the game's own scripts. Stamina now
+  uses the 0/0 trick by default, which touches nothing else (`StaminaHook = true` brings the hook
+  back).
+- **Reach is drawn as a thin ring at your feet** (an adornment). At DRB 25 the filled disc
+  tinted 50 studs of pitch green. **Enemy hitboxes get a thin red outline** (a SelectionBox)
+  instead of their part being recoloured.
+- **Hitbox extender:** the touch comes from every part of your body (hands for a catch, feet for a
+  trap), every 0.08s. A fast ball counts if it'll be in reach a moment from now, so a 180
+  studs/s pass skimming past isn't missed between frames.
+
 ## v16
 
 - **Camera hitching fixed.** The stamina search ran all the time, even with every pill off. It
@@ -198,7 +212,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 67 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 69 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

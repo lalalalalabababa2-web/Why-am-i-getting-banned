@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v16 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v17 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -71,7 +71,10 @@ local CFG = {
     InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side (always on)
     Hitbox       = { dive = 6, dribble = 4, tackle = 5 }, -- reach sizes in studs; the sliders change these
     HitboxMax    = 25,
-    ShowReach    = true,   -- the sphere and the red boxes
+    ShowReach    = true,   -- a ring on the ground for your reach, red outlines on enemies' hitboxes
+    StaminaHook  = false,  -- true = block the stamina remote with a __namecall hook instead of 0/0.
+                           -- Off by default: on some executors that hook breaks the game's scripts
+                           -- (the camera stops following you)
     Retry        = 0.5,    -- gap between tries of a ready move, in case the game swallowed a press
 
     -- dribble
@@ -1702,7 +1705,7 @@ do
     local function adopt(r)
         stam.remotes = stam.remotes or {}
         table.insert(stam.remotes, r)
-        if stam.hooked == nil then stam.hooked = hookRemotes() end
+        if stam.hooked == nil then stam.hooked = CFG.StaminaHook and hookRemotes() or false end
         if stam.hooked then blocked[r] = true end
         stam.how = (stam.hooked and "blocked " or "NaN ") .. stam.remotes[1].Name
         stam.nextNaN = 0
@@ -1767,71 +1770,87 @@ end
 local reachStep, shrinkHitboxes, sphere -- set in the block below, used further down
 do
 
-    -- The game's own touch between the ball and your feet, hands and middle, as if one of them had
-    -- reached it (firetouchinterest): whatever the game does with a touch, it does from further away.
-    local LIMBS = { "RightFoot", "LeftFoot", "Right Leg", "Left Leg", "RightHand", "LeftHand", "HumanoidRootPart" }
+    -- The game's own touch between the ball and every part of your body, as if it had reached it
+    -- (firetouchinterest): whatever the game does with a touch (a trap with the feet, a catch with
+    -- the hands), it does from further away.
     local lastTouch = 0
     local function touchBall(ball)
-        if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.1 then return end
+        if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.08 then return end
         lastTouch = os.clock()
         local char = LP.Character
         if not char then return end
-        for _, name in ipairs(LIMBS) do
-            local part = char:FindFirstChild(name)
-            if part and part:IsA("BasePart") then
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
                 pcall(firetouchinterest, part, ball, 0)
                 pcall(firetouchinterest, part, ball, 1)
             end
         end
     end
 
+    -- where the reach drawings go: next to the pills (only you see them), or your camera
+    local drawIn = screen.Parent or workspace.CurrentCamera
+
     -- Enemies' hitboxes (their root parts, on your side only) grown so slides land: the game sees the
-    -- slide touching them from further. Each is put back the way it was when tackle goes off.
-    local grown = setmetatable({}, { __mode = "k" }) -- part -> how it was
+    -- slide touching them from further. A thin red outline shows each one; the part itself stays
+    -- invisible. Each is put back the way it was when tackle goes off.
+    local grown = setmetatable({}, { __mode = "k" }) -- part -> { was = how it was, box = its outline }
     local function growHitboxes(size)
         local want = Vector3.new(size, size, size)
         for _, p in ipairs(Players:GetPlayers()) do
             local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
             if r and r.Size ~= want then
-                grown[r] = grown[r] or { Size = r.Size, Transparency = r.Transparency, Color = r.Color,
-                                         Material = r.Material, CanCollide = r.CanCollide }
-                r.Size, r.CanCollide = want, false
-                if CFG.ShowReach then
-                    r.Transparency, r.Color, r.Material = 0.75, REACH_COLORS.tackle, Enum.Material.ForceField
+                local g = grown[r]
+                if not g then
+                    g = { was = { Size = r.Size, CanCollide = r.CanCollide } }
+                    grown[r] = g
+                    if CFG.ShowReach then
+                        pcall(function()
+                            local box = Instance.new("SelectionBox")
+                            box.Adornee = r
+                            box.LineThickness = 0.05
+                            box.Color3 = REACH_COLORS.tackle
+                            box.SurfaceTransparency = 1
+                            box.Parent = drawIn
+                            g.box = box
+                        end)
+                    end
                 end
+                r.Size, r.CanCollide = want, false
             end
         end
     end
 
     function shrinkHitboxes()
-        for part, was in pairs(grown) do
+        for part, g in pairs(grown) do
             pcall(function()
-                for k, v in pairs(was) do part[k] = v end
+                for k, v in pairs(g.was) do part[k] = v end
             end)
+            if g.box then g.box:Destroy() end
             grown[part] = nil
         end
     end
 
-    -- Your reach, drawn as a flat see-through disc on the ground under you, that only you see (it
-    -- lives in your camera). A sphere put the camera inside it whenever the camera came close, and
-    -- the whole screen went hazy.
-    sphere = Instance.new("Part")
+    -- Your reach, drawn as a thin ring on the ground around you: an adornment, so nothing is in the
+    -- world for the camera to sit inside or see the pitch tinted through (a sphere, then a filled
+    -- disc, both did). Only you see it.
+    sphere = Instance.new("CylinderHandleAdornment")
     sphere.Name = "AutoDribbleReach"
-    sphere.Shape = Enum.PartType.Cylinder
-    sphere.Anchored, sphere.CanCollide, sphere.CanTouch, sphere.CanQuery, sphere.CastShadow = true, false, false, false, false
-    sphere.Material = Enum.Material.Neon
+    sphere.Height = 0.15
     sphere.Transparency = 1
-    pcall(function() sphere.Parent = workspace.CurrentCamera end)
+    sphere.AlwaysOnTop = false
+    sphere.Parent = drawIn
 
     function reachStep(root, ball, holder)
         local kind = on.dive and "dive" or on.dribble and "dribble" or nil
         local r = kind and CFG.Hitbox[kind] or 0
         if CFG.ShowReach and r > 0 then
-            -- a cylinder's round faces are on its X axis: turned on its side, it lies flat
-            sphere.Size = Vector3.new(0.2, r * 2, r * 2)
-            sphere.Color = REACH_COLORS[kind]
-            sphere.Transparency = 0.75
-            sphere.CFrame = CFrame.new(root.Position - Vector3.new(0, 2.8, 0)) * CFrame.Angles(0, 0, math.pi / 2)
+            -- a cylinder adornment runs along its Z axis: tipped over, it lies flat at your feet
+            sphere.Adornee = root
+            sphere.Radius = r
+            sphere.InnerRadius = math.max(0, r - 0.3)
+            sphere.Color3 = REACH_COLORS[kind]
+            sphere.Transparency = 0.25
+            sphere.CFrame = CFrame.new(0, -2.8, 0) * CFrame.Angles(math.pi / 2, 0, 0)
         else
             sphere.Transparency = 1
         end
@@ -1839,8 +1858,12 @@ do
         if not ball then return end
         -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
         -- a couple of studs under your middle and still at your feet)
-        local off = ball.Position - root.Position
-        local dist = math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+        local function gap(pos)
+            local off = pos - root.Position
+            return math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+        end
+        -- now, or a moment from now: a fast ball going past is in reach for only a frame or two
+        local dist = math.min(gap(ball.Position), gap(ball.Position + ball.AssemblyLinearVelocity * 0.08))
         local enemyHas = holder and holder ~= LP and isEnemy(holder)
         -- a few studs from you counts as yours to this script, but the game may not think so yet; only
         -- a ball already at your feet is left alone
@@ -2165,7 +2188,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v16", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
+            Title = "AutoDribble v17", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
         })
     end)
 end

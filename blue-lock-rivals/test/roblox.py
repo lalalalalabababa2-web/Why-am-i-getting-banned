@@ -955,6 +955,21 @@ class RemoteEvent(Inst):
             h(*args)
 
 
+class CylinderHandleAdornment(Inst):
+    CLASS = "CylinderHandleAdornment"
+    ISA = ("CylinderHandleAdornment", "HandleAdornment", "PVAdornment", "GuiBase3d")
+    DEFAULTS = {"Radius": 1, "InnerRadius": 0, "Height": 1, "Angle": 360, "Color3": lambda: Color3(),
+                "Transparency": 0, "Adornee": None, "CFrame": lambda: CFrame(Vector3()), "AlwaysOnTop": False,
+                "ZIndex": -1, "Visible": True}
+
+
+class SelectionBox(Inst):
+    CLASS = "SelectionBox"
+    ISA = ("SelectionBox", "InstanceAdornment", "GuiBase3d")
+    DEFAULTS = {"Adornee": None, "LineThickness": 0.15, "Color3": lambda: Color3(), "SurfaceColor3": lambda: Color3(),
+                "SurfaceTransparency": 1, "Transparency": 0, "Visible": True}
+
+
 class BindableEvent(Inst):
     CLASS = "BindableEvent"
     ISA = ("BindableEvent",)
@@ -1204,7 +1219,7 @@ class DataModel(Inst):
 CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animator, Animation, Player, ScreenGui,
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
                                  BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue,
-                                 RemoteEvent]}
+                                 RemoteEvent, CylinderHandleAdornment, SelectionBox]}
 CLASSES["Part"] = BasePart
 
 

@@ -1252,13 +1252,13 @@ def reach_sliders_open_move_and_save():
 @test
 def reach_sphere_shows_your_reach():
     g = keeper_game()
-    cam = g.W.workspace.props["CurrentCamera"]
-    sphere = cam.m_FindFirstChild("AutoDribbleReach")
-    check(sphere is not None, "a marker in your camera (only you see it)")
-    size = sphere.props["Size"]
-    check(size.y == 12 and size.z == 12 and size.x < 1 and sphere.props["Transparency"] < 1,
-          f"a flat disc 12 across for GK reach 6 ({size})")
-    check(sphere.get_CFrame().pos.y < g.root.props["Position"].y - 2, "on the ground, not around the camera")
+    ring = g.W.hui.m_FindFirstChild("AutoDribbleReach")
+    check(ring is not None and ring.CLASS == "CylinderHandleAdornment", "a ring adornment next to the pills (only you see it)")
+    check(ring.props["Radius"] == 6 and ring.props["InnerRadius"] > 5 and ring.props["Transparency"] < 1,
+          f"a thin ring, GK reach 6 ({ring.props['Radius']}, {ring.props['InnerRadius']})")
+    check(ring.props["Adornee"] is g.root and ring.props["CFrame"].pos.y < -2, "at your feet")
+    check(not g.W.workspace.props["CurrentCamera"].children, "nothing in the world for the camera to sit inside")
+    sphere = ring
     g.tap("dive")
     g.step()
     check(sphere.props["Transparency"] == 1, "hidden when nothing is on")
@@ -1297,11 +1297,14 @@ def tackle_reach_grows_enemy_hitboxes_and_puts_them_back():
     g.tap("tackle")
     g.step()
     check(foe.root.props["Size"].x == 5, f"enemy hitbox grown to 5 ({foe.root.props['Size']})")
-    check(foe.root.props["Transparency"] < 1 and foe.root.props["CanCollide"] is False, "and drawn see-through red")
+    boxes = [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"]
+    check(len(boxes) == 1 and boxes[0].props["Adornee"] is foe.root, f"one red outline, on the enemy ({boxes})")
+    check(foe.root.props["Transparency"] == 0 and foe.root.props["CanCollide"] is False, "their part itself isn't recoloured")
     check(mate.root.props["Size"].x == 2, "teammates left alone")
     g.tap("tackle")
     g.step()
-    check(foe.root.props["Size"].x == 2 and foe.root.props["Transparency"] == 0, f"put back ({foe.root.props['Size']})")
+    check(foe.root.props["Size"].x == 2, f"put back ({foe.root.props['Size']})")
+    check(not [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"], "outline gone")
 
 
 @test
@@ -1347,7 +1350,7 @@ def stamina_service(g):
 @test
 def stamina_drain_blocked_at_the_remote():
     from roblox import install_hooks
-    g = Game()
+    g = Game(cfg={"StaminaHook": "true"})
     install_hooks(g.W)
     remote, server, client = stamina_service(g)
     g.I.sched.spawn(client, [])
@@ -1401,7 +1404,7 @@ def idle_does_no_heavy_searching():
 @test
 def stamina_remote_that_loads_late_is_still_blocked():
     from roblox import install_hooks
-    g = Game()
+    g = Game(cfg={"StaminaHook": "true"})
     install_hooks(g.W)
     g.load()
     g.run(4)
@@ -1411,6 +1414,34 @@ def stamina_remote_that_loads_late_is_still_blocked():
     level = server["stamina"]
     g.run(1.0)
     check(server["stamina"] == level, f"blocked as soon as it arrived ({level} -> {server['stamina']})")
+
+
+@test
+def stamina_never_hooks_the_game_by_default():
+    # the __namecall hook broke the game's scripts on some executors (the camera stopped following)
+    import math
+    from roblox import install_hooks
+    g = Game()
+    install_hooks(g.W)
+    remote, server, client = stamina_service(g)
+    g.I.sched.spawn(client, [])
+    g.load()
+    g.run(3.5)
+    check(g.I.namecall_hook is None, "no __namecall hook installed")
+    check(math.isnan(server["stamina"]), f"stamina via 0/0 instead ({server})")
+
+
+@test
+def reach_catches_a_fast_ball_going_past():
+    g = Game().load()
+    g.tap("dribble")
+    g.holder = None
+    g.run(0.1)
+    n = len(touches_of(g))
+    # a pass at 180 studs/s skimming 3.8 studs past you: inside reach 4 for under a frame
+    g.shoot(Vector3(-31.5, 1, -3.8), Vector3(31.5, 1, -3.8), 180)  # frames land at x = -1.5 and +1.5: both outside
+    g.run(0.5)
+    check(len(touches_of(g)) > n, "touched it on the way past")
 
 
 @test
