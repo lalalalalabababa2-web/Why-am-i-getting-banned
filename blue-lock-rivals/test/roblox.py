@@ -583,6 +583,12 @@ class Inst(Host):
     def m_GetAttribute(self, name):
         return self.attrs.get(name)
 
+    def m_GetAttributes(self):
+        t = LuaTable()
+        for k, v in self.attrs.items():
+            t.set(k, v)
+        return t
+
     def m_SetAttribute(self, name, value):
         self.attrs[name] = value
 
@@ -881,6 +887,30 @@ class UIStroke(Inst):
     DEFAULTS = {"Thickness": 1, "Color": lambda: Color3(), "Transparency": 0, "ApplyStrokeMode": None}
 
 
+class UIScale(Inst):
+    CLASS = "UIScale"
+    ISA = ("UIScale", "UIComponent", "UIBase")
+    DEFAULTS = {"Scale": 1}
+
+
+class UITextSizeConstraint(Inst):
+    CLASS = "UITextSizeConstraint"
+    ISA = ("UITextSizeConstraint", "UIConstraint", "UIComponent", "UIBase")
+    DEFAULTS = {"MaxTextSize": 100, "MinTextSize": 1}
+
+
+class NumberValue(Inst):
+    CLASS = "NumberValue"
+    ISA = ("NumberValue", "ValueBase")
+    DEFAULTS = {"Value": 0}
+
+
+class IntValue(Inst):
+    CLASS = "IntValue"
+    ISA = ("IntValue", "ValueBase")
+    DEFAULTS = {"Value": 0}
+
+
 class BindableEvent(Inst):
     CLASS = "BindableEvent"
     ISA = ("BindableEvent",)
@@ -1129,7 +1159,7 @@ class DataModel(Inst):
 
 CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animator, Animation, Player, ScreenGui,
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
-                                 BindableEvent, Camera]}
+                                 BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue]}
 CLASSES["Part"] = BasePart
 
 

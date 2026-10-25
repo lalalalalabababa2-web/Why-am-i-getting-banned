@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v7 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v8 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -47,6 +47,8 @@ local CFG = {
     Debug        = true,   -- the live readout under the pills
     EngineInput  = true,   -- allow the virtual key and click as last resorts
     Cooldowns    = { dribble = 3, tackle = 3, dive = 1.5 }, -- first guesses (s), replaced once learned
+    UiScale      = 1,      -- size of the pills and readout: 1.3 = bigger, 0.8 = smaller
+    InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side
     Retry        = 0.5,    -- gap between tries of a ready move, in case the game swallowed a press
 
     -- dribble
@@ -71,11 +73,11 @@ local CFG = {
     -- keeper
     ShotSpeed    = 60,     -- dive at balls this fast; real shots were ~150 studs/s, passes ~40
     SlowBall     = 20,     -- slower than this is a roll, not a shot
-    ShotAim      = 0.5,    -- how much of its speed must head into the goal (1 = straight in, 0.5 = 60 deg)
-    GoalWidth    = 25,     -- it must cross your goal line this close to your spot
+    GoalWidth    = 30,     -- half the goal's width, used until the goal itself is found in the map
     DiveRange    = 35,     -- dive at shots passing this close to you
     DiveLead     = 0.2,    -- dive this long before the ball arrives, plus ping and travel time
     DiveSpeed    = 60,     -- roughly how fast a dive covers ground (studs/s)
+    DiveReach    = 12,     -- roughly how far a dive carries you: wider than this, move first, dive last
     JumpHigh     = true,   -- jump for high balls close to you instead of diving under them
     HighBall     = 4,      -- studs above your middle that count as high
     JumpReach    = 5,      -- sideways: a high ball passing closer than this gets a jump, wider gets a dive
@@ -124,6 +126,7 @@ local lastInput      -- a real InputObject, for ContextActionService handlers th
 local curHolder, heldSince = nil, 0 -- who had the ball last frame, and since when
 local shotPlan       -- the keeper's read of a ball coming in: { at = where it passes you, t = when }
 local slideReach = CFG.SlideReach
+local goalCentre, goalHalf = nil, CFG.GoalWidth -- your goal, once it's found in the map
 local caps = { conn = false, sig = false, touch = nil, key = nil } -- what the executor allows
 local dbg = { last = "no press yet" }
 
@@ -172,34 +175,36 @@ if not pcall(function() screen.Parent = (gethui and gethui()) or game:GetService
 end
 
 local bar = Instance.new("Frame")
-bar.Size = CFG.Debug and UDim2.fromOffset(230, 148) or UDim2.fromOffset(104, 92)
-bar.Position = UDim2.new(0, 16, 0.3, 0)
+bar.Size = UDim2.fromOffset(192, CFG.Debug and 78 or 22)
+bar.Position = UDim2.new(0, 12, 0.22, 0)
 bar.BackgroundTransparency = 1
 bar.Parent = screen
+Instance.new("UIScale", bar).Scale = CFG.UiScale
 
-local function makePill(y)
+local function makePill(x)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.fromOffset(104, 28)
-    b.Position = UDim2.fromOffset(0, y)
+    b.Size = UDim2.fromOffset(62, 22)
+    b.Position = UDim2.fromOffset(x, 0)
     b.AutoButtonColor = false
     b.BackgroundTransparency = 0.15
     b.Font = Enum.Font.GothamBold
-    b.TextSize = 11
+    b.TextScaled = true -- any message fits the small pill
     b.TextColor3 = WHITE
     b.Parent = bar
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    Instance.new("UITextSizeConstraint", b).MaxTextSize = 10
     return b
 end
-local pills = { dribble = makePill(0), tackle = makePill(32), dive = makePill(64) }
+local pills = { dribble = makePill(0), tackle = makePill(65), dive = makePill(130) }
 
 local info = Instance.new("TextLabel")
-info.Size = UDim2.fromOffset(230, 52)
-info.Position = UDim2.fromOffset(0, 96)
+info.Size = UDim2.fromOffset(192, 53)
+info.Position = UDim2.fromOffset(0, 25)
 info.BackgroundColor3 = BLACK
 info.BackgroundTransparency = 0.35
 info.TextColor3 = WHITE
 info.Font = Enum.Font.Code
-info.TextSize = 10
+info.TextSize = 8
 info.TextXAlignment = Enum.TextXAlignment.Left
 info.TextYAlignment = Enum.TextYAlignment.Top
 info.Text = ""
@@ -1193,17 +1198,45 @@ local function pitchCentre(root)
     return nil
 end
 
--- A shot, not a pass across the box: heading into the goal and crossing its line near your spot.
--- Until the pitch direction is known, any fast ball coming at you counts.
+-- Your goal: the nearest part near your spot named like a goal or net (or inside a model named
+-- that), at least as wide as a goal. Its long side is the goal's width, its centre the middle.
+local function findGoal(from)
+    local best, bestD
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("BasePart") then
+            local n = (d.Name .. " " .. (d.Parent and d.Parent.Name or "")):lower()
+            local w = math.max(d.Size.X, d.Size.Z)
+            local dist = flat(d.Position - from).Magnitude
+            if (n:find("goal", 1, true) or n:find("net", 1, true)) and w >= 12 and w <= 120 and dist < 60
+                and (not best or dist < bestD) then
+                best, bestD = d, dist
+            end
+        end
+    end
+    if not best then return nil, CFG.GoalWidth end
+    return Vector3.new(best.Position.X, from.Y, best.Position.Z), math.max(best.Size.X, best.Size.Z) / 2
+end
+
+-- the middle of your goal on the line you stand on (your spot, until the goal is found)
+local function goalBase()
+    if goalCentre and fieldDir and home then
+        return goalCentre + fieldDir * flat(home - goalCentre):Dot(fieldDir)
+    end
+    return home
+end
+
+-- A shot: crossing your goal line between the posts (a little to spare), from any angle. Angled
+-- shots from the wing count too; a pass across the box never reaches the line. Until the pitch
+-- direction is known, any fast ball coming at you counts.
 local function onTarget(s)
     if not (home and fieldDir) then return true end
-    local p, v = flat(s.pos - home), flat(s.vel)
+    local p, v = flat(s.pos - goalBase()), flat(s.vel)
     local closing = -v:Dot(fieldDir) -- speed toward the goal line
-    if closing <= 0 or closing < CFG.ShotAim * v.Magnitude then return false end
+    if closing <= 1 then return false end
     local tc = p:Dot(fieldDir) / closing
     if tc < 0 or tc > 1.5 then return false end
     local cross = p + v * tc
-    return (cross - fieldDir * cross:Dot(fieldDir)).Magnitude <= CFG.GoalWidth
+    return (cross - fieldDir * cross:Dot(fieldDir)).Magnitude <= goalHalf + 3
 end
 
 local function keeper(root, hum, ball, s, holder, lead)
@@ -1235,8 +1268,108 @@ local function keeper(root, hum, ball, s, holder, lead)
     end
     -- a slow ball you can walk onto before it arrives: no dive to waste on what may be a pass
     if speed < CFG.ShotSpeed and side / math.max(hum.WalkSpeed, 1) <= t then return end
-    if d <= CFG.DiveRange and t <= CFG.DiveLead + lead + d / CFG.DiveSpeed and ready("dive") then
-        dive(root, hum, at)
+    -- as late as the dive can still get there; a path wider than a dive reaches is walked toward
+    -- first (positioning), and dived at only in the last moment
+    if d <= CFG.DiveRange and t <= CFG.DiveLead + lead + math.min(d, CFG.DiveReach) / CFG.DiveSpeed
+        and ready("dive") then
+        -- coming straight at you: dive into it, not off to one side and out of its way
+        dive(root, hum, side < 3 and s.pos or at)
+    end
+end
+
+---------------------------------------------------------------- stamina
+
+-- Wherever the game keeps your stamina on your side: an attribute or a number value named like
+-- "stamina" on you, your character or what they hold, or (with getgc) a script's table with a
+-- Stamina field. Each is held at its max: a "Max..." next to it if there is one, else the highest
+-- it has been. Stamina the server keeps to itself can't be reached from here.
+local stam = { found = "off", list = {}, nextScan = 0, nextDeep = 0 }
+local STAM_KEYS = { "Stamina", "stamina", "CurrentStamina", "currentStamina" }
+
+local function isStamina(name)
+    local n = tostring(name):lower()
+    return n:find("stamina", 1, true) ~= nil and not (n:find("max", 1, true) or n:find("regen", 1, true)
+        or n:find("cost", 1, true) or n:find("drain", 1, true) or n:find("rate", 1, true))
+end
+
+local function scanStamina()
+    local list = {}
+    local function attrs(inst)
+        local ok, all = pcall(function() return inst:GetAttributes() end)
+        if not (ok and type(all) == "table") then return end
+        for name, v in pairs(all) do
+            if type(v) == "number" and isStamina(name) then
+                table.insert(list, { kind = "attr", inst = inst, name = name, max = all["Max" .. name] or all.MaxStamina })
+            end
+        end
+    end
+    local function values(root)
+        for _, d in ipairs(root:GetDescendants()) do
+            if (d:IsA("NumberValue") or d:IsA("IntValue")) and isStamina(d.Name) then
+                local m = d.Parent:FindFirstChild("Max" .. d.Name) or d.Parent:FindFirstChild("MaxStamina")
+                table.insert(list, { kind = "value", inst = d, max = m and m.Value })
+            end
+            attrs(d)
+        end
+    end
+    attrs(LP)
+    for _, c in ipairs(LP:GetChildren()) do
+        if not (c:IsA("PlayerGui") or c.Name == "PlayerScripts") then
+            attrs(c)
+            values(c)
+        end
+    end
+    local char = LP.Character
+    if char then
+        attrs(char)
+        values(char)
+    end
+    if #list == 0 and type(getgc) == "function" and os.clock() >= stam.nextDeep then
+        stam.nextDeep = os.clock() + 15 -- a full memory scan is heavy: only while nothing else is found
+        local ok, objs = pcall(getgc, true)
+        if ok and type(objs) == "table" then
+            for _, o in ipairs(objs) do
+                if type(o) == "table" then
+                    for _, k in ipairs(STAM_KEYS) do
+                        local okv, v = pcall(rawget, o, k)
+                        if okv and type(v) == "number" then
+                            table.insert(list, { kind = "table", t = o, name = k,
+                                max = rawget(o, "Max" .. k) or rawget(o, "MaxStamina") or rawget(o, "maxStamina") })
+                        end
+                    end
+                end
+            end
+        end
+    end
+    stam.list = list
+    local first = list[1]
+    stam.found = first and (first.kind .. " " .. first.name .. (#list > 1 and (" +" .. (#list - 1)) or "")) or "none"
+end
+
+local function readStamina(e)
+    if e.kind == "attr" then return e.inst:GetAttribute(e.name) end
+    if e.kind == "value" then return e.inst.Value end
+    return rawget(e.t, e.name)
+end
+
+local function writeStamina(e, v)
+    if e.kind == "attr" then e.inst:SetAttribute(e.name, v)
+    elseif e.kind == "value" then e.inst.Value = v
+    else rawset(e.t, e.name, v) end
+end
+
+local function holdStamina()
+    if os.clock() >= stam.nextScan then
+        stam.nextScan = os.clock() + 3 -- new characters, new values
+        pcall(scanStamina)
+    end
+    for _, e in ipairs(stam.list) do
+        pcall(function()
+            local cur = readStamina(e)
+            if type(cur) ~= "number" then return end
+            e.top = math.max(e.top or cur, cur, type(e.max) == "number" and e.max or 0)
+            if cur < e.top then writeStamina(e, e.top) end
+        end)
     end
 end
 
@@ -1285,10 +1418,12 @@ local function showInfo(root, ball, holder, lead)
     if d then line2 ..= (" | foe %.0f"):format(d) .. (eta and (" %.2fs"):format(eta) or "") end
     local line4 = ("cd drb %s tkl %s gk %s | slide %.0f"):format(left("dribble"), left("tackle"), left("dive"),
         slideReach)
-    info.Text = line1 .. "\n" .. line2 .. "\n" .. dbg.last .. "\n" .. line4
+    local line5 = ("goal %s | stamina %s"):format(goalCentre and ("%.0f wide"):format(goalHalf * 2) or "?", stam.found)
+    info.Text = line1 .. "\n" .. line2 .. "\n" .. dbg.last .. "\n" .. line4 .. "\n" .. line5
 end
 
 bind(RunService.Heartbeat, function(dt)
+    if CFG.InfStamina then holdStamina() end
     local root, hum = body()
     if not root then return end
     trackPlayers()
@@ -1301,6 +1436,7 @@ bind(RunService.Heartbeat, function(dt)
         fieldDir = (out and out.Magnitude > 10) and out.Unit or nil
         fieldExact = fieldDir ~= nil
         fieldSum, fieldN = Vector3.zero, 0
+        goalCentre, goalHalf = findGoal(home)
     end
     lastRoot = root.Position
 
@@ -1367,14 +1503,15 @@ bind(RunService.Stepped, function()
     end
     local ball = nearestBall(root.Position)
     if not ball or holderOf(ball) == LP then return end
-    local spot = home
-    if shotPlan and os.clock() < shotPlan.t and flat(shotPlan.at - home).Magnitude <= CFG.Advance + 10 then
-        -- a ball coming in: step onto its path where it passes closest
+    local base = goalBase()
+    local spot = base
+    if shotPlan and os.clock() < shotPlan.t and flat(shotPlan.at - base).Magnitude <= goalHalf + 6 then
+        -- a ball coming in: get onto its path before the dive, so the dive has less to cover
         spot = shotPlan.at
     else
-        local toBall = flat(ball.Position - home)
+        local toBall = flat(ball.Position - base)
         if toBall.Magnitude > 0.1 then
-            spot = home + toBall.Unit * math.min(CFG.Advance, toBall.Magnitude * 0.5)
+            spot = base + toBall.Unit * math.min(CFG.Advance, toBall.Magnitude * 0.5)
         end
     end
     local step = flat(spot - root.Position)

@@ -42,6 +42,22 @@ the other two.
 - **Line 3**: the last press: the move, `btn:yes` / `btn:label` / `btn:NO`, the method, `OK` or
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
+- **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v8
+
+- **Keeper:** finds your goal in the map (a part named like a goal or net) and guards all of it,
+  not just near where you stood when you turned it on. Angled shots from the wing count (v7
+  ignored shots coming in at more than 60 degrees, and that's two of the five goals in the second
+  recording). On a shot wider than a dive reaches, it moves onto the ball's path first and dives
+  last. A ball coming straight at you gets a dive into it, not off to one side. It stands in the
+  middle of the goal between plays.
+- **Smaller UI:** the three pills sit in one row with the readout under them (192x78 instead of
+  230x148). `UiScale` in CFG makes it bigger or smaller.
+- **Infinite stamina:** holds stamina at its max wherever the game keeps it on your side: an
+  attribute or a number value named like stamina on you or your character, or (with `getgc`) a
+  script's table with a Stamina field. Readout line 5 shows what it found (`none` means the game
+  keeps stamina on the server, where a script can't reach it).
 
 ## v7
 
@@ -72,7 +88,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 26 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 33 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

@@ -18,7 +18,8 @@ sys.path.insert(0, HERE)
 
 from luau import Interp, LuaTable, tostr  # noqa: E402
 from roblox import (ENUM, Animator, BasePart, Folder, Frame, Humanoid, ImageButton, InputObject,  # noqa: E402
-                    Model, Player, PlayerGui, ScreenGui, Team, TextButton, TextLabel, UDim2, Vector3, World)
+                    Model, NumberValue, Player, PlayerGui, ScreenGui, Team, TextButton, TextLabel, UDim2, Vector3,
+                    World)
 
 SCRIPT = os.path.join(HERE, "..", "AutoDribble.lua")
 DT = 1 / 60
@@ -357,7 +358,9 @@ def loads_and_shows_three_pills():
           f"pills read {[g.pill_text(k) for k in ('dribble', 'tackle', 'dive')]}")
     line1 = g.readout().split("\n")[0]
     check("conn Y sig Y tap Y" in line1, f"readout line 1 is {line1!r}")
-    check(g.readout().count("\n") == 3, "the readout has four lines")
+    check(g.readout().count("\n") == 4, "the readout has five lines")
+    size = g.bar().get_AbsoluteSize()
+    check(size.x <= 200 and size.y <= 80, f"the UI is small ({size})")
 
 
 @test
@@ -614,10 +617,17 @@ def tackle_ignores_teammates():
     check(not g.presses("tackle"), f"no slide at a teammate ({g.events})")
 
 
-def keeper_game():
-    g = Game(gk=True).load()
+def keeper_game(at=Vector3(0, 3, 190), goal=False):
+    g = Game(gk=True)
+    if goal:
+        # the goal model: a net 44 studs wide just behind the line
+        net = BasePart(g.W, "Net", Position=Vector3(0, 5, 197), Size=Vector3(44, 10, 4))
+        model = Model(g.W, "Goal")
+        net.set_parent(model)
+        model.set_parent(g.W.workspace)
+    g.load()
     g.holder = None
-    g.root.props["Position"] = Vector3(0, 3, 190)
+    g.root.props["Position"] = at
     g.ball.props["Position"] = Vector3(0, 1, 0)
     g.run(0.2)
     g.tap("dive")
@@ -711,6 +721,87 @@ def keeper_smothers_a_dribbler():
     carrier.brain = lambda bot, now: setattr(bot, "vel", (g.root.props["Position"] - bot.pos).flat().unit() * 14)
     g.run(2.0)
     check(g.presses("dive", "ok"), f"smothered ({g.events})")
+
+
+@test
+def keeper_dives_at_an_angled_shot_from_the_wing():
+    g = keeper_game(goal=True)
+    check("goal 44 wide" in g.readout(), f"found the goal: {g.readout()!r}")
+    g.shoot(Vector3(-50, 2, 170), Vector3(15, 2, 193), 115)  # mostly sideways: v7 ignored it
+    g.run(0.6)
+    check(g.presses("dive", "ok"), f"dove at the angled shot ({g.events})")
+
+
+@test
+def keeper_counts_the_whole_goal_not_just_near_his_spot():
+    g = keeper_game(at=Vector3(-16, 3, 190), goal=True)
+    g.shoot(Vector3(30, 2, 120), Vector3(18, 2, 193), 115)  # far post: 34 studs from where he stands
+    g.run(0.1)
+    n = len(g.hum.moves)
+    g.run(0.4)
+    moves = g.hum.moves[n:]
+    check(moves and sum(m[1].x for m in moves) > 0, f"moved across toward the far post ({moves[:3]}, {g.events})")
+
+
+@test
+def keeper_dives_into_a_ball_straight_at_him():
+    g = keeper_game()
+    g.root.look = Vector3(1, 0, 0)  # facing sideways
+    g.shoot(Vector3(0, 2, 150), Vector3(0, 2, 195), 120)
+    g.run(0.5)
+    check(g.presses("dive", "ok"), f"dove ({g.events})")
+    look = g.press_look["dive"]
+    check(look.z < -0.9, f"into the ball, not sideways (look {look})")
+
+
+@test
+def keeper_stands_in_the_middle_of_the_goal():
+    g = keeper_game(at=Vector3(-14, 3, 190), goal=True)
+    g.ball.props["Position"] = Vector3(0, 1, 60)
+    n = len(g.hum.moves)
+    g.run(0.5)
+    moves = g.hum.moves[n:]
+    check(moves and all(m[1].x > 0.5 for m in moves[-5:]), f"walks back to the middle ({moves[-3:]})")
+
+
+@test
+def infinite_stamina_from_an_attribute():
+    g = Game()
+    g.char.attrs["Stamina"] = 40
+    g.char.attrs["MaxStamina"] = 100
+    g.load()
+    g.run(0.2)
+    check(g.char.attrs["Stamina"] == 100, f"held at the max ({g.char.attrs})")
+    g.char.attrs["Stamina"] = 20  # the game drains it
+    g.step()
+    check(g.char.attrs["Stamina"] == 100, "and back to full the next frame")
+    check("stamina attr Stamina" in g.readout(), f"readout: {g.readout()!r}")
+
+
+@test
+def infinite_stamina_from_a_value():
+    g = Game()
+    stats = Folder(g.W, "Stats")
+    stats.set_parent(g.lp)
+    v = NumberValue(g.W, "Stamina", Value=80)
+    v.set_parent(stats)
+    g.load()
+    g.run(0.2)
+    v.props["Value"] = 30
+    g.step()
+    check(v.props["Value"] == 80, f"held at the highest it's been ({v.props['Value']})")
+
+
+@test
+def infinite_stamina_from_a_script_table():
+    g = Game()
+    t = LuaTable()
+    t.set("Stamina", 25)
+    t.set("MaxStamina", 100)
+    g.I.G.set("getgc", lambda include=None: LuaTable([t, LuaTable(), "x"]))
+    g.load()
+    g.run(0.2)
+    check(t.get("Stamina") == 100, f"the game's table held at max ({t.get('Stamina')})")
 
 
 @test
