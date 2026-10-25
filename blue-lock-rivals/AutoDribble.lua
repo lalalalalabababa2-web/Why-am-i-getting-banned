@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v23 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v24 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -32,6 +32,12 @@
              with the spins back, the script runs itself again there (queue_on_teleport) with
              saves already off, and a "Data Error" kick on the way in gets another rejoin by
              itself. Blue = saves are off, so don't play matches with it on.
+             AUTO: with styles in getgenv().SpinFor (or CFG.SpinFor) it spins by itself, lucky spins
+             first, until one lands, then puts saves back on; when the spins run out it rolls back and
+             the next server carries on. It stops if spins aren't getting through, and never rejoins
+             with 0 spins.
+    CODES    The codes in CFG.Codes are redeemed once per server, through the game's own redeem remote
+             or its code box: free lucky spins (they need level 10, the group joined, the game liked).
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -156,6 +162,15 @@ local CFG = {
     -- with saves off again, so you carry straight on spinning. "" = don't
     ReloadUrl    = "https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua",
     RejoinTries  = 5,      -- "Data Error" kicks on the way back in get this many rejoins on their own
+    SpinFor      = {},     -- styles for SPINS to spin for by itself, e.g. { "Kaiser", "NEL Isagi", "Sae" }
+                           -- (or set getgenv().SpinFor before loading the script). Exact names, any case
+    SpinDelay    = 1.2,    -- seconds between its spins (the server answers each one)
+    SpinBatch    = 30,     -- spins before a rollback when the spin screen can't be read
+    Codes        = { "SPOOKY", "SKELETON", "AIKUCHANGES", "NELAIKU", "HALLOWEEN", "WSNAKE",
+                     "SORRYFORDELAYAIKU", "EPICSENDOU", "ONEMOREWEEK", "NELAIKUNEXT", "DONREVAMP",
+                     "SENDOUNEXT", "ACEEATER", "NEWMASTER", "UBERSVOTE", "WSNUFFY", "SNUFFYUPD" },
+                           -- free lucky spins, redeemed once per server (October 2026 lists; old ones just fail)
+    CodeDelay    = 1,      -- seconds between codes
 
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
     SaveFile     = "AutoDribble_buttons.json",
@@ -2295,7 +2310,7 @@ do
 end
 
 ---------------------------------------------------------------- infinite spins
-local setSpins, rollback, spinsLeft -- set in the block below, used further down
+local setSpins, rollback, spinsLeft, startAuto, stopAuto, spinTargets -- set in the block below, used further down
 do
 
     -- SPINS: a rollback, the way the public "infinite spin" scripts do it. While it's on, your save
@@ -2304,29 +2319,48 @@ do
     -- back. Got the style you wanted? Tap it off first: the setting is put right, and the game's next
     -- save (every so often, and when you leave) keeps the style. A "Data Error" kick on the way back
     -- in is the old server still holding your save: rejoin again.
-    local function customize()
+    -- With styles in SpinFor it does the spinning too: spin, check, and roll back and go again when
+    -- the spins run out, until one of them lands.
+
+    -- something under ReplicatedStorage.Packages.Knit.Services (the services folder itself with no names)
+    local function knit(...)
         local r = game:GetService("ReplicatedStorage"):FindFirstChild("Packages")
-        for _, name in ipairs({ "Knit", "Services", "CustomizationService", "RE", "Customize" }) do
+        for _, name in ipairs({ "Knit", "Services", ... }) do
             r = r and r:FindFirstChild(name)
         end
         return r
     end
 
+    local function tell(text, secs)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SPINS", Text = text, Duration = secs or 8 })
+        end)
+    end
+
     -- saves off (true) or back on (false); false back when the game's remote isn't there
     function setSpins(block)
-        local r = customize()
+        local r = knit("CustomizationService", "RE", "Customize")
         if not r then return false end
         local ok = pcall(function() r:FireServer(unpack(block and CFG.SpinPoison or CFG.SpinCure)) end)
         if ok then env.AutoDribbleNoSave = block or nil end
         return ok
     end
 
+    -- the styles to spin for: getgenv().SpinFor if it's set, else CFG.SpinFor
+    function spinTargets()
+        local t = env.SpinFor
+        if type(t) ~= "table" or #t == 0 then t = CFG.SpinFor end
+        return t
+    end
+
     -- The executor runs this script again in the server you land in, told it came from a rollback
-    -- (and how many more "Data Error" rejoins it may make)
+    -- (how many more "Data Error" rejoins it may make, and what it's spinning for)
     local function comeBack(tries)
         if type(queue_on_teleport) ~= "function" or CFG.ReloadUrl == "" then return end
-        pcall(queue_on_teleport, ("getgenv().AutoDribbleRolledBack = %d\n"):format(tries)
-            .. 'loadstring(game:HttpGet("' .. CFG.ReloadUrl .. '"))()')
+        local names = {}
+        for _, n in ipairs(spinTargets()) do table.insert(names, ("%q"):format(tostring(n))) end
+        pcall(queue_on_teleport, ("getgenv().AutoDribbleRolledBack = %d\ngetgenv().SpinFor = { %s }\n")
+            :format(tries, table.concat(names, ", ")) .. 'loadstring(game:HttpGet("' .. CFG.ReloadUrl .. '"))()')
     end
 
     local function rejoin()
@@ -2342,26 +2376,185 @@ do
         return true
     end
 
-    -- How many spins you have (plus lucky spins), read off the game's spin screen; nil when it isn't
-    -- there to read. A rollback only gives back what you had, so 0 is worth knowing.
-    function spinsLeft()
+    -- Your spins and lucky spins, read off the game's spin screen (nil for one it doesn't show). A
+    -- rollback only gives back what you had, so 0 is worth knowing.
+    local function counts()
         local pg = playerGui()
-        if not pg then return nil end
-        local total
+        if not pg then return nil, nil end
+        local normal, lucky
         for _, d in ipairs(pg:GetDescendants()) do
             if d:IsA("TextLabel") or d:IsA("TextButton") then
                 local ok, text = pcall(function() return d.ContentText end) -- (without rich-text tags)
                 text = ((ok and type(text) == "string" and text ~= "") and text or d.Text):upper()
-                local n = text:match("SPINS LEFT:%s*(%d+)") or text:match("LUCKY SPINS:%s*(%d+)")
-                if n then total = (total or 0) + tonumber(n) end
+                local n = text:match("SPINS LEFT:%s*(%d+)")
+                local l = text:match("LUCKY SPINS:%s*(%d+)")
+                if n then normal = (normal or 0) + tonumber(n) end
+                if l then lucky = (lucky or 0) + tonumber(l) end
             end
         end
-        return total
+        return normal, lucky
     end
 
+    function spinsLeft()
+        local normal, lucky = counts()
+        if normal == nil and lucky == nil then return nil end
+        return (normal or 0) + (lucky or 0)
+    end
+
+    local function noSpins()
+        notify("spins", "0 SPINS", COLORS.noBall)
+        tell("You have 0 spins. A rollback gives back spins you had, it can't make new ones: get 1 spin "
+            .. "(a code, or the yen for one) first, spin, then hold SPINS to get it back.", 8)
+    end
+
+    -- the auto spinner: one at a time, stopped by bumping the generation
+    local autoGen = 0
+    function stopAuto()
+        autoGen += 1
+    end
+
+    local function wanted(name)
+        local n = tostring(name):lower()
+        for _, t in ipairs(spinTargets()) do
+            if tostring(t):lower() == n then return true end
+        end
+        return false
+    end
+
+    -- false when there's nothing to spin for, or the game's spin remote or your style isn't there
+    function startAuto()
+        if #spinTargets() == 0 then return false end
+        local spin = knit("StyleService", "RE", "Spin")
+        local stats = LP:FindFirstChild("PlayerStats")
+        local style = stats and stats:FindFirstChild("Style")
+        if not (spin and style) then return false end
+        stopAuto()
+        local gen, done, moved = autoGen, 0, 0
+        local lastSeen
+        task.spawn(function()
+            while gen == autoGen and on.spins do
+                if wanted(style.Value) then
+                    -- landed: saves back on, so the next save keeps it
+                    stopAuto()
+                    if setSpins(false) then on.spins = false end
+                    refresh()
+                    notify("spins", "GOT IT", COLORS.on)
+                    tell("Got " .. tostring(style.Value) .. "! Saves are back on: stay a minute, or leave the game "
+                        .. "normally, and it's kept.", 12)
+                    return
+                end
+                local normal, lucky = counts()
+                local left = (normal ~= nil or lucky ~= nil) and (normal or 0) + (lucky or 0) or nil
+                -- (each spin should change your style or the counts; six that change nothing aren't
+                -- getting through, and rejoining over and over wouldn't help)
+                local seen = tostring(style.Value) .. "|" .. tostring(normal) .. "|" .. tostring(lucky)
+                if lastSeen and seen ~= lastSeen then moved += 1 end
+                lastSeen = seen
+                if done >= 6 and moved == 0 then
+                    stopAuto()
+                    notify("spins", "SPIN BY HAND", COLORS.noBall)
+                    tell("The spins aren't going through from here. Spin in the game's wheel yourself; SPINS still "
+                        .. "rolls them back when you hold it.", 8)
+                    return
+                end
+                if left == 0 or done >= CFG.SpinBatch then
+                    stopAuto()
+                    if done == 0 then
+                        noSpins() -- nothing to roll back: rejoining would only go round in circles
+                    else
+                        rollback()
+                        notify("spins", "REJOINING", COLORS.learn)
+                    end
+                    return
+                end
+                -- lucky spins first (true), then ordinary ones
+                pcall(function() spin:FireServer(lucky == nil or lucky > 0) end)
+                done += 1
+                say("spins", "SPIN " .. done, COLORS.learn, WHITE, CFG.SpinDelay + 1)
+                task.wait(CFG.SpinDelay)
+            end
+        end)
+        return true
+    end
+
+    -- Free spins: the codes in CFG.Codes, once per server, through the game's own redeem remote (a
+    -- Knit service remote named like redeem or code) or, without one, typed into its code box.
+    -- They need level 10, the game's Roblox group joined and the game liked.
+    local function redeemRemote()
+        local services = knit()
+        if not services then return nil end
+        local best, bestScore = nil, 0
+        for _, svc in ipairs(services:GetChildren()) do
+            local codeService = svc.Name:lower():find("code", 1, true) ~= nil
+            for _, r in ipairs(svc:GetDescendants()) do
+                if r:IsA("RemoteFunction") or r:IsA("RemoteEvent") then
+                    local n = r.Name:lower()
+                    local score = (n:find("redeem", 1, true) and 4 or 0) + (n:find("code", 1, true) and 2 or 0)
+                        + (codeService and (n:find("claim", 1, true) or n:find("use", 1, true)) and 2 or 0)
+                        + (codeService and 1 or 0)
+                    if score >= 3 and score > bestScore then best, bestScore = r, score end
+                end
+            end
+        end
+        return best
+    end
+
+    -- everything a button says: its name, its text, and the labels on it
+    local function says(b)
+        local t = { b.Name, b:IsA("TextButton") and b.Text or "" }
+        for _, d in ipairs(b:GetDescendants()) do
+            if d:IsA("TextLabel") then table.insert(t, d.Text) end
+        end
+        return table.concat(t, " "):upper()
+    end
+
+    local function codeBox()
+        local pg = playerGui()
+        if not pg then return nil end
+        for _, box in ipairs(pg:GetDescendants()) do
+            if box:IsA("TextBox") and (box.PlaceholderText .. " " .. box.Name):upper():find("CODE", 1, true) then
+                for _, b in ipairs((box:FindFirstAncestorOfClass("ScreenGui") or pg):GetDescendants()) do
+                    if (b:IsA("TextButton") or b:IsA("ImageButton")) and says(b):find("REDEEM", 1, true) then
+                        return box, b
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function redeemCodes()
+        if #CFG.Codes == 0 or env.AutoDribbleCodesIn == game.JobId then return end
+        local remote, box, button
+        for _ = 1, 40 do -- (the game's services and screens load in after the script)
+            remote = redeemRemote()
+            if not remote then box, button = codeBox() end
+            if remote or box then break end
+            task.wait(0.5)
+        end
+        if not (remote or box) then return end
+        env.AutoDribbleCodesIn = game.JobId
+        for _, code in ipairs(CFG.Codes) do
+            if remote and remote:IsA("RemoteFunction") then
+                task.spawn(function() pcall(function() remote:InvokeServer(code) end) end) -- (it waits for an answer)
+            elseif remote then
+                pcall(function() remote:FireServer(code) end)
+            else
+                box.Text = code
+                fire(button.Activated)
+                fire(button.MouseButton1Click)
+            end
+            task.wait(CFG.CodeDelay)
+        end
+        dbg.last = ("CODES tried %d"):format(#CFG.Codes)
+        tell(("Tried %d codes for free lucky spins (codes need level 10, the game's group joined and the game "
+            .. "liked)."):format(#CFG.Codes), 8)
+    end
+    task.spawn(redeemCodes)
+
     -- Landed here from a rollback: saves off again as soon as the game's remote is there, so you can
-    -- carry on spinning. A "Data Error" kick on the way in is the old server still holding your save:
-    -- rejoin again, a few times.
+    -- carry on spinning (and the auto spinner carries on by itself). A "Data Error" kick on the way in
+    -- is the old server still holding your save: rejoin again, a few times.
     local tries = env.AutoDribbleRolledBack
     if type(tries) == "number" then
         env.AutoDribbleRolledBack = nil
@@ -2370,8 +2563,13 @@ do
                 if on.spins or setSpins(true) then
                     on.spins = true
                     refresh()
-                    return
+                    break
                 end
+                task.wait(0.5)
+            end
+            if not on.spins or #spinTargets() == 0 then return end
+            for _ = 1, 60 do
+                if startAuto() then return end
                 task.wait(0.5)
             end
         end)
@@ -2439,16 +2637,20 @@ do
             elseif setSpins(not on.spins) then
                 on.spins = not on.spins
                 refresh()
-                if on.spins and spinsLeft() == 0 then
+                if not on.spins then
+                    stopAuto()
+                elseif spinsLeft() == 0 then
                     -- nothing to roll back: the game won't spin without a spin (or the yen for one)
                     notify(kind, "0 SPINS", COLORS.noBall)
                     pcall(function()
                         game:GetService("StarterGui"):SetCore("SendNotification", {
                             Title = "SPINS", Duration = 8,
                             Text = "You have 0 spins. A rollback gives back spins you had, it can't make new ones: "
-                                .. "get 1 spin (or the yen for one) first, spin, then hold SPINS to get it back.",
+                                .. "get 1 spin (a code, or the yen for one) first, spin, then hold SPINS to get it back.",
                         })
                     end)
+                elseif #spinTargets() > 0 and not startAuto() then
+                    notify(kind, "SPIN BY HAND", COLORS.noBall) -- (no spin remote or style to read: you spin)
                 end
             else
                 notify(kind, "NO REMOTE", COLORS.off)
@@ -2478,7 +2680,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v23", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v24", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end

@@ -17,7 +17,7 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v23 Loaded" when it starts.
+notification says "AutoDribble v24 Loaded" when it starts.
 
 Running it again replaces the old copy. Five pills appear on the left in two rows: **DRIBBLE**,
 **TACKLE**, **AUTO GK**, then **CONTROL**, **SPINS**. Tap to toggle, drag to move. Hold about a second and let go, then tap
@@ -60,6 +60,22 @@ it pauses dribble and tackle.
      back to 2. A "Data Error" kick on the way in is the old server still holding your save; it
      rejoins again by itself (up to 5 times).
 
+  **Auto:** name the styles you want before loading the script and SPINS does the spinning:
+
+  ```lua
+  getgenv().SpinFor = { "Kaiser", "NEL Isagi", "Sae" }   -- exact names, any case
+  loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua"))()
+  ```
+
+  Tap SPINS on in the lobby. It spins (lucky spins first) until one of them lands, then puts saves
+  back on. When the spins run out, it rolls back and the next server carries on by itself. It
+  stops instead of looping if the spins aren't getting through, and it never rejoins with 0 spins.
+
+- **Codes:** the codes in `CFG.Codes` (October 2026 lists) are redeemed by themselves, once per
+  server, through the game's own redeem remote, or by typing them into its code box if there's no
+  remote. Old codes just fail. Codes need **level 10, the game's Roblox group joined, and the game
+  liked**.
+
   Unchecked: whether `"2"` really puts the setting right in your version. The first time, after
   tapping it off, leave and come back to check the style stayed. Don't play matches with it on,
   since nothing you earn saves.
@@ -74,6 +90,16 @@ it pauses dribble and tackle.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v24
+
+- **Auto-reroll:** `getgenv().SpinFor = { ... }` (or `CFG.SpinFor`) and SPINS spins for those
+  styles by itself through `StyleService.RE.Spin`. It reads your style from
+  `PlayerStats.Style` and the counts from the spin screen. It goes round rollbacks until one lands,
+  and the targets ride along to the next server. Six spins that change nothing stop it, and 0 spins
+  never start a rejoin.
+- **Codes redeemed by themselves**, once per server. The remote is found by name (a Knit service
+  remote like `RedeemCode`), with the game's code box and Redeem button as the fallback.
 
 ## v23
 
@@ -310,7 +336,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 102 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 109 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

@@ -1945,6 +1945,174 @@ def spins_dont_rejoin_on_an_ordinary_error():
     check(not g.W.teleports, "only after a rollback")
 
 
+def knit_folder(g, *names):
+    path = g.W.rs
+    for name in ("Packages", "Knit", "Services") + names:
+        f = path.m_FindFirstChild(name)
+        if f is None:
+            f = Folder(g.W, name)
+            f.set_parent(path)
+        path = f
+    return path
+
+
+def style_service(g, rolls, spins=5, lucky=0):
+    """StyleService.RE.Spin and the spin screen: a spin with true uses a lucky spin, otherwise an
+    ordinary one, and rolls the next style in `rolls` (Isagi once they run out)."""
+    from roblox import RemoteEvent, StringValue
+    remote = RemoteEvent(g.W, "Spin")
+    remote.set_parent(knit_folder(g, "StyleService", "RE"))
+    stats = g.lp.m_FindFirstChild("PlayerStats")
+    if stats is None:
+        stats = Folder(g.W, "PlayerStats")
+        stats.set_parent(g.lp)
+    style = StringValue(g.W, "Style", Value="Isagi")
+    style.set_parent(stats)
+    sg = ScreenGui(g.W, "StylesSpin")
+    sg.set_parent(g.pg)
+    left = TextLabel(g.W, "Left")
+    left.set_parent(sg)
+    luck = TextLabel(g.W, "Lucky")
+    luck.set_parent(sg)
+    state = {"spins": spins, "lucky": lucky, "rolls": list(rolls), "args": [], "style": style}
+
+    def show():
+        left.props["Text"] = f"SPINS LEFT: {state['spins']}"
+        luck.props["Text"] = f"LUCKY SPINS: {state['lucky']}"
+    show()
+
+    def on_spin(*args):
+        state["args"].append(args)
+        if args and args[0] is True and state["lucky"] > 0:
+            state["lucky"] -= 1
+        elif state["spins"] > 0:
+            state["spins"] -= 1
+        else:
+            return  # "Not enough money and no spins!"
+        style.props["Value"] = state["rolls"].pop(0) if state["rolls"] else "Isagi"
+        show()
+    remote.server.append(on_spin)
+    return state
+
+
+def spin_game(**cfg):
+    base = {"SpinFor": '{ "Kaiser" }', "SpinDelay": "0.3", "Codes": "{}"}
+    base.update(cfg)
+    return Game(cfg=base)
+
+
+@test
+def spins_auto_spins_until_the_style_lands():
+    g = spin_game().load()
+    server = customization_service(g)
+    st = style_service(g, ["Nagi", "Bachira", "Kaiser", "Rin"], spins=5, lucky=2)
+    g.tap("spins")
+    g.run(3.0)
+    check(st["style"].props["Value"] == "Kaiser", f"stopped on Kaiser ({st['style'].props['Value']}, {st['args']})")
+    check(len(st["args"]) == 3, f"three spins, no more ({st['args']})")
+    check([a[0] for a in st["args"]] == [True, True, False], f"lucky spins first ({st['args']})")
+    check(server["saves"](), "saves back on, so it keeps")
+    check(g.pill_text("spins") in ("GOT IT", "SPINS OFF") and not g.W.teleports, f"and stays ({g.pill_text('spins')!r})")
+
+
+@test
+def spins_auto_rolls_back_when_the_spins_run_out():
+    g = spin_game().load()
+    customization_service(g)
+    st = style_service(g, ["Nagi", "Bachira", "Chigiri"], spins=3)
+    q = queued(g)
+    g.tap("spins")
+    g.run(3.0)
+    check(len(st["args"]) == 3, f"used all three ({st['args']})")
+    check(len(g.W.teleports) == 1, f"then rejoined for them back ({g.W.teleports})")
+    check(q and 'getgenv().SpinFor = { "Kaiser" }' in q[0], f"and the next server carries on for Kaiser ({q})")
+
+
+@test
+def spins_auto_carries_on_after_a_rollback():
+    g = spin_game(SpinFor="{}")
+    arrive_from_rollback(g)
+    env = g.I.call(g.I.G.get("getgenv"), [])
+    env = env[0] if isinstance(env, list) else env
+    env.set("SpinFor", LuaTable(["Kaiser"]))
+    server = customization_service(g)
+    st = style_service(g, ["Kaiser"], spins=2)
+    g.load()
+    g.run(2.0)
+    check(st["args"] and st["style"].props["Value"] == "Kaiser", f"spun on arrival and got it ({st['args']})")
+    check(server["saves"](), "saves back on")
+
+
+@test
+def spins_auto_never_rejoins_in_circles_with_none():
+    g = spin_game()
+    arrive_from_rollback(g)
+    customization_service(g)
+    st = style_service(g, [], spins=0, lucky=0)
+    g.load()
+    g.run(3.0)
+    check(not g.W.teleports and not st["args"], f"no spins, so no spinning and no rejoining ({g.W.teleports})")
+    check(any("0 spins" in n for n in g.W.notes), f"and says why ({g.W.notes})")
+
+
+@test
+def spins_auto_gives_up_when_spins_dont_go_through():
+    g = spin_game().load()
+    customization_service(g)
+    style_service(g, ["Nagi"], spins=5)
+    spin = knit_folder(g, "StyleService", "RE").m_FindFirstChild("Spin")
+    spin.server.clear()  # the server ignores them (say the game wants other arguments)
+    g.tap("spins")
+    g.run(10.0)
+    fired = [f for f in g.W.fired if f[1] is spin]
+    check(6 <= len(fired) <= 8, f"gave up after a handful ({len(fired)})")
+    check(not g.W.teleports, f"no rejoining over spins that go nowhere ({g.W.teleports})")
+    check(g.pill_text("spins") in ("SPIN BY HAND", "SPINS ON"), f"pill reads {g.pill_text('spins')!r}")
+    check(any("aren't going through" in n for n in g.W.notes), f"and says so ({g.W.notes})")
+
+
+@test
+def codes_redeemed_through_the_games_remote():
+    from roblox import RemoteFunction
+    got = []
+    g = Game(cfg={"Codes": '{ "AAA", "BBB" }', "CodeDelay": "0.1"})
+    rf = RemoteFunction(g.W, "RedeemCode")
+    rf.set_parent(knit_folder(g, "CodesService", "RF"))
+    rf.server = lambda code: got.append(tostr(code)) or "Redeemed!"
+    g.load()
+    g.run(1.0)
+    check(got == ["AAA", "BBB"], f"each code sent once ({got})")
+    g.load()  # run again in the same server
+    g.run(1.0)
+    check(got == ["AAA", "BBB"], f"not again in the same server ({got})")
+
+
+@test
+def codes_typed_into_the_code_box_without_a_remote():
+    from roblox import TextBox
+    g = Game(cfg={"Codes": '{ "AAA", "BBB" }', "CodeDelay": "0.1"})
+    sg = ScreenGui(g.W, "Codes")
+    sg.set_parent(g.pg)
+    box = TextBox(g.W, "Input", PlaceholderText="ENTER CODE...")
+    box.set_parent(sg)
+    btn = ImageButton(g.W, "RedeemBtn")
+    btn.set_parent(sg)
+    TextLabel(g.W, "Title", Text="REDEEM").set_parent(btn)
+    # the game's own client: Redeem sends whatever's in the box
+    client = g.I.load("""
+        local gui = game:GetService("Players").LocalPlayer.PlayerGui.Codes
+        _G.redeemed = {}
+        gui.RedeemBtn.Activated:Connect(function()
+            table.insert(_G.redeemed, gui.Input.Text)
+        end)
+    """, "GameCodes")
+    g.I.sched.spawn(client, [])
+    g.load()
+    g.run(1.0)
+    got = [tostr(v) for v in g.I.G.get("_G").get("redeemed").array()]
+    check(got == ["AAA", "BBB"], f"typed in and redeemed, each once ({got})")
+
+
 @test
 def stop_and_rerun():
     g = Game().load()

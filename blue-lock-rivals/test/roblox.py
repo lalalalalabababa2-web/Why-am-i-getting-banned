@@ -876,6 +876,16 @@ class TextLabel(GuiObject):
         return self.props["Text"]
 
 
+class TextBox(GuiObject):
+    CLASS = "TextBox"
+    ISA = ("TextBox",)
+    DEFAULTS = dict(TEXT, PlaceholderText="", ClearTextOnFocus=True)
+    EVENTS = ("FocusLost", "Focused")
+
+    def get_ContentText(self):
+        return self.props["Text"]
+
+
 class ImageLabel(GuiObject):
     CLASS = "ImageLabel"
     ISA = ("ImageLabel",)
@@ -932,6 +942,26 @@ class NumberValue(Inst):
     CLASS = "NumberValue"
     ISA = ("NumberValue", "ValueBase")
     DEFAULTS = {"Value": 0}
+
+
+class StringValue(Inst):
+    CLASS = "StringValue"
+    ISA = ("StringValue", "ValueBase")
+    DEFAULTS = {"Value": ""}
+    EVENTS = ("Changed",)
+
+
+class RemoteFunction(Inst):
+    CLASS = "RemoteFunction"
+    ISA = ("RemoteFunction",)
+
+    def __init__(self, world, name=None, **props):
+        super().__init__(world, name, **props)
+        self.server = None  # the fake server's handler; its return is the answer
+
+    def m_InvokeServer(self, *args):
+        self.world.fired.append((self.world.sched.now, self, args))
+        return self.server(*args) if self.server else None
 
 
 class IntValue(Inst):
@@ -1262,7 +1292,7 @@ CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animato
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
                                  BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue,
                                  RemoteEvent, CylinderHandleAdornment, SelectionBox, BodyVelocity, BodyGyro,
-                                 LinearVelocity]}
+                                 LinearVelocity, TextBox, StringValue, RemoteFunction]}
 CLASSES["Part"] = BasePart
 
 
