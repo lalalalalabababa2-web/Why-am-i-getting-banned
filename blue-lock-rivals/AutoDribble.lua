@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v20 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v21 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -19,9 +19,11 @@
              posts, runs out for loose balls and low crosses in the box it would reach first, and
              dives at a loose ball an attacker is about to reach. Turn it on standing in your goal.
              Dribble and tackle pause.
-    CONTROL  After you shoot, the ball flies where you look: the camera follows it and the shot turns
-             toward the camera's aim (the game's own kick movers switched off, ours flying it), at
-             its own speed or 120, until it hits something, someone takes it, or 4s pass; then the
+    CONTROL  The ball flies where you look: your own shots, and a loose ball flying near you that
+             you're the nearest player to (not one on its way to your feet). The camera follows it
+             and it turns toward the camera's aim, the long way round too, at its own speed or 120.
+             Aimed at their goal, it bends for the corner away from their keeper. It rides out
+             bumps, and lets go when someone takes it, it's back at your feet, or 8s pass; then the
              camera comes back to you. Look up to lift it, down to dip it.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
@@ -124,14 +126,20 @@ local CFG = {
     PounceTime   = 0.4,    -- ...and they're this close to it (s)
 
     -- ball control (the CONTROL pill)
-    ControlTime  = 4,      -- steer a shot this long at most (s)
-    ControlMin   = 40,     -- a ball leaving your feet this fast is a shot to steer (studs/s)
-    ControlSpeed = 120,    -- it flies at the shot's own speed or this, whichever is more...
+    ControlTime  = 8,      -- steer the ball this long at most (s)
+    ControlMin   = 40,     -- a ball this fast is one to steer (studs/s)
+    ControlSpeed = 120,    -- it flies at its own speed or this, whichever is more...
     ControlMax   = 200,    -- ...up to this
-    ControlTurn  = 4,      -- how quickly it turns toward where you look (higher = sharper)
+    ControlTurn  = 5,      -- how fast it turns toward where you look (radians/s: a U-turn takes 0.6s)
     ControlLift  = 20,     -- degrees above the camera's aim: the camera looks down at the ball from
                            -- behind, so its usual angle flies level; look up to lift it, down to dip it
     ControlCamera = true,  -- the camera follows the ball while you steer it
+    ControlAny   = true,   -- also take a loose ball flying near you that you're the nearest player to
+    ControlRange = 45,     -- ...this near (studs)
+    ControlGrace = 0.6,    -- a ball that hasn't done what it's flown to for this long is let go (s)
+    ControlAssist = true,  -- aimed at their goal, it bends for the corner away from their keeper
+    ControlAssistAngle = 25, -- how close to the goal your aim has to be for that (degrees)
+    ControlAssistRange = 160, -- and how near the goal (studs)
 
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
     SaveFile     = "AutoDribble_buttons.json",
@@ -312,9 +320,14 @@ local function notify(kind, text, bg) say(kind, text, bg, WHITE, 1) end
 ---------------------------------------------------------------- ball
 
 local balls, tracks = {}, {}
+local goals = {} -- parts named like a goal or net and about a goal wide (CONTROL aims at them)
 local function addBall(inst)
-    if inst:IsA("BasePart") and CFG.BallNames[inst.Name] then
-        balls[inst] = true
+    if not inst:IsA("BasePart") then return end
+    if CFG.BallNames[inst.Name] then balls[inst] = true end
+    local w = math.max(inst.Size.X, inst.Size.Z)
+    if w >= 12 and w <= 120 then
+        local n = (inst.Name .. " " .. (inst.Parent and inst.Parent.Name or "")):lower()
+        if n:find("goal", 1, true) or n:find("net", 1, true) then goals[inst] = true end
     end
 end
 for _, d in ipairs(workspace:GetDescendants()) do addBall(d) end
@@ -1846,31 +1859,37 @@ end
 local stopControl -- set in the block below, used further down
 do
 
-    -- CONTROL: after you shoot, the ball flies where you look. The game flies a kicked ball with its
-    -- own movers on the Football (a BodyVelocity and a BodyGyro), and a velocity set on the ball
-    -- directly is undone by them the next frame. So for the flight those are switched off and our
-    -- own BodyVelocity flies it toward the camera's aim, at the shot's speed or ControlSpeed,
-    -- whichever is more. The camera follows it. It lets go when the ball stops following (the
-    -- server kept it), hits something solid, someone takes it, it comes back to you, or ControlTime
-    -- runs out; then the camera comes back and the game's movers get their settings back.
-    local ctl -- while steering: { ball, speed, dir, at, ends, lastPos, mover, off, bad }
+    -- CONTROL: the ball flies where you look. It takes your own shots, and (ControlAny) a loose ball
+    -- flying near you that you're the nearest player to: Roblox runs a loose ball's physics on the
+    -- nearest player's device unless the game says otherwise, so that's one you can move. A ball on
+    -- its way to your feet is left to arrive.
+    -- The game flies a kicked ball with its own movers on the Football (a BodyVelocity and a
+    -- BodyGyro), which undo a velocity set on the ball directly. For the flight they're held off,
+    -- every frame since the game may switch them back on, and our own BodyVelocity flies it. Aimed
+    -- at their goal, it bends for the corner away from their keeper (ControlAssist). The camera
+    -- follows the ball.
+    -- It lets go when the ball is in someone's hands or back at your feet, the game froze or reset
+    -- it, ControlTime runs out, or it hasn't done what we fly it to for ControlGrace (a bump costs
+    -- less than that). Then the camera comes back and the game's movers get their settings back.
+    local ctl -- while steering: { ball, speed, dir, ends, lastPos, mover, off, bad }
     local mineAt = -math.huge -- when a ball was last at your feet (any ball: a kick may swap it for a new one)
+    local skipBall, skipUntil = nil, 0 -- just let go: not taken again until someone touches it, or for 2s
 
     -- the property that switches off each kind of the game's movers
     local MOVER_OFF = { BodyVelocity = "MaxForce", BodyPosition = "MaxForce", BodyGyro = "MaxTorque",
                         BodyAngularVelocity = "MaxTorque", BodyForce = "Force", BodyThrust = "Force" }
 
-    -- the game's movers on the ball, off; what they were is kept to put back (it may add more mid-flight)
+    -- the game's movers on the ball, off; what they were the first time is kept to put back
     local function silence(ball)
         for _, m in ipairs(ball:GetChildren()) do
-            if m ~= ctl.mover and not ctl.off[m] then
+            if m ~= ctl.mover then
                 local prop = MOVER_OFF[m.ClassName]
                 if prop then
-                    ctl.off[m] = { prop, m[prop] }
-                    m[prop] = Vector3.zero
-                elseif m:IsA("Constraint") and m.Enabled then
-                    ctl.off[m] = { "Enabled", true }
-                    m.Enabled = false
+                    if not ctl.off[m] then ctl.off[m] = { prop, m[prop] } end
+                    if m[prop] ~= Vector3.zero then m[prop] = Vector3.zero end
+                elseif m:IsA("Constraint") then
+                    if not ctl.off[m] then ctl.off[m] = { "Enabled", m.Enabled } end
+                    if m.Enabled then m.Enabled = false end
                 end
             end
         end
@@ -1891,6 +1910,7 @@ do
         local c = ctl
         ctl = nil
         if why then dbg.last = "CONTROL let go: " .. why end
+        skipBall, skipUntil = c.ball, os.clock() + 2
         pcall(function() c.mover:Destroy() end)
         for m, was in pairs(c.off) do
             pcall(function()
@@ -1916,6 +1936,82 @@ do
         return f.Unit * math.cos(pitch) + Vector3.new(0, math.sin(pitch), 0)
     end
 
+    -- `from` turned toward `to` by at most `step` radians (both unit length). Straight back turns
+    -- through the side: the halfway point between opposite directions is no direction at all.
+    local function turn(from, to, step)
+        local angle = math.acos(math.clamp(from:Dot(to), -1, 1))
+        if angle <= step then return to end
+        local axis = from:Cross(to)
+        if axis.Magnitude < 1e-4 then axis = math.abs(from.Y) < 0.9 and Vector3.yAxis or Vector3.xAxis end
+        axis = axis.Unit
+        local c, s = math.cos(step), math.sin(step)
+        return (from * c + axis:Cross(from) * s + axis * (axis:Dot(from) * (1 - c))).Unit
+    end
+
+    -- the nearest player to a point, and how far
+    local function nearestPlayer(pos)
+        local who, best = nil, math.huge
+        for _, p in ipairs(Players:GetPlayers()) do
+            local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            local d = r and (r.Position - pos).Magnitude
+            if d and d < best then who, best = p, d end
+        end
+        return who, best
+    end
+
+    -- whether the ball's physics runs on your device: the executor knows, where it can say;
+    -- otherwise Roblox's own rule, the nearest player
+    local function yoursToMove(ball)
+        if type(isnetworkowner) == "function" then
+            local ok, yes = pcall(isnetworkowner, ball)
+            if ok and type(yes) == "boolean" then return yes end
+        end
+        return nearestPlayer(ball.Position) == LP
+    end
+
+    -- Aimed within ControlAssistAngle of a goal with an enemy keeper in it (so never your own):
+    -- low, for the corner away from them.
+    local function assist(pos, want)
+        local fw = flat(want)
+        if fw.Magnitude < 0.1 then return want end
+        fw = fw.Unit
+        local cone = math.cos(math.rad(CFG.ControlAssistAngle))
+        local best, bestDot
+        for g in pairs(goals) do
+            if not g:IsDescendantOf(workspace) then
+                goals[g] = nil
+            else
+                local off = flat(g.Position - pos)
+                if off.Magnitude > 6 and off.Magnitude < CFG.ControlAssistRange then
+                    local dot = fw:Dot(off.Unit)
+                    if dot > cone and (not best or dot > bestDot) then best, bestDot = g, dot end
+                end
+            end
+        end
+        if not best then return want end
+        local c = best.Position
+        local keeper, kd = nearestPlayer(c)
+        local kr = keeper and kd < 25 and isEnemy(keeper) and keeper.Character.HumanoidRootPart.Position
+        if not kr then return want end
+        local side = best.Size.X >= best.Size.Z and Vector3.xAxis or Vector3.zAxis
+        local half = math.max(best.Size.X, best.Size.Z) / 2 - 3
+        local a, b = c + side * half, c - side * half
+        local post = flat(a - kr).Magnitude >= flat(b - kr).Magnitude and a or b
+        return (Vector3.new(post.X, c.Y - best.Size.Y / 2 + 3, post.Z) - pos).Unit
+    end
+
+    local function start(ball, vel, now)
+        local speed = math.clamp(math.max(vel.Magnitude, CFG.ControlSpeed), CFG.ControlMin, CFG.ControlMax)
+        ctl = { ball = ball, speed = speed, dir = vel.Unit, ends = now + CFG.ControlTime,
+                lastPos = ball.Position, off = {}, bad = 0 }
+        silence(ball)
+        ctl.mover = newMover(ball, ctl.dir * speed)
+        mineAt = -math.huge
+        local cam = workspace.CurrentCamera
+        if CFG.ControlCamera and cam then cam.CameraSubject = ball end
+        say("control", "STEERING", COLORS.learn, WHITE, CFG.ControlTime + 1)
+    end
+
     -- before physics, so the turn applies this frame
     bind(RunService.Stepped, function(_, dt)
         if not on.control then
@@ -1939,38 +2035,40 @@ do
         local held = holder and holder ~= LP and holder.Character and ball:IsDescendantOf(holder.Character)
 
         if not ctl then
-            -- a shot: much faster than you're moving and going away from you, a moment after a ball
-            -- was at your feet
+            -- your shot: much faster than you're moving and going away from you, a moment after a
+            -- ball was at your feet
             local rel = vel - root.AssemblyLinearVelocity
             local kicked = not ball.Anchored and rel.Magnitude >= CFG.ControlMin and rel:Dot(pos - root.Position) > 0
+            if holder and not kicked then skipBall = nil end -- someone has it: a fresh chance once it's loose
             if holder == LP and not kicked then
                 mineAt = now
+                return
             elseif held or (holder and holder ~= LP and not kicked) then
-                mineAt = -math.huge -- someone else's now: their shot isn't yours to steer
-            elseif kicked and now - mineAt < 0.6 then
-                local speed = math.clamp(math.max(vel.Magnitude, CFG.ControlSpeed), CFG.ControlMin, CFG.ControlMax)
-                ctl = { ball = ball, speed = speed, dir = vel.Unit, at = now, ends = now + CFG.ControlTime,
-                        lastPos = pos, off = {}, bad = 0 }
-                silence(ball)
-                ctl.mover = newMover(ball, ctl.dir * speed)
-                mineAt = -math.huge
-                local cam = workspace.CurrentCamera
-                if CFG.ControlCamera and cam then cam.CameraSubject = ball end
-                say("control", "STEERING", COLORS.learn, WHITE, CFG.ControlTime + 1)
+                mineAt = -math.huge -- someone else's now: their shot isn't yours unless it comes loose near you
+                return
+            end
+            if ball == skipBall and now < skipUntil then return end
+            if kicked and now - mineAt < 0.6 then
+                start(ball, vel, now)
                 dbg.last = "CONTROL steering your shot"
+            elseif CFG.ControlAny and not holder and not ball.Anchored and vel.Magnitude >= CFG.ControlMin
+                and (pos - root.Position).Magnitude <= CFG.ControlRange and yoursToMove(ball) then
+                -- (not one about to reach you: where its path passes closest to you in the next second)
+                local t = math.clamp((root.Position - pos):Dot(vel) / vel:Dot(vel), 0, 1)
+                if flat(pos + vel * t - root.Position).Magnitude > 6 then
+                    start(ball, vel, now)
+                    dbg.last = "CONTROL steering a loose ball"
+                end
             end
             return
         end
 
-        -- Over: time's up, someone has it, it's back with you, it jumped (a reset after a goal), or
-        -- for a quarter of a second it hasn't been doing what we fly it to (the net or a keeper
-        -- stopped it, or the server kept the ball and our mover does nothing)
         local follows = vel.Magnitude > ctl.speed * 0.35 and vel.Unit:Dot(ctl.dir) > 0.3
         ctl.bad = follows and 0 or ctl.bad + dt
         local why = (now > ctl.ends and "time's up") or (held and "someone has it")
-            or (ball.Anchored and "the game froze it") or (ctl.bad > 0.25 and "it stopped following (hit something, or the server kept it)")
-            or ((pos - ctl.lastPos).Magnitude > ctl.speed * dt * 3 + 8 and "it jumped (reset)")
-            or (holder == LP and now - ctl.at > 0.3 and "back with you")
+            or (ball:IsDescendantOf(char) and "back at your feet") or (ball.Anchored and "the game froze it")
+            or (ctl.bad > CFG.ControlGrace and "it stopped following (stuck, or another device runs the ball now)")
+            or ((pos - ctl.lastPos).Magnitude > math.max(60, ctl.speed * dt * 4) and "it jumped (a reset)")
         if why then
             stopControl(why)
             return
@@ -1979,8 +2077,9 @@ do
         silence(ball)
         local cam = workspace.CurrentCamera
         if cam then
-            local dir = ctl.dir:Lerp(aim(cam), math.min(1, CFG.ControlTurn * dt))
-            if dir.Magnitude > 0.01 then ctl.dir = dir.Unit end
+            local want = aim(cam)
+            if CFG.ControlAssist then want = assist(pos, want) end
+            ctl.dir = turn(ctl.dir, want, CFG.ControlTurn * dt)
         end
         if ctl.mover.Parent ~= ball and not pcall(function() ctl.mover.Parent = ball end) then
             ctl.mover = newMover(ball, ctl.dir * ctl.speed) -- the game cleared it off the ball
@@ -2246,7 +2345,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v20", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v21", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end

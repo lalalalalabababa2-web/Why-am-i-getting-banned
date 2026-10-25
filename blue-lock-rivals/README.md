@@ -17,7 +17,7 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v20 Loaded" when it starts.
+notification says "AutoDribble v21 Loaded" when it starts.
 
 Running it again replaces the old copy. Four pills appear on the left: **DRIBBLE**, **TACKLE**,
 **AUTO GK**, **CONTROL**. Tap to toggle, drag to move. Hold about a second and let go, then tap
@@ -39,8 +39,10 @@ it pauses dribble and tackle.
   right at you, and keeps you on the angle while your thumb is off the stick. It also comes out
   for loose balls and low crosses it would reach first, and dives at a loose ball an attacker is
   about to reach.
-- **Control** steers your own shots. After you kick, the camera follows the ball and the shot
-  turns toward wherever the camera looks, at its own speed or 120 studs/s, whichever is more. Look up to lift it and down to dip
+- **Control** steers the ball where you look: your own shots, and a loose ball flying near you
+  that you're the nearest player to. The camera follows the ball and it turns toward wherever the
+  camera looks, at its own speed or 120 studs/s, whichever is more. Aim roughly at their goal and
+  it bends for the corner away from their keeper. Look up to lift it and down to dip
   it. It lets go when the ball hits something, someone takes it, or 4 seconds pass, and the camera
   comes back to you.
 
@@ -54,6 +56,21 @@ it pauses dribble and tackle.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v21
+
+- **Control holds on.** If the game switches its kick mover back on, it's switched off again every
+  frame (it was only switched off once). A bump costs up to 0.6s before it lets go (it was 0.25s).
+  A ball flying past you is still yours: it only counts as back with you once the game gives it to
+  you. You get 8 seconds instead of 4.
+- **Control a ball you didn't kick:** a loose ball flying within 45 studs that you're the nearest
+  player to. Roblox runs a loose ball's physics on the nearest player's device, so that's one you
+  can move; `isnetworkowner` decides when the executor has it. A ball on its way to your feet is
+  left to arrive, and one it just let go isn't taken straight back.
+- **Turns all the way round:** look straight back and the ball U-turns in about 0.6s. Before, it
+  couldn't turn more than about 90° (halfway between opposite directions is no direction).
+- **Aim assist:** aimed within 25° of a goal that has an enemy keeper in it, the ball goes low
+  for the corner away from them. Never at a goal your own team's keeper is in.
 
 ## v20
 
@@ -258,7 +275,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 83 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 93 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

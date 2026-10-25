@@ -1546,7 +1546,9 @@ def control_steers_your_shot_where_you_look():
     v = g.ball_vel
     check(v.x > 120 and abs(v.y) < 15, f"turned to where the camera looks, flying level ({v})")
     check(abs(v.mag() - 150) < 2, f"at the shot's own speed ({v.mag():.1f})")
-    g.run(4.0)
+    g.run(3.5)
+    check(cam.props["CameraSubject"] is g.ball, "still yours 4s in")
+    g.run(4.5)
     check(cam.props["CameraSubject"] is g.hum, f"the camera back on you after ({cam.props['CameraSubject']})")
     check(g.pill_text("control") == "CONTROL ON", f"pill back to {g.pill_text('control')!r}")
     check(not our_movers(g), "our mover is gone")
@@ -1588,6 +1590,132 @@ def control_keeps_flying_when_the_game_clears_the_ball():
 
 
 @test
+def control_rides_out_a_bump():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.3)
+    g.ball_stuck = True  # clips someone for a moment
+    g.run(0.3)
+    g.ball_stuck = False
+    g.run(0.5)
+    check(cam.props["CameraSubject"] is g.ball and len(our_movers(g)) == 1, "still steering after the bump")
+    check(g.ball_vel.x > 120, f"and still flying where you look ({g.ball_vel})")
+
+
+@test
+def control_keeps_the_games_mover_off():
+    g, cam = control_game()
+    bv, bg = shoot_ahead(g)
+    for _ in range(40):
+        bv.props["MaxForce"] = Vector3(1e5, 1e5, 1e5)  # the game switches its kick back on every frame
+        g.step()
+    check(g.ball_vel.x > 120, f"it keeps turning anyway ({g.ball_vel})")
+    check(cam.props["CameraSubject"] is g.ball, "without letting go")
+
+
+@test
+def control_turns_all_the_way_round():
+    g, cam = control_game(look=Vector3(0, -0.342, 0.940))  # looking back the way you shot
+    shoot_ahead(g)
+    g.run(1.2)
+    check(g.ball_vel.z > 120, f"came round to fly back ({g.ball_vel})")
+    check(cam.props["CameraSubject"] is g.ball, "and is still yours after passing you")
+
+
+@test
+def control_flies_past_you_without_letting_go():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.4)
+    g.root.props["Position"] = g.ball.props["Position"] + Vector3(2, 2, 0)  # right beside it as it goes by
+    g.run(0.3)
+    check(cam.props["CameraSubject"] is g.ball and len(our_movers(g)) == 1, "a ball going past you is still yours")
+
+
+@test
+def control_takes_a_loose_ball_you_didnt_kick():
+    g, cam = control_game(look=Vector3(0, -0.342, -0.940))
+    g.bot("Reo", Vector3(-35, 3, -10))
+    not_yours(g)
+    g.shoot(Vector3(-31, 1, -10), Vector3(31, 1, -10), 80)  # their pass, across in front of you
+    g.run(0.8)
+    check(cam.props["CameraSubject"] is g.ball, "took the pass once you were the nearest to it")
+    check(g.ball_vel.z < -100, f"and flew it where you look ({g.ball_vel})")
+
+
+@test
+def control_leaves_a_ball_nearer_someone_else():
+    g, cam = control_game(look=Vector3(0, -0.342, -0.940))
+    g.bot("Barou", Vector3(20, 3, -38))
+    not_yours(g)
+    g.shoot(Vector3(2, 1, -35), Vector3(40, 1, -35), 60)  # 35 out, running past them
+    g.run(0.6)
+    check(cam.props["CameraSubject"] is not g.ball and not flown(g), "theirs to run, left alone")
+
+
+@test
+def control_lets_a_pass_to_you_arrive():
+    g, cam = control_game(look=Vector3(0, -0.342, -0.940))
+    not_yours(g)
+    g.shoot(Vector3(30, 1, -2), Vector3(0, 1, -2), 60)
+    g.run(0.45)
+    check(cam.props["CameraSubject"] is not g.ball and not flown(g), "a ball coming to your feet isn't taken")
+
+
+@test
+def control_doesnt_grab_a_ball_it_just_let_go():
+    g, cam = control_game()
+    g.server_owns_ball = True
+    shoot_ahead(g, speed=45)  # slow, and the server keeps it: it gets let go while still near you
+    g.run(2.0, until=lambda: cam.props["CameraSubject"] is g.hum)
+    check(cam.props["CameraSubject"] is g.hum, "let go")
+    g.run(0.5)
+    check(cam.props["CameraSubject"] is g.hum, "and not taken straight back")
+
+
+def not_yours(g):
+    """The ball off somewhere else long enough that it no longer counts as just kicked by you."""
+    g.holder = None
+    g.ball.props["Position"] = Vector3(0, 1, 120)
+    g.ball_vel = Vector3()
+    g.run(0.7)
+
+
+def goal_ahead(g, keeper_team_enemy=True):
+    net = BasePart(g.W, "Net", Position=Vector3(0, 5, -150), Size=Vector3(44, 10, 4))
+    model = Model(g.W, "Goal")
+    net.set_parent(model)
+    model.set_parent(g.W.workspace)
+    return g.bot("Keeper", Vector3(-12, 3, -147), enemy=keeper_team_enemy)
+
+
+def x_at_goal_line(g):
+    for _ in range(120):
+        g.step()
+        if g.ball.props["Position"].z <= -146:
+            return g.ball.props["Position"].x
+    return None
+
+
+@test
+def control_bends_for_the_corner_away_from_their_keeper():
+    g, cam = control_game(look=Vector3(0, -0.342, -0.940))
+    goal_ahead(g)
+    shoot_ahead(g)
+    x = x_at_goal_line(g)
+    check(x is not None and 8 < x < 22, f"in at the far post, away from the keeper at x=-12 (x={x})")
+
+
+@test
+def control_never_aims_at_your_own_goal():
+    g, cam = control_game(look=Vector3(0, -0.342, -0.940))
+    goal_ahead(g, keeper_team_enemy=False)
+    shoot_ahead(g)
+    x = x_at_goal_line(g)
+    check(x is not None and abs(x) < 3, f"straight where you look at your own goal (x={x})")
+
+
+@test
 def control_steers_a_slow_shot_at_a_usable_speed():
     g, cam = control_game()
     shoot_ahead(g, speed=60)
@@ -1610,7 +1738,7 @@ def control_lets_go_when_something_knocks_the_ball():
     shoot_ahead(g)
     g.run(0.3)
     g.ball_stuck = True  # in the net
-    g.run(0.4)
+    g.run(0.8)
     check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
     check(not our_movers(g), "and the ball left alone")
 
@@ -1652,7 +1780,7 @@ def control_lets_go_when_the_server_keeps_the_ball():
     g, cam = control_game()
     g.server_owns_ball = True  # our mover does nothing: the ball keeps going where the game sends it
     bv, bg = shoot_ahead(g)
-    g.run(0.8)
+    g.run(1.2)
     check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
     check(not our_movers(g) and bv.props["MaxForce"].mag() > 0, "and the game's kick left as it was")
 
