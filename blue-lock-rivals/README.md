@@ -17,7 +17,7 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v19 Loaded" when it starts.
+notification says "AutoDribble v20 Loaded" when it starts.
 
 Running it again replaces the old copy. Four pills appear on the left: **DRIBBLE**, **TACKLE**,
 **AUTO GK**, **CONTROL**. Tap to toggle, drag to move. Hold about a second and let go, then tap
@@ -40,7 +40,7 @@ it pauses dribble and tackle.
   for loose balls and low crosses it would reach first, and dives at a loose ball an attacker is
   about to reach.
 - **Control** steers your own shots. After you kick, the camera follows the ball and the shot
-  turns toward wherever the camera looks, keeping its speed. Look up to lift it and down to dip
+  turns toward wherever the camera looks, at its own speed or 120 studs/s, whichever is more. Look up to lift it and down to dip
   it. It lets go when the ball hits something, someone takes it, or 4 seconds pass, and the camera
   comes back to you.
 
@@ -54,6 +54,21 @@ it pauses dribble and tackle.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v20
+
+- **Control works the way the game moves the ball.** BLR flies a kicked Football with its own
+  BodyVelocity and BodyGyro, so v19's velocity set straight on the ball was undone the next frame.
+  v19 then took that for a knock and let go: the one-frame STEERING flash in the clip. Now the
+  game's movers on the ball are switched off for the flight (and get their settings back after),
+  and a BodyVelocity of our own flies it. If the game clears it off the ball, a new one goes on.
+- **It starts on your kick even if the game swaps the ball.** "Yours" is now any ball at your
+  feet a moment before, not that exact ball. In the clip, the real kick never started at all.
+- A slow shot is flown at 120 studs/s or more, so there's something to steer.
+- It no longer gives up on `isnetworkowner`, which can say no for a moment after a kick. If the
+  server really keeps the ball, the ball doesn't follow, and it lets go after a quarter of a
+  second.
+- With `Debug = true`, line 3 says why it let go.
 
 ## v19
 
@@ -243,11 +258,11 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 78 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 83 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:
 `LungeSpeed`, `SlideSpeed`, the protection window, and the first cooldown guesses (those last ones
 get replaced once it learns them). The keeper's `FoeSpeed` and the shot wind-up names
 (`shoot`, `charge`, `kick`, …) are guesses too. Control needs your client to own the ball's physics
-after a kick. The clip of another script doing it in this game says it does, but it's unchecked here.
+after a kick. Other scripts for this game steer it the same way, so it should, but it's unchecked here.

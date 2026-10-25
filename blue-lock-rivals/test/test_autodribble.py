@@ -94,6 +94,9 @@ class Game:
         self.ball_by_hand = False  # an ability shot the game moves itself: no physics velocity
         self.shiftlock = False  # turns you to face the camera (-z) every frame, like shift lock
         self.press_look = {}
+        self.game_movers = []  # the movers the game itself put on the ball for a kick
+        self.server_owns_ball = False
+        self.ball_stuck = False
 
         self.team_a, self.team_b = Team(W, "Blue"), Team(W, "Red")
         self.lp = Player(W, "Me", Team=self.team_a)
@@ -352,6 +355,19 @@ class Game:
             if self.friction and self.ball_vel.flat().mag() > 0:
                 sp = self.ball_vel.flat().mag()
                 self.ball_vel = self.ball_vel * (max(0.0, sp - self.friction * DT) / sp)
+            # BodyVelocities with force on fly the ball (two at once fight to a draw). While the server
+            # owns the ball, only the game's own count: what the script adds never reaches it.
+            movers = [c for c in self.ball.children if c.CLASS == "BodyVelocity" and c.props["MaxForce"].mag() > 0
+                      and not (self.server_owns_ball and c not in self.game_movers)]
+            if movers:
+                v = Vector3()
+                for m in movers:
+                    v = v + m.props["Velocity"]
+                self.ball_vel = v / len(movers)
+                if any(m not in self.game_movers for m in movers):
+                    self.log("ball_flown")
+            if self.ball_stuck:
+                self.ball_vel = Vector3()  # in the net
             self.ball.props["Position"] = self.ball.props["Position"] + self.ball_vel * DT
             self.ball.props["AssemblyLinearVelocity"] = Vector3() if self.ball_by_hand else self.ball_vel
         self._ball_v = self.ball.props["AssemblyLinearVelocity"]
@@ -371,6 +387,25 @@ class Game:
         self.holder = None
         self.ball.props["Position"] = frm
         self.ball_vel = (to - frm).unit() * speed
+
+    def game_kick(self, frm, to, speed, new_ball=False):
+        """A kick the way the game does it: its own BodyVelocity and BodyGyro fly the ball. With
+        new_ball, the ball at your feet is swapped for a fresh Football as it goes."""
+        from roblox import BodyGyro, BodyVelocity
+        if new_ball:
+            old = self.ball
+            self.ball = BasePart(self.W, "Football", Position=frm, Size=Vector3(2, 2, 2))
+            self.ball.set_parent(self.W.workspace)
+            old.m_Destroy()
+        self.shoot(frm, to, speed)
+        if new_ball:
+            self.ball.props["AssemblyLinearVelocity"] = self.ball_vel  # already on its way when it appears
+        bv = BodyVelocity(self.W, "BodyVelocity", Velocity=self.ball_vel, MaxForce=Vector3(1e5, 1e5, 1e5))
+        bg = BodyGyro(self.W, "BodyGyro")
+        for m in (bv, bg):
+            m.set_parent(self.ball)
+            self.game_movers.append(m)
+        return bv, bg
 
 
 # ---------------------------------------------------------------- scenarios
@@ -1486,8 +1521,17 @@ def control_game(look=Vector3(1, -0.342, 0), on=True):
     return g, cam
 
 
-def shoot_ahead(g, speed=100):
-    g.shoot(g.root.props["Position"] + Vector3(0, -2, -1.5), g.root.props["Position"] + Vector3(0, -2, -100), speed)
+def shoot_ahead(g, speed=150, **kw):
+    return g.game_kick(g.root.props["Position"] + Vector3(0, -2, -1.5), g.root.props["Position"] + Vector3(0, -2, -100),
+                  speed, **kw)
+
+
+def flown(g):
+    return [e for e in g.events if e[1:] == ("ball_flown",)]
+
+
+def our_movers(g):
+    return [c for c in g.ball.children if c.CLASS == "BodyVelocity" and c not in g.game_movers]
 
 
 @test
@@ -1500,11 +1544,55 @@ def control_steers_your_shot_where_you_look():
     check(g.pill_text("control") == "STEERING", f"pill reads {g.pill_text('control')!r}")
     g.run(0.6)
     v = g.ball_vel
-    check(v.x > 80 and abs(v.y) < 10, f"turned to where the camera looks, flying level ({v})")
-    check(abs(v.mag() - 100) < 2, f"at the shot's own speed ({v.mag():.1f})")
+    check(v.x > 120 and abs(v.y) < 15, f"turned to where the camera looks, flying level ({v})")
+    check(abs(v.mag() - 150) < 2, f"at the shot's own speed ({v.mag():.1f})")
     g.run(4.0)
     check(cam.props["CameraSubject"] is g.hum, f"the camera back on you after ({cam.props['CameraSubject']})")
     check(g.pill_text("control") == "CONTROL ON", f"pill back to {g.pill_text('control')!r}")
+    check(not our_movers(g), "our mover is gone")
+
+
+@test
+def control_takes_over_from_the_games_kick():
+    g, cam = control_game()
+    bv, bg = shoot_ahead(g)
+    g.run(0.1)
+    check(bv.props["MaxForce"].mag() == 0 and bg.props["MaxTorque"].mag() == 0,
+          "the game's BodyVelocity and BodyGyro are off while you steer")
+    check(len(our_movers(g)) == 1, "one mover of our own flies it")
+    g.run(0.5)
+    check(g.ball_vel.x > 120, f"so it really turns ({g.ball_vel})")
+    g.tap("control")
+    g.step()
+    check(bv.props["MaxForce"].mag() > 0 and bg.props["MaxTorque"].mag() > 0, "and they get their settings back after")
+
+
+@test
+def control_steers_when_the_game_swaps_the_ball():
+    g, cam = control_game()
+    shoot_ahead(g, new_ball=True)  # the ball at your feet is replaced by a fresh Football as it goes
+    g.run(0.6)
+    check(cam.props["CameraSubject"] is g.ball, "the camera follows the new ball")
+    check(g.ball_vel.x > 120, f"and it turns ({g.ball_vel})")
+
+
+@test
+def control_keeps_flying_when_the_game_clears_the_ball():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.2)
+    for c in list(g.ball.children):
+        c.m_Destroy()  # the game tidies its kick off the ball, ours with it
+    g.run(0.4)
+    check(len(our_movers(g)) == 1 and g.ball_vel.x > 120, f"a fresh mover keeps flying it ({g.ball_vel})")
+
+
+@test
+def control_steers_a_slow_shot_at_a_usable_speed():
+    g, cam = control_game()
+    shoot_ahead(g, speed=60)
+    g.run(0.5)
+    check(abs(g.ball_vel.mag() - 120) < 2, f"flown at ControlSpeed ({g.ball_vel.mag():.1f})")
 
 
 @test
@@ -1521,12 +1609,10 @@ def control_lets_go_when_something_knocks_the_ball():
     g, cam = control_game()
     shoot_ahead(g)
     g.run(0.3)
-    g.ball_hit = Vector3(0, 30, 60)  # off the post
-    g.run(0.1)
+    g.ball_stuck = True  # in the net
+    g.run(0.4)
     check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
-    n = len([e for e in g.events if e[1:] == ("ball_set",)])
-    g.run(0.3)
-    check(len([e for e in g.events if e[1:] == ("ball_set",)]) == n, "and the ball left alone")
+    check(not our_movers(g), "and the ball left alone")
 
 
 @test
@@ -1538,7 +1624,7 @@ def control_only_steers_your_own_shot():
     g.shoot(c.pos + Vector3(0, -2, -2), c.pos + Vector3(0, -2, -100), 100)
     g.run(0.5)
     check(cam.props["CameraSubject"] is not g.ball, "the camera stays on you")
-    check(not [e for e in g.events if e[1:] == ("ball_set",)], "their shot left alone")
+    check(not flown(g) and not our_movers(g), "their shot left alone")
 
 
 @test
@@ -1562,13 +1648,13 @@ def control_hands_the_camera_back_when_turned_off():
 
 
 @test
-def control_needs_the_ball_to_be_yours_to_move():
+def control_lets_go_when_the_server_keeps_the_ball():
     g, cam = control_game()
-    g.I.G.set("isnetworkowner", lambda part: False)  # the server keeps the ball
-    shoot_ahead(g)
-    g.run(0.6)
-    check(not [e for e in g.events if e[1:] == ("ball_set",)], "nothing set that wouldn't reach anyone")
-    check(cam.props["CameraSubject"] is g.hum, "and the camera back on you")
+    g.server_owns_ball = True  # our mover does nothing: the ball keeps going where the game sends it
+    bv, bg = shoot_ahead(g)
+    g.run(0.8)
+    check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
+    check(not our_movers(g) and bv.props["MaxForce"].mag() > 0, "and the game's kick left as it was")
 
 
 @test

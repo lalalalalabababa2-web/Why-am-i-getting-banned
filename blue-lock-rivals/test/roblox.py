@@ -940,6 +940,25 @@ class IntValue(Inst):
     DEFAULTS = {"Value": 0}
 
 
+class BodyVelocity(Inst):
+    CLASS = "BodyVelocity"
+    ISA = ("BodyVelocity", "BodyMover")
+    DEFAULTS = {"Velocity": lambda: Vector3(), "MaxForce": lambda: Vector3(4000, 4000, 4000), "P": 1250}
+
+
+class BodyGyro(Inst):
+    CLASS = "BodyGyro"
+    ISA = ("BodyGyro", "BodyMover")
+    DEFAULTS = {"MaxTorque": lambda: Vector3(400000, 0, 400000), "P": 3000, "D": 500,
+                "CFrame": lambda: CFrame(Vector3())}
+
+
+class LinearVelocity(Inst):
+    CLASS = "LinearVelocity"
+    ISA = ("LinearVelocity", "Constraint")
+    DEFAULTS = {"Enabled": True, "VectorVelocity": lambda: Vector3(), "MaxForce": 1000}
+
+
 class RemoteEvent(Inst):
     CLASS = "RemoteEvent"
     ISA = ("RemoteEvent", "BaseRemoteEvent")
@@ -1221,7 +1240,8 @@ class DataModel(Inst):
 CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animator, Animation, Player, ScreenGui,
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
                                  BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue,
-                                 RemoteEvent, CylinderHandleAdornment, SelectionBox]}
+                                 RemoteEvent, CylinderHandleAdornment, SelectionBox, BodyVelocity, BodyGyro,
+                                 LinearVelocity]}
 CLASSES["Part"] = BasePart
 
 

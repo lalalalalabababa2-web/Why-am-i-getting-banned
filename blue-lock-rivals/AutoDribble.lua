@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v19 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v20 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -20,8 +20,9 @@
              dives at a loose ball an attacker is about to reach. Turn it on standing in your goal.
              Dribble and tackle pause.
     CONTROL  After you shoot, the ball flies where you look: the camera follows it and the shot turns
-             toward the camera's aim, at its own speed, until it hits something, someone takes it,
-             or 4s pass; then the camera comes back to you. Look up to lift it, down to dip it.
+             toward the camera's aim (the game's own kick movers switched off, ours flying it), at
+             its own speed or 120, until it hits something, someone takes it, or 4s pass; then the
+             camera comes back to you. Look up to lift it, down to dip it.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -125,7 +126,8 @@ local CFG = {
     -- ball control (the CONTROL pill)
     ControlTime  = 4,      -- steer a shot this long at most (s)
     ControlMin   = 40,     -- a ball leaving your feet this fast is a shot to steer (studs/s)
-    ControlMax   = 160,    -- it keeps the shot's own speed, up to this
+    ControlSpeed = 120,    -- it flies at the shot's own speed or this, whichever is more...
+    ControlMax   = 200,    -- ...up to this
     ControlTurn  = 4,      -- how quickly it turns toward where you look (higher = sharper)
     ControlLift  = 20,     -- degrees above the camera's aim: the camera looks down at the ball from
                            -- behind, so its usual angle flies level; look up to lift it, down to dip it
@@ -1844,29 +1846,63 @@ end
 local stopControl -- set in the block below, used further down
 do
 
-    -- CONTROL: after you shoot, the ball flies where you look. The camera follows it and its flight
-    -- turns toward the camera's aim, keeping the shot's speed, until it hits something, someone
-    -- takes it, it comes back to you or ControlTime runs out; then the camera comes back to you.
-    -- Moving the ball only counts while your client owns its physics, which the kicker usually does
-    -- for a moment after the kick (isnetworkowner tells, where the executor has it).
-    local ctl -- while steering: { ball, speed, dir, at, ends, lastPos, lastVel, ownedAt }
-    local mineAt, mineBall = -math.huge, nil -- when the ball was last at your feet
+    -- CONTROL: after you shoot, the ball flies where you look. The game flies a kicked ball with its
+    -- own movers on the Football (a BodyVelocity and a BodyGyro), and a velocity set on the ball
+    -- directly is undone by them the next frame. So for the flight those are switched off and our
+    -- own BodyVelocity flies it toward the camera's aim, at the shot's speed or ControlSpeed,
+    -- whichever is more. The camera follows it. It lets go when the ball stops following (the
+    -- server kept it), hits something solid, someone takes it, it comes back to you, or ControlTime
+    -- runs out; then the camera comes back and the game's movers get their settings back.
+    local ctl -- while steering: { ball, speed, dir, at, ends, lastPos, mover, off, bad }
+    local mineAt = -math.huge -- when a ball was last at your feet (any ball: a kick may swap it for a new one)
 
-    local function owned(ball)
-        if type(isnetworkowner) ~= "function" then return true end
-        local ok, yes = pcall(isnetworkowner, ball)
-        return not ok or yes == true
+    -- the property that switches off each kind of the game's movers
+    local MOVER_OFF = { BodyVelocity = "MaxForce", BodyPosition = "MaxForce", BodyGyro = "MaxTorque",
+                        BodyAngularVelocity = "MaxTorque", BodyForce = "Force", BodyThrust = "Force" }
+
+    -- the game's movers on the ball, off; what they were is kept to put back (it may add more mid-flight)
+    local function silence(ball)
+        for _, m in ipairs(ball:GetChildren()) do
+            if m ~= ctl.mover and not ctl.off[m] then
+                local prop = MOVER_OFF[m.ClassName]
+                if prop then
+                    ctl.off[m] = { prop, m[prop] }
+                    m[prop] = Vector3.zero
+                elseif m:IsA("Constraint") and m.Enabled then
+                    ctl.off[m] = { "Enabled", true }
+                    m.Enabled = false
+                end
+            end
+        end
     end
 
-    function stopControl()
+    local function newMover(ball, v)
+        local m = Instance.new("BodyVelocity")
+        m.Name = "AutoDribbleControl"
+        m.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+        m.P = 3e4
+        m.Velocity = v
+        m.Parent = ball
+        return m
+    end
+
+    function stopControl(why)
         if not ctl then return end
+        local c = ctl
+        ctl = nil
+        if why then dbg.last = "CONTROL let go: " .. why end
+        pcall(function() c.mover:Destroy() end)
+        for m, was in pairs(c.off) do
+            pcall(function()
+                if m.Parent == c.ball then m[was[1]] = was[2] end
+            end)
+        end
         local cam = workspace.CurrentCamera
-        if cam and cam.CameraSubject == ctl.ball then
+        if cam and cam.CameraSubject == c.ball then
             local char = LP.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum then cam.CameraSubject = hum end
         end
-        ctl = nil
         hush("control")
         paint("control")
     end
@@ -1883,19 +1919,19 @@ do
     -- before physics, so the turn applies this frame
     bind(RunService.Stepped, function(_, dt)
         if not on.control then
-            stopControl()
+            stopControl("pill off")
             return
         end
         local char = LP.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then
-            stopControl()
+            stopControl("no character")
             return
         end
         local ball = ctl and ctl.ball or nearestBall(root.Position)
         if not ball then return end
         if not ball:IsDescendantOf(workspace) then
-            stopControl()
+            stopControl("the ball's gone")
             return
         end
         local now, pos, vel = os.clock(), ball.Position, ball.AssemblyLinearVelocity
@@ -1903,16 +1939,20 @@ do
         local held = holder and holder ~= LP and holder.Character and ball:IsDescendantOf(holder.Character)
 
         if not ctl then
-            -- a shot: off your feet a moment ago, much faster than you're moving, and away from you
+            -- a shot: much faster than you're moving and going away from you, a moment after a ball
+            -- was at your feet
             local rel = vel - root.AssemblyLinearVelocity
             local kicked = not ball.Anchored and rel.Magnitude >= CFG.ControlMin and rel:Dot(pos - root.Position) > 0
             if holder == LP and not kicked then
-                mineAt, mineBall = now, ball
-            elseif holder and holder ~= LP then
-                mineBall = nil -- someone else's now: their shot isn't yours to steer
-            elseif kicked and not held and mineBall == ball and now - mineAt < 0.25 then
-                ctl = { ball = ball, speed = math.clamp(vel.Magnitude, CFG.ControlMin, CFG.ControlMax), dir = vel.Unit,
-                        at = now, ends = now + CFG.ControlTime, lastPos = pos, lastVel = vel, ownedAt = now }
+                mineAt = now
+            elseif held or (holder and holder ~= LP and not kicked) then
+                mineAt = -math.huge -- someone else's now: their shot isn't yours to steer
+            elseif kicked and now - mineAt < 0.6 then
+                local speed = math.clamp(math.max(vel.Magnitude, CFG.ControlSpeed), CFG.ControlMin, CFG.ControlMax)
+                ctl = { ball = ball, speed = speed, dir = vel.Unit, at = now, ends = now + CFG.ControlTime,
+                        lastPos = pos, off = {}, bad = 0 }
+                silence(ball)
+                ctl.mover = newMover(ball, ctl.dir * speed)
                 mineAt = -math.huge
                 local cam = workspace.CurrentCamera
                 if CFG.ControlCamera and cam then cam.CameraSubject = ball end
@@ -1922,34 +1962,30 @@ do
             return
         end
 
-        -- Over: time's up, it was knocked off its course (the post, the net, a keeper, a block: what
-        -- we set last frame plus gravity is what it should be doing), it jumped (a reset after a
-        -- goal), someone has it, or it's back with you.
-        local expected = ctl.lastVel + Vector3.new(0, -workspace.Gravity * dt, 0)
-        if now > ctl.ends or (vel - expected).Magnitude > math.max(30, ctl.speed * 0.3)
-            or (pos - ctl.lastPos).Magnitude > ctl.speed * dt * 3 + 5 or held
-            or (holder == LP and now - ctl.at > 0.3) then
-            stopControl()
+        -- Over: time's up, someone has it, it's back with you, it jumped (a reset after a goal), or
+        -- for a quarter of a second it hasn't been doing what we fly it to (the net or a keeper
+        -- stopped it, or the server kept the ball and our mover does nothing)
+        local follows = vel.Magnitude > ctl.speed * 0.35 and vel.Unit:Dot(ctl.dir) > 0.3
+        ctl.bad = follows and 0 or ctl.bad + dt
+        local why = (now > ctl.ends and "time's up") or (held and "someone has it")
+            or (ball.Anchored and "the game froze it") or (ctl.bad > 0.25 and "it stopped following (hit something, or the server kept it)")
+            or ((pos - ctl.lastPos).Magnitude > ctl.speed * dt * 3 + 8 and "it jumped (reset)")
+            or (holder == LP and now - ctl.at > 0.3 and "back with you")
+        if why then
+            stopControl(why)
             return
         end
-        if not owned(ball) then
-            -- the server kept the ball: whatever we set doesn't reach anyone
-            if now - ctl.ownedAt > 0.3 then
-                stopControl()
-            else
-                ctl.lastPos, ctl.lastVel = pos, vel
-            end
-            return
-        end
-        ctl.ownedAt = now
+        ctl.lastPos = pos
+        silence(ball)
         local cam = workspace.CurrentCamera
         if cam then
             local dir = ctl.dir:Lerp(aim(cam), math.min(1, CFG.ControlTurn * dt))
             if dir.Magnitude > 0.01 then ctl.dir = dir.Unit end
         end
-        local v = ctl.dir * ctl.speed
-        ball.AssemblyLinearVelocity = v
-        ctl.lastPos, ctl.lastVel = pos, v
+        if ctl.mover.Parent ~= ball and not pcall(function() ctl.mover.Parent = ball end) then
+            ctl.mover = newMover(ball, ctl.dir * ctl.speed) -- the game cleared it off the ball
+        end
+        ctl.mover.Velocity = ctl.dir * ctl.speed
     end)
 end
 
@@ -2197,7 +2233,7 @@ do
     env.AutoDribbleStop = function()
         for _, kind in ipairs(PILLS) do on[kind] = false end
         stopLearning()
-        stopControl()
+        stopControl("script stopped")
         for r in pairs(blocked) do blocked[r] = nil end
         pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
         for _, c in ipairs(conns) do c:Disconnect() end
@@ -2210,7 +2246,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v19", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v20", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end
