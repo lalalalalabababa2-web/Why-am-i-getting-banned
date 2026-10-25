@@ -46,6 +46,12 @@ class Bot:
         self.brain = None
         self.stunned_until = -INF
         self.slid = False
+        self.protect_until = -INF
+
+    def dribble(self):
+        self.protect_until = self.game.now + 0.8
+        self.anim.play("Dribble", "Action", 0.5)
+        self.game.log("bot_dribble", self.name)
 
     @property
     def pos(self):
@@ -204,7 +210,7 @@ class Game:
         src = open(SCRIPT, encoding="utf-8").read()
         # the tests read the readout, and most check the plain (non-teleporting) behaviour
         src = src.replace("Debug        = false", "Debug        = " + ("true" if self.debug else "false"), 1)
-        src = src.replace("Blatant      = true", "Blatant      = " + ("true" if self.blatant else "false"), 1)
+        src = src.replace("Blatant      = false", "Blatant      = " + ("true" if self.blatant else "false"), 1)
         f = self.I.load(src, "AutoDribble")
         if self.hide_functions:
             import roblox
@@ -300,6 +306,16 @@ class Game:
                     self.log("lost", b.name)
                     self.holder = b.player
         self.anim.tick()
+        # my slide reaching the carrier: their dribble window ankle-breaks me, otherwise I win it
+        if self.my_lunge and now < self.my_lunge[1] and self.holder not in (None, self.lp):
+            c = next((b for b in self.bots if b.player is self.holder), None)
+            if c and (c.pos - self.root.props["Position"]).flat().mag() < 3:
+                self.my_lunge = None
+                if now < c.protect_until:
+                    self.log("ankled_me", c.name)
+                else:
+                    self.log("won", c.name)
+                    self.holder = self.lp
         # ball
         if self.holder is not None:
             hr = self.holder.props["Character"].m_FindFirstChild("HumanoidRootPart")
@@ -423,13 +439,40 @@ def dribble_while_running_from_a_chaser():
 
 
 @test
-def dribble_against_a_contact_steal():
+def dribble_ignores_a_fake_tackle_next_to_you():
     g = Game().load()
     g.tap("dribble")
-    b = g.bot("Shadow", Vector3(0, 3, -9))
-    b.brain = lambda bot, now: setattr(bot, "vel", (g.root.props["Position"] - bot.pos).flat().unit() * 4)
+    b = g.bot("Faker", Vector3(0, 3, -14))
+    state = {"faked": False}
+
+    def brain(bot, now):
+        d = (g.root.props["Position"] - bot.pos).flat()
+        if d.mag() > 5 and not state["faked"]:
+            bot.vel = d.unit() * 16  # walks up...
+        elif not state["faked"]:
+            state["faked"] = True
+            bot.vel = Vector3()
+            bot.anim.play("SlideTackle_Anim", "Action", 0.4)  # ...and fakes the tackle standing still
+    b.brain = brain
     g.run(2.0)
-    check(g.presses("dribble", "ok"), f"dribbled when someone walked right into you ({g.events})")
+    check(not g.presses("dribble"), f"didn't waste the dribble on the fake ({g.events})")
+    # then the real one
+    b.brain = None
+    b.slide_at(g.root.props["Position"], speed=60)
+    g.run(1.0)
+    check(g.presses("dribble", "ok") and any(e[1] == "ankle" for e in g.events),
+          f"the real tackle still got ankle-broken ({g.events})")
+
+
+@test
+def dribble_catches_a_point_blank_slide_with_no_animation():
+    g = Game().load()
+    g.tap("dribble")
+    b = g.bot("Ghost", Vector3(0, 3, -4.5))
+    g.run(0.5)
+    b.lunge = ((g.root.props["Position"] - b.pos).flat().unit() * 70, g.now + 0.3)  # movement only
+    g.run(0.5)
+    check(any(e[1] == "ankle" for e in g.events), f"read from its first frame of movement ({g.events})")
 
 
 @test
@@ -618,6 +661,49 @@ def tackle_leaves_a_dashing_carrier():
 
 
 @test
+def tackle_glides_in_when_just_out_of_reach():
+    g = Game().load()
+    carrier = g.bot("Aryu", Vector3(0, 3, -19))
+    g.holder = carrier.player
+    g.run(0.4)
+    carrier.dribble()  # their dribble goes off at nothing...
+    g.run(1.2)  # ...and is cooling now
+    g.tap("tackle")
+    path = [g.root.props["Position"]]
+    for _ in range(40):
+        g.step()
+        if g.presses("tackle"):
+            break
+        path.append(g.root.props["Position"])
+    check(g.presses("tackle", "ok"), f"slid ({g.events})")
+    steps = [(b - a).mag() for a, b in zip(path, path[1:])]
+    check(path[-1].z < path[0].z - 2, f"glided toward them first ({path[0]} -> {path[-1]})")
+    check(max(steps) <= 30 * DT * 1.2, f"at a sprint, no teleport (max step {max(steps):.2f})")
+
+
+@test
+def tackle_fakes_out_a_ready_dribble_then_slides():
+    g = Game().load()
+    carrier = g.bot("Barou", Vector3(0, 3, -16))
+    g.holder = carrier.player
+
+    def brain(bot, now):
+        # an auto-dribbler: dribbles the moment you come at it fast
+        d = (g.root.props["Position"] - bot.pos).flat()
+        closing = (g.root.props["Position"] - getattr(bot, "_last", g.root.props["Position"])).flat().mag() / DT
+        bot._last = g.root.props["Position"]
+        if closing > 20 and d.mag() < 14 and now > bot.protect_until + 3:
+            bot.dribble()
+    carrier.brain = brain
+    g.run(0.5)
+    g.tap("tackle")
+    g.run(3.0)
+    check(any(e[1] == "bot_dribble" for e in g.events), f"the fake drew their dribble out ({g.events})")
+    check(not any(e[1] == "ankled_me" for e in g.events), f"never slid into it ({g.events})")
+    check(any(e[1] == "won" for e in g.events), f"and won the ball while it cooled ({g.events})")
+
+
+@test
 def tackle_ignores_teammates():
     g = Game().load()
     mate = g.bot("Chigiri", Vector3(0, 3, -6), enemy=False)
@@ -680,6 +766,21 @@ def slide_aims_with_shiftlock():
     check(g.presses("tackle", "ok"), f"slid ({g.events})")
     look = g.press_look["tackle"]
     check(look.x > 0.5, f"slid at them, not where shift lock pointed (look {look})")
+
+
+@test
+def keeper_glides_onto_a_corner_shot_without_teleporting():
+    g = keeper_game(goal=True)
+    g.shoot(Vector3(-40, 2, 90), Vector3(19, 2, 193), 150)
+    path = []
+    for _ in range(60):
+        path.append(g.root.props["Position"])
+        g.step()
+        if g.presses("dive"):
+            break
+    steps = [(b - a).flat().mag() for a, b in zip(path, path[1:])]
+    check(path[-1].x > path[0].x + 4, f"moved toward the far corner ({path[0]} -> {path[-1]})")
+    check(max(steps) <= 30 * DT * 1.2 + 16 * DT, f"at a sprint, no teleport (max step {max(steps):.2f})")
 
 
 @test

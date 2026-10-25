@@ -44,6 +44,22 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v11
+
+- **Less noticeable:** no teleports by default (`Blatant = true` brings them back). The keeper
+  and the tackle glide in at a sprint (`GlideSpeed` 30 studs/s), so it looks like a fast player,
+  not a jump across the pitch.
+- **Dribble doesn't fall for fake tackles:** it only answers a real tackle, meaning a lunge
+  faster than a run, or a tackle or move starting while they close in fast. A move played
+  standing next to you, or a run that stops short, doesn't get it, so the real tackle after
+  the fake still meets it. Someone just running at you doesn't either (`DribbleOnRun = true`
+  brings that back). It reads frame-to-frame speed within 10 studs, so a slide from point blank
+  is seen on its first frame. The button's tap is sent in a single frame (it used to release
+  0.03s later), which helps every dribble, slide and dive.
+- **Tackle fakes them out:** at a carrier whose dribble is ready it fakes a tackle (a quick step
+  in, every 1.5s). Once they dribble at it, it waits out their protection and slides while their
+  dribble cools down. It also glides in when they're just past the slide's reach.
+
 ## v10
 
 - **Blatant mode, on by default** (`Blatant = false` in CFG turns it off). The keeper teleports
@@ -111,7 +127,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 44 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 48 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:
