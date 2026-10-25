@@ -1,4 +1,4 @@
-# Auto Dribble + Auto Tackle + Auto GK — Blue Lock: Rivals
+# Auto Dribble + Auto Tackle + Auto GK + Ball Control — Blue Lock: Rivals
 
 | | |
 |---|---|
@@ -17,12 +17,12 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v15 Loaded" when it starts.
+notification says "AutoDribble v19 Loaded" when it starts.
 
-Running it again replaces the old copy. Three pills appear on the left: **DRIBBLE**, **TACKLE**,
-**AUTO GK**. Tap to toggle, drag to move. Hold about a second and let go, then tap the game's
-button to force which button that pill presses. Turn AUTO GK on standing in your goal; it pauses
-the other two.
+Running it again replaces the old copy. Four pills appear on the left: **DRIBBLE**, **TACKLE**,
+**AUTO GK**, **CONTROL**. Tap to toggle, drag to move. Hold about a second and let go, then tap
+the game's button to force which button that pill presses. Turn AUTO GK on standing in your goal;
+it pauses dribble and tackle.
 
 ## What each one does
 
@@ -36,7 +36,13 @@ the other two.
   really go and aims the next one with that.
 - **Auto GK** dives at shots heading between your posts and jumps for high balls close to you. It
   walks across to slow balls instead of spending the dive on a pass, smothers anyone dribbling
-  right at you, and keeps you between the ball and the goal while your thumb is off the stick.
+  right at you, and keeps you on the angle while your thumb is off the stick. It also comes out
+  for loose balls and low crosses it would reach first, and dives at a loose ball an attacker is
+  about to reach.
+- **Control** steers your own shots. After you kick, the camera follows the ball and the shot
+  turns toward wherever the camera looks, keeping its speed. Look up to lift it and down to dip
+  it. It lets go when the ball hits something, someone takes it, or 4 seconds pass, and the camera
+  comes back to you.
 
 ## The readout box
 
@@ -48,6 +54,24 @@ the other two.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v19
+
+- **The hitbox extender is gone:** the R button and sliders, the grown enemy hitboxes, the reach
+  ring, and the fake touches. Tackle aims at its own slide's reach again.
+- **CONTROL pill:** steer your shot after you kick it (see above). It only steers a ball that was
+  at your feet a moment before, not someone else's shot. If the executor has `isnetworkowner` and
+  the server kept the ball, it leaves the ball alone and gives the camera back.
+- **Keeper angle:** it stands on the line splitting the angle between your posts as the ball sees
+  them. For a ball out wide that's at the near post, where it used to be near the middle.
+- **Shot out of a wind-up:** a ball that leaves a shooter whose wind-up is still playing gets the
+  dive at once. The fake checks used to cost about 0.08s, which loses a close shot. A wind-up they
+  cancel, then a push, still goes through every fake check.
+- **Coming out:** a loose ball or a low cross in the box gets claimed when you'd clearly be there
+  first; it doesn't race an attacker who's closer. If it's a race and a dive covers it, it dives at
+  the ball before they can shoot.
+- **Smother:** it never dives into a dribble the carrier just started. It waits out the window,
+  then smothers.
 
 ## v18
 
@@ -219,9 +243,11 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 69 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 78 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:
 `LungeSpeed`, `SlideSpeed`, the protection window, and the first cooldown guesses (those last ones
-get replaced once it learns them).
+get replaced once it learns them). The keeper's `FoeSpeed` and the shot wind-up names
+(`shoot`, `charge`, `kick`, …) are guesses too. Control needs your client to own the ball's physics
+after a kick. The clip of another script doing it in this game says it does, but it's unchecked here.

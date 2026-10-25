@@ -1535,7 +1535,7 @@ class Interp:
             "floor": m_floor, "ceil": lambda x: math.ceil(x) if math.isfinite(x) else x,
             "abs": abs, "sqrt": lambda x: math.sqrt(x) if x >= 0 else math.nan,
             "max": lambda *a: max(a), "min": lambda *a: min(a), "clamp": clamp,
-            "sin": math.sin, "cos": math.cos, "tan": math.tan, "atan2": math.atan2, "atan": math.atan,
+            "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan2": math.atan2, "atan": math.atan,
             "exp": math.exp, "log": lambda x, b=None: math.log(x) if b is None else math.log(x, b),
             "sign": lambda x: (x > 0) - (x < 0), "random": lambda a=None, b=None: 0.5 if a is None else int(a),
             "fmod": math.fmod, "rad": math.radians, "deg": math.degrees,

@@ -16,6 +16,7 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import roblox  # noqa: E402
 from luau import Interp, LuaTable, tostr  # noqa: E402
 from roblox import (ENUM, Animator, BasePart, Folder, Frame, Humanoid, ImageButton, InputObject,  # noqa: E402
                     Model, NumberValue, Player, PlayerGui, ScreenGui, Team, TextButton, TextLabel, UDim2, Vector3,
@@ -251,7 +252,7 @@ class Game:
 
     def pill(self, kind):
         pills = [c for c in self.bar().children if isinstance(c, TextButton)]
-        return pills[["dribble", "tackle", "dive"].index(kind)]
+        return pills[["dribble", "tackle", "dive", "control"].index(kind)]
 
     def readout(self):
         return [c for c in self.bar().children if isinstance(c, TextLabel)][0].props["Text"]
@@ -335,17 +336,25 @@ class Game:
                     self.log("won", c.name)
                     self.holder = self.lp
         # ball
+        written = getattr(self, "_ball_v", None)
         if self.holder is not None:
             hr = self.holder.props["Character"].m_FindFirstChild("HumanoidRootPart")
             self.ball.props["Position"] = hr.props["Position"] + Vector3(0, -2, 1.5)
             self.ball.props["AssemblyLinearVelocity"] = hr.props["AssemblyLinearVelocity"]
         else:
+            v = self.ball.props["AssemblyLinearVelocity"]
+            if written is not None and v is not written:
+                self.ball_vel = v  # the script set it (it owns the ball's physics, like the kicker)
+                self.log("ball_set")
+            if getattr(self, "ball_hit", None) is not None:
+                self.ball_vel, self.ball_hit = self.ball_hit, None  # it hits something this frame
             self.ball_vel = self.ball_vel + Vector3(0, -self.gravity * DT, 0) + self.ball_acc * DT
             if self.friction and self.ball_vel.flat().mag() > 0:
                 sp = self.ball_vel.flat().mag()
                 self.ball_vel = self.ball_vel * (max(0.0, sp - self.friction * DT) / sp)
             self.ball.props["Position"] = self.ball.props["Position"] + self.ball_vel * DT
             self.ball.props["AssemblyLinearVelocity"] = Vector3() if self.ball_by_hand else self.ball_vel
+        self._ball_v = self.ball.props["AssemblyLinearVelocity"]
         self.update_hud()
         W.run.signal("Heartbeat").fire(DT)
         self.check_errors()
@@ -410,11 +419,12 @@ def script_compiles_within_luaus_limits():
 
 
 @test
-def loads_and_shows_three_pills():
+def loads_and_shows_four_pills():
     g = Game().load()
     g.run(0.5)
-    check([g.pill_text(k) for k in ("dribble", "tackle", "dive")] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF"],
-          f"pills read {[g.pill_text(k) for k in ('dribble', 'tackle', 'dive')]}")
+    kinds = ("dribble", "tackle", "dive", "control")
+    check([g.pill_text(k) for k in kinds] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF", "CONTROL OFF"],
+          f"pills read {[g.pill_text(k) for k in kinds]}")
     line1 = g.readout().split("\n")[0]
     check("conn Y sig Y tap ?" in line1, f"readout line 1 is {line1!r}")
     check(not [v for v in g.W.vim.log if v[1] == "touch"], "no test touch on the screen at startup")
@@ -1099,6 +1109,130 @@ def keeper_doesnt_smother_a_standing_shooter():
 
 
 @test
+def keeper_covers_the_near_post_for_a_ball_out_wide():
+    g = keeper_game(goal=True)
+    c = g.bot("Bachira", Vector3(35, 3, 170))
+    g.holder = c.player
+    g.run(2.0)
+    pos = g.root.props["Position"]
+    # on the line splitting the angle between the posts: about (15, 186); straight at the ball from
+    # the middle of the goal was (5, 187), leaving the near post open
+    check(pos.x > 11 and pos.z < 189, f"stood toward the near post ({pos})")
+    check(not g.presses("dive"), f"no dive at someone standing out wide ({g.events})")
+
+
+def shot_from_windup(windup):
+    g = keeper_game()
+    c = carrier_in_front(g, 165)
+    if windup:
+        c.anim.play("ShootCharge", "Action", 0.6)
+    g.run(0.3)
+    t0 = g.now
+    g.shoot(c.pos + Vector3(0, -1, 2), Vector3(3, 2, 193), 75)  # under SureShot, 17 studs from him
+    g.run(0.3)
+    ok = g.presses("dive", "ok")
+    return ok[0][0] - t0 if ok else None
+
+
+@test
+def keeper_reads_a_shot_out_of_a_windup_sooner():
+    late, soon = shot_from_windup(False), shot_from_windup(True)
+    check(late is not None and soon is not None, f"dove at both ({late}, {soon})")
+    check(soon <= 0.04 and late >= 0.07, f"straight away out of the wind-up ({soon:.3f}s), not after the fake checks ({late:.3f}s)")
+
+
+@test
+def keeper_ignores_a_push_after_a_cancelled_windup():
+    g = keeper_game()
+    c = carrier_in_front(g, 168)
+    c.anim.play("ShootCharge", "Action", 0.3)  # a fake shot: the wind-up stops, no kick
+    g.run(0.6)
+    g.holder = None
+    g.friction = 450
+    g.ball.props["Position"] = c.pos + Vector3(0, -2, 1.5)
+    g.ball_vel = Vector3(0, 0, 100)
+    g.run(0.6)
+    check(not g.presses("dive"), f"didn't fall for the push after the fake ({g.events})")
+
+
+@test
+def keeper_comes_out_for_a_loose_ball():
+    g = keeper_game(goal=True)
+    g.bot("Isagi", Vector3(0, 3, 120))  # nowhere near
+    g.ball.props["Position"] = Vector3(4, 1, 178)
+    g.ball_vel = Vector3()
+    got = g.run(1.2, until=lambda: (g.ball.props["Position"] - g.root.props["Position"]).flat().mag() < 2.5)
+    check(got, f"ran out and got to it ({g.root.props['Position']})")
+    check(not g.presses("dive"), f"no dive needed ({g.events})")
+
+
+@test
+def keeper_stays_home_when_an_attacker_gets_there_first():
+    g = keeper_game(goal=True)
+    a = g.bot("Nagi", Vector3(0, 3, 164))
+    a.brain = lambda bot, now: setattr(bot, "vel", Vector3(0, 0, 20))
+    g.ball.props["Position"] = Vector3(0, 1, 172)
+    g.ball_vel = Vector3()
+    furthest = INF
+    for _ in range(36):
+        g.step()
+        furthest = min(furthest, g.root.props["Position"].z)
+    # (stepping out to the angle puts him at 184; racing for the ball would have him past 181)
+    check(furthest > 183, f"didn't race an attacker who's closer (out to z={furthest:.1f})")
+
+
+@test
+def keeper_dives_at_a_loose_ball_before_the_attacker_shoots():
+    g = keeper_game(goal=True)
+    # he stands at 184 (stepped out to the angle); the ball 7 in front of him, the attacker 8 behind it
+    a = g.bot("Barou", Vector3(0, 3, 169))
+    a.brain = lambda bot, now: setattr(bot, "vel", Vector3(0, 0, 22))
+    g.ball.props["Position"] = Vector3(0, 1, 177)
+    g.ball_vel = Vector3()
+    g.run(0.15)
+    ok = g.presses("dive", "ok")
+    check(ok, f"dove at the ball by their feet ({g.events})")
+    check(g.press_look["dive"].z < -0.8, f"out at the ball (look {g.press_look['dive']})")
+
+
+@test
+def keeper_cuts_out_a_low_cross():
+    g = keeper_game(goal=True)
+    g.bot("Kunigami", Vector3(6, 3, 172))  # waiting at the far post
+    g.shoot(Vector3(-40, 1, 180), Vector3(40, 1, 180), 60)
+    got = g.run(1.0, until=lambda: (g.ball.props["Position"] - g.root.props["Position"]).flat().mag() < 3)
+    check(got, f"met the cross before it reached the striker ({g.root.props['Position']}, ball {g.ball.props['Position']})")
+
+
+@test
+def keeper_doesnt_chase_the_ball_in_his_hands():
+    g = keeper_game(goal=True)
+    start = g.root.props["Position"]
+    for _ in range(60):
+        # caught: the game carries it 2.5 studs in front of him, moving with him
+        g.ball_vel = g.root.props["AssemblyLinearVelocity"]
+        g.ball.props["Position"] = g.root.props["Position"] + Vector3(0, -1, -2.5)
+        g.step()
+    moved = (g.root.props["Position"] - start).flat().mag()
+    check(moved < 3, f"stayed put with the ball in his hands (moved {moved:.1f})")
+
+
+@test
+def keeper_doesnt_smother_into_a_dribble():
+    g = keeper_game()
+    c = g.bot("Shidou", Vector3(0, 3, 170))
+    g.holder = c.player
+    c.brain = lambda bot, now: setattr(bot, "vel", (g.root.props["Position"] - bot.pos).flat().unit() * 14)
+    g.run(2.0, until=lambda: (c.pos - g.root.props["Position"]).flat().mag() < 9.5)
+    c.dribble()
+    t0 = g.now
+    g.run(1.5)
+    dives = g.presses("dive", "ok")
+    check(dives, f"still smothered once the dribble's window closed ({g.events})")
+    check(dives[0][0] >= t0 + 0.8, f"but not into the dribble ({dives[0][0] - t0:.2f}s after it)")
+
+
+@test
 def readout_hidden_by_default():
     g = Game(debug=False).load()
     g.run(0.3)
@@ -1209,119 +1343,22 @@ def touches_of(g, ball=True):
     return [t for t in g.W.touches if (t[2] is g.ball) == ball]
 
 
-def press_on(g, btn, x=None):
-    inp = InputObject(g.W, "InputObject", UserInputType=ENUM.item("UserInputType", "Touch"),
-                      UserInputState=ENUM.item("UserInputState", "Begin"),
-                      Position=Vector3(x if x is not None else 0, 0, 0))
-    btn.signal("InputBegan").fire(inp)
-    return inp
-
-
 @test
-def reach_sliders_open_move_and_save():
+def no_hitbox_extender_left():
     g = Game(debug=False).load()
-    panel = [c for c in g.bar().children if isinstance(c, Frame)][0]
-    check(panel.props["Visible"] is False, "sliders start closed")
-    r_btn = [c for c in g.bar().children if isinstance(c, TextButton)][3]
-    check(r_btn.props["Text"] == "R", "the R button")
-    press_on(g, r_btn)
-    g.step()
-    check(panel.props["Visible"] is True, "R opens them")
-    rows = [c for c in panel.children if isinstance(c, Frame)]  # the three tracks
-    labels = [c.props["Text"] for c in panel.children if isinstance(c, TextLabel)]
-    check(labels == ["GK 6", "DRB 4", "TKL 5"], f"labels {labels}")
-    track = rows[0]
-    x0, w = track.get_AbsolutePosition().x, track.get_AbsoluteSize().x
-    inp = press_on(g, track, x0 + w * 0.2)
-    inp.props["Position"] = Vector3(x0 + w * 0.6, 0, 0)
-    g.W.uis.signal("InputChanged").fire(inp, False)
-    g.W.uis.signal("InputEnded").fire(inp, False)
-    g.step()
-    labels = [c.props["Text"] for c in panel.children if isinstance(c, TextLabel)]
-    check(labels[0] == "GK 15", f"dragged to 60% of 25 ({labels})")
-    import json
-    saved = json.loads(g.W.files.get("AutoDribble_buttons.json", "{}"))
-    check(saved.get("reach", {}).get("dive") == 15, f"saved ({saved})")
-    g2 = Game(debug=False)
-    g2.W.files["AutoDribble_buttons.json"] = json.dumps(saved)
-    g2.load()
-    panel2 = [c for c in g2.bar().children if isinstance(c, Frame)][0]
-    labels2 = [c.props["Text"] for c in panel2.children if isinstance(c, TextLabel)]
-    check(labels2[0] == "GK 15", f"and back next time ({labels2})")
-
-
-@test
-def reach_sphere_shows_your_reach():
-    g = keeper_game()
-    ring = g.W.hui.m_FindFirstChild("AutoDribbleReach")
-    check(ring is not None and ring.CLASS == "CylinderHandleAdornment", "a ring adornment next to the pills (only you see it)")
-    check(ring.props["Radius"] == 6 and ring.props["InnerRadius"] > 5 and ring.props["Transparency"] < 1,
-          f"a thin ring, GK reach 6 ({ring.props['Radius']}, {ring.props['InnerRadius']})")
-    check(ring.props["Adornee"] is g.root and ring.props["CFrame"].pos.y < -2, "at your feet")
-    check(not g.W.workspace.props["CurrentCamera"].children, "nothing in the world for the camera to sit inside")
-    sphere = ring
-    g.tap("dive")
-    g.step()
-    check(sphere.props["Transparency"] == 1, "hidden when nothing is on")
-
-
-@test
-def gk_reach_touches_a_ball_in_reach_only():
-    g = keeper_game()
-    g.shoot(g.root.props["Position"] + Vector3(12, 0, 0), g.root.props["Position"], 1)
-    g.ball_vel = Vector3()
-    g.run(0.3)
-    check(not touches_of(g), "nothing at 12 studs")
-    g.ball.props["Position"] = g.root.props["Position"] + Vector3(4.5, 0, 0)
-    g.ball_vel = Vector3()
-    g.run(0.15)
-    ts = touches_of(g)
-    check(ts and any(t[1].name == "HumanoidRootPart" for t in ts), f"touched at 5 studs ({len(ts)})")
-    check({t[3] for t in ts} == {0, 1}, "a touch and its end, like a real one")
-
-
-@test
-def dribble_reach_picks_up_a_loose_ball():
-    g = Game().load()
+    foe = g.bot("Rin", Vector3(0, 3, -6))
     g.tap("dribble")
+    g.tap("tackle")
     g.holder = None
     g.ball.props["Position"] = Vector3(0, 1, -3.5)
-    g.run(0.2)
-    check(touches_of(g), "touched the loose ball 3.5 studs away")
-
-
-@test
-def tackle_reach_grows_enemy_hitboxes_and_puts_them_back():
-    g = Game().load()
-    foe = g.bot("Rin", Vector3(30, 3, 0))
-    mate = g.bot("Chigiri", Vector3(-30, 3, 0), enemy=False)
-    g.tap("tackle")
-    g.step()
-    check(foe.root.props["Size"].x == 5, f"enemy hitbox grown to 5 ({foe.root.props['Size']})")
-    boxes = [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"]
-    check(len(boxes) == 1 and boxes[0].props["Adornee"] is foe.root, f"one red outline, on the enemy ({boxes})")
-    check(foe.root.props["Transparency"] == 0 and foe.root.props["CanCollide"] is False, "their part itself isn't recoloured")
-    check(foe.root.props["CanQuery"] is False and foe.root.props["CanTouch"] is True,
-          "out of the camera's raycasts, still touchable")
-    check(mate.root.props["Size"].x == 2, "teammates left alone")
-    g.tap("tackle")
-    g.step()
-    check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True, f"put back ({foe.root.props['Size']})")
-    check(not [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"], "outline gone")
-
-
-@test
-def tackle_reaches_further_with_a_bigger_hitbox():
-    g = Game(cfg={"Hitbox": "{ dive = 6, dribble = 4, tackle = 12 }"}).load()
-    carrier = g.bot("Barou", Vector3(0, 3, -18))
-    g.holder = carrier.player
-    g.run(0.4)
-    carrier.dribble()
-    g.run(1.2)  # their dribble is cooling
-    g.tap("tackle")
-    g.run(0.1)
-    ok = g.presses("tackle", "ok")
-    check(ok, f"slid at 18 studs: 14 of reach plus half a 12-stud hitbox ({g.events})")
+    g.run(0.5)
+    texts = [c.props["Text"] for c in g.bar().children if isinstance(c, TextButton)]
+    check(len(texts) == 4 and "R" not in texts, f"four pills, no R button ({texts})")
+    check(not [c for c in g.bar().children if isinstance(c, Frame)], "no slider panel")
+    check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True, "enemy hitboxes left alone")
+    check(not touches_of(g), "no fake touches on the ball")
+    check(not [d for d in g.W.hui.descendants() if d.CLASS in ("SelectionBox", "CylinderHandleAdornment")],
+          "nothing drawn in the world")
 
 
 def stamina_service(g):
@@ -1438,24 +1475,113 @@ def stamina_never_hooks_the_game_by_default():
     check(math.isnan(server["stamina"]), f"stamina via 0/0 instead ({server})")
 
 
-@test
-def reach_catches_a_fast_ball_going_past():
+def control_game(look=Vector3(1, -0.342, 0), on=True):
+    """You on the ball at the centre spot with CONTROL on, the camera looking `look` way."""
     g = Game().load()
-    g.tap("dribble")
-    g.holder = None
+    cam = g.W.workspace.props["CurrentCamera"]
+    cam.props["CFrame"] = roblox.CFrame(Vector3(0, 8, 12), look.unit())
+    if on:
+        g.tap("control")
+    g.run(0.3)
+    return g, cam
+
+
+def shoot_ahead(g, speed=100):
+    g.shoot(g.root.props["Position"] + Vector3(0, -2, -1.5), g.root.props["Position"] + Vector3(0, -2, -100), speed)
+
+
+@test
+def control_steers_your_shot_where_you_look():
+    g, cam = control_game()
+    check(g.pill_text("control") == "CONTROL ON", f"pill reads {g.pill_text('control')!r}")
+    shoot_ahead(g)
     g.run(0.1)
-    n = len(touches_of(g))
-    # a pass at 180 studs/s skimming 3.8 studs past you: inside reach 4 for under a frame
-    g.shoot(Vector3(-31.5, 1, -3.8), Vector3(31.5, 1, -3.8), 180)  # frames land at x = -1.5 and +1.5: both outside
+    check(cam.props["CameraSubject"] is g.ball, "the camera follows the ball")
+    check(g.pill_text("control") == "STEERING", f"pill reads {g.pill_text('control')!r}")
+    g.run(0.6)
+    v = g.ball_vel
+    check(v.x > 80 and abs(v.y) < 10, f"turned to where the camera looks, flying level ({v})")
+    check(abs(v.mag() - 100) < 2, f"at the shot's own speed ({v.mag():.1f})")
+    g.run(4.0)
+    check(cam.props["CameraSubject"] is g.hum, f"the camera back on you after ({cam.props['CameraSubject']})")
+    check(g.pill_text("control") == "CONTROL ON", f"pill back to {g.pill_text('control')!r}")
+
+
+@test
+def control_turns_smoothly_not_at_once():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.1)
+    v = g.ball_vel
+    check(v.z < -50, f"still mostly on its way a moment after the kick ({v})")
+
+
+@test
+def control_lets_go_when_something_knocks_the_ball():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.3)
+    g.ball_hit = Vector3(0, 30, 60)  # off the post
+    g.run(0.1)
+    check(cam.props["CameraSubject"] is g.hum, "the camera back on you")
+    n = len([e for e in g.events if e[1:] == ("ball_set",)])
+    g.run(0.3)
+    check(len([e for e in g.events if e[1:] == ("ball_set",)]) == n, "and the ball left alone")
+
+
+@test
+def control_only_steers_your_own_shot():
+    g, cam = control_game()
+    c = g.bot("Rin", Vector3(0, 3, -10))
+    g.holder = c.player  # takes it off you and shoots first time
+    g.run(0.1)
+    g.shoot(c.pos + Vector3(0, -2, -2), c.pos + Vector3(0, -2, -100), 100)
     g.run(0.5)
-    check(len(touches_of(g)) > n, "touched it on the way past")
+    check(cam.props["CameraSubject"] is not g.ball, "the camera stays on you")
+    check(not [e for e in g.events if e[1:] == ("ball_set",)], "their shot left alone")
+
+
+@test
+def control_off_leaves_shots_alone():
+    g, cam = control_game(on=False)
+    shoot_ahead(g)
+    g.run(0.5)
+    check(cam.props["CameraSubject"] is not g.ball, "the camera stays on you")
+    check(abs(g.ball_vel.x) < 0.01, f"the ball flies straight ({g.ball_vel})")
+
+
+@test
+def control_hands_the_camera_back_when_turned_off():
+    g, cam = control_game()
+    shoot_ahead(g)
+    g.run(0.2)
+    check(cam.props["CameraSubject"] is g.ball, "following the ball")
+    g.tap("control")
+    g.step()
+    check(cam.props["CameraSubject"] is g.hum, "back on you the moment the pill goes off")
+
+
+@test
+def control_needs_the_ball_to_be_yours_to_move():
+    g, cam = control_game()
+    g.I.G.set("isnetworkowner", lambda part: False)  # the server keeps the ball
+    shoot_ahead(g)
+    g.run(0.6)
+    check(not [e for e in g.events if e[1:] == ("ball_set",)], "nothing set that wouldn't reach anyone")
+    check(cam.props["CameraSubject"] is g.hum, "and the camera back on you")
 
 
 @test
 def stop_and_rerun():
     g = Game().load()
     g.run(0.3)
+    g.tap("control")
+    shoot_ahead(g)
+    g.run(0.2)
+    cam = g.W.workspace.props["CurrentCamera"]
+    check(cam.props["CameraSubject"] is g.ball, "steering when it's stopped")
     g.I.call(g.I.G.get("getgenv")().get("AutoDribbleStop"), [])
+    check(cam.props["CameraSubject"] is g.hum, "stopping hands the camera back")
     g.run(0.1)
     check(g.gui() is None, "the old pills are gone")
     g.load()

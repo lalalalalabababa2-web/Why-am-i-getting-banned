@@ -993,7 +993,9 @@ class Camera(Inst):
     CLASS = "Camera"
     ISA = ("Camera",)
     DEFAULTS = {"ViewportSize": lambda: Vector2(SCREEN_W, SCREEN_H), "FieldOfView": 70, "CameraType": None,
-                "CameraSubject": None}
+                "CameraSubject": None,
+                # behind you and above, looking down the pitch (-z) at about 20 degrees
+                "CFrame": lambda: CFrame(Vector3(0, 8, 12), Vector3(0, -0.342, -0.940))}
 
 
 class RaycastResult(Host):

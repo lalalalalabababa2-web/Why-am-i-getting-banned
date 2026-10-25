@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v18 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v19 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -12,9 +12,16 @@
              straight in while their dribble is cooling down, and otherwise waits until they're too
              close to react.
     AUTO GK  Dives at shots heading between your posts at the last moment, jumps for high balls close
-             to you, walks across to slow balls instead of wasting the dive on a pass, smothers
-             enemies dribbling right at you, and keeps you between the ball and your goal while your
-             thumb is off the joystick. Turn it on standing in your goal. Dribble and tackle pause.
+             to you, walks across to slow balls instead of wasting the dive on a pass, and smothers
+             enemies dribbling right at you (never into a dribble they just started). A shot out of
+             a wind-up gets the dive straight away; a cancelled wind-up and a push doesn't. While
+             your thumb is off the joystick it stands on the line splitting the angle between your
+             posts, runs out for loose balls and low crosses in the box it would reach first, and
+             dives at a loose ball an attacker is about to reach. Turn it on standing in your goal.
+             Dribble and tackle pause.
+    CONTROL  After you shoot, the ball flies where you look: the camera follows it and the shot turns
+             toward the camera's aim, at its own speed, until it hits something, someone takes it,
+             or 4s pass; then the camera comes back to you. Look up to lift it, down to dip it.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -27,18 +34,11 @@
     Cooldowns are learned: after a hit it watches the game's button until it looks the way it did
     before the press. Until then it uses the guesses in CFG.Cooldowns.
 
-    REACH (the R button opens three sliders, saved): how far the ball counts as touching you.
-      GK   while you keep, any ball this close is touched by your hands, feet and middle
-      DRB  a loose ball this close is touched, so it's yours
-      TKL  enemies' hitboxes grow to this size so slides land, and the ball at their feet this
-           close is touched
-    A see-through sphere shows your GK or DRB reach, red boxes the enemies' TKL hitboxes (only
-    you see them). It uses the executor's firetouchinterest: the game gets a real touch.
-
     Pills: tap = on/off, drag = move them all (they stay on screen).
-           hold ~1s and let go, then tap the game's button = force that button
+           hold ~1s and let go, then tap the game's button = force that button (not CONTROL)
            hold ~1s and let go, then tap the same pill = forget the forced button
-    Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap.
+    Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap
+    (CONTROL: blue = steering).
 
     By default nothing teleports or slides: the keeper and the tackle get there on your own run, at
     about a sprint for the moment (BurstSpeed). Glide = true slides you there instead (faster).
@@ -69,9 +69,6 @@ local CFG = {
     Cooldowns    = { dribble = 3, tackle = 3, dive = 1.5 }, -- first guesses (s), replaced once learned
     UiScale      = 1,      -- size of the pills and readout: 1.3 = bigger, 0.8 = smaller
     InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side (always on)
-    Hitbox       = { dive = 6, dribble = 4, tackle = 5 }, -- reach sizes in studs; the sliders change these
-    HitboxMax    = 25,
-    ShowReach    = true,   -- a ring on the ground for your reach, red outlines on enemies' hitboxes
     StaminaHook  = false,  -- true = block the stamina remote with a __namecall hook instead of 0/0.
                            -- Off by default: on some executors that hook breaks the game's scripts
                            -- (the camera stops following you)
@@ -118,7 +115,21 @@ local CFG = {
     JumpDiveDelay = 0.1,   -- the dive after the jump for a high, wide ball: from near the top of it
     Smother      = 7,      -- dive at an enemy carrying the ball this close (0 = never)
     Positioning  = true,   -- move between the ball and your goal while your thumb is off the stick
-    Advance      = 6,      -- furthest you step off your spot toward the ball
+    Advance      = 6,      -- furthest you step off your line toward the ball
+    Claim        = true,   -- run out for a loose ball or a cross along the ground you'd reach first
+    ClaimRange   = 22,     -- how far out from your line that goes (studs)
+    FoeSpeed     = 22,     -- how fast anyone else is reckoned to get to a loose ball (studs/s)
+    Pounce       = true,   -- dive at a loose ball an attacker is about to reach, when a dive covers it
+    PounceTime   = 0.4,    -- ...and they're this close to it (s)
+
+    -- ball control (the CONTROL pill)
+    ControlTime  = 4,      -- steer a shot this long at most (s)
+    ControlMin   = 40,     -- a ball leaving your feet this fast is a shot to steer (studs/s)
+    ControlMax   = 160,    -- it keeps the shot's own speed, up to this
+    ControlTurn  = 4,      -- how quickly it turns toward where you look (higher = sharper)
+    ControlLift  = 20,     -- degrees above the camera's aim: the camera looks down at the ball from
+                           -- behind, so its usual angle flies level; look up to lift it, down to dip it
+    ControlCamera = true,  -- the camera follows the ball while you steer it
 
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
     SaveFile     = "AutoDribble_buttons.json",
@@ -147,8 +158,9 @@ local function bind(signal, fn)
     return c
 end
 
-local KINDS = { "dribble", "tackle", "dive" }
-local on = { dribble = false, tackle = false, dive = false }
+local KINDS = { "dribble", "tackle", "dive" } -- the game's moves
+local PILLS = { "dribble", "tackle", "dive", "control" }
+local on = { dribble = false, tackle = false, dive = false, control = false }
 local learning -- nil or one of KINDS
 local lastDive, diveUntil = -math.huge, -math.huge
 local lastJump, lastFlick = -math.huge, -math.huge
@@ -198,7 +210,7 @@ local COLORS = {
     hit    = Color3.fromRGB(235, 235, 235),
 }
 local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
-local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK" }
+local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK", control = "CONTROL" }
 local MOVES = { dribble = "DRIBBLE", tackle = "SLIDE", dive = "DIVE" }
 local DONE  = { dribble = "DRIBBLED", tackle = "SLID", dive = "DIVED" }
 
@@ -212,7 +224,7 @@ if not pcall(function() screen.Parent = (gethui and gethui()) or game:GetService
 end
 
 local bar = Instance.new("Frame")
-bar.Size = UDim2.fromOffset(217, 22)
+bar.Size = UDim2.fromOffset(217, CFG.Debug and 78 or 22)
 bar.Position = UDim2.new(0, 12, 0.22, 0)
 bar.BackgroundTransparency = 1
 bar.Parent = screen
@@ -220,7 +232,7 @@ Instance.new("UIScale", bar).Scale = CFG.UiScale
 
 local function makePill(x)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.fromOffset(62, 22)
+    b.Size = UDim2.fromOffset(52, 22)
     b.Position = UDim2.fromOffset(x, 0)
     b.AutoButtonColor = false
     b.BackgroundTransparency = 0.15
@@ -232,69 +244,11 @@ local function makePill(x)
     Instance.new("UITextSizeConstraint", b).MaxTextSize = 10
     return b
 end
-local pills = { dribble = makePill(0), tackle = makePill(65), dive = makePill(130) }
-
--- R: opens the reach sliders
-local reachBtn = makePill(195)
-reachBtn.Size = UDim2.fromOffset(22, 22)
-reachBtn.Text = "R"
-reachBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-
-local panel = Instance.new("Frame")
-panel.Size = UDim2.fromOffset(217, 52)
-panel.Position = UDim2.fromOffset(0, 25)
-panel.BackgroundColor3 = BLACK
-panel.BackgroundTransparency = 0.45
-panel.Visible = false
-panel.Parent = bar
-Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 6)
-
-local SLIDER_NAMES = { dive = "GK", dribble = "DRB", tackle = "TKL" }
-local SLIDER_ORDER = { "dive", "dribble", "tackle" }
-local REACH_COLORS = { dive = Color3.fromRGB(60, 140, 255), dribble = Color3.fromRGB(60, 220, 120),
-                       tackle = Color3.fromRGB(255, 70, 70) }
-local sliders = {}
-for i, kind in ipairs(SLIDER_ORDER) do
-    local y = 4 + (i - 1) * 16
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.fromOffset(44, 14)
-    label.Position = UDim2.fromOffset(4, y)
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamBold
-    label.TextScaled = true
-    label.TextColor3 = WHITE
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = panel
-    local track = Instance.new("Frame")
-    track.Size = UDim2.fromOffset(160, 6)
-    track.Position = UDim2.fromOffset(50, y + 4)
-    track.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-    track.Active = true
-    track.Parent = panel
-    local fill = Instance.new("Frame")
-    fill.BackgroundColor3 = REACH_COLORS[kind]
-    fill.BorderSizePixel = 0
-    fill.Parent = track
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.fromOffset(10, 10)
-    knob.BackgroundColor3 = WHITE
-    knob.Parent = track
-    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-    sliders[kind] = { label = label, track = track, fill = fill, knob = knob }
-end
-
-local function setReach(kind, v)
-    CFG.Hitbox[kind] = math.clamp(math.floor(v + 0.5), 0, CFG.HitboxMax)
-    local sl, f = sliders[kind], CFG.Hitbox[kind] / CFG.HitboxMax
-    sl.fill.Size = UDim2.new(f, 0, 1, 0)
-    sl.knob.Position = UDim2.new(f, -5, 0.5, -5)
-    sl.label.Text = SLIDER_NAMES[kind] .. " " .. CFG.Hitbox[kind]
-end
-for _, kind in ipairs(SLIDER_ORDER) do setReach(kind, CFG.Hitbox[kind]) end
+local pills = { dribble = makePill(0), tackle = makePill(55), dive = makePill(110), control = makePill(165) }
 
 local info = Instance.new("TextLabel")
-info.Size = UDim2.fromOffset(192, 53)
-info.Position = UDim2.fromOffset(0, 25) -- (layout() moves it under the sliders when they're open)
+info.Size = UDim2.fromOffset(217, 53)
+info.Position = UDim2.fromOffset(0, 25)
 info.BackgroundColor3 = BLACK
 info.BackgroundTransparency = 0.35
 info.TextColor3 = WHITE
@@ -314,7 +268,7 @@ local function paint(kind)
         pill.Text, pill.BackgroundColor3 = "TAP " .. MOVES[kind], COLORS.learn
     elseif not on[kind] then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " OFF", COLORS.off
-    elseif kind ~= "dive" and on.dive then
+    elseif (kind == "dribble" or kind == "tackle") and on.dive then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " PAUSED", COLORS.paused
     else
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " ON", ballFound and COLORS.on or COLORS.noBall
@@ -323,10 +277,10 @@ end
 
 -- a pill showing a short message keeps it until its own timer runs out
 local msgGen, msgOn = {}, {}
-for _, kind in ipairs(KINDS) do msgGen[kind], msgOn[kind] = 0, false end
+for _, kind in ipairs(PILLS) do msgGen[kind], msgOn[kind] = 0, false end
 
 local function refresh()
-    for _, kind in ipairs(KINDS) do
+    for _, kind in ipairs(PILLS) do
         if not msgOn[kind] then paint(kind) end
     end
 end
@@ -479,6 +433,8 @@ local moveAt     = setmetatable({}, { __mode = "k" }) -- player -> when a new mo
 local carryMoveAt = setmetatable({}, { __mode = "k" }) -- player -> when they started one holding the ball
 local anyMoveAt  = setmetatable({}, { __mode = "k" }) -- player -> when any non-walking animation started
 local openAt     = setmetatable({}, { __mode = "k" }) -- player -> when they started winding up a shot or pass
+local openSeen   = setmetatable({}, { __mode = "k" }) -- player -> last time a wind-up was still playing
+local openTrack  = setmetatable({}, { __mode = "k" }) -- track -> it's a wind-up
 
 -- A shot or pass wind-up, by its animation's name: while charging it they can't dribble, so it's
 -- the moment to steal. Anything named like a dribble, and anything unnamed, counts as a dribble.
@@ -530,12 +486,13 @@ local function trackPlayers()
                 local was, now_ = moveSeen[animator], {}
                 for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
                     now_[t] = true
+                    if openTrack[t] then openSeen[p] = now end
                     if was and not was[t] then
                         -- a dribble needn't play at Action priority: anything that isn't walking
                         -- or standing might be one, and that's enough to keep a slide out of it
                         local open = opening(t)
                         if not BASE[t.Priority] then
-                            if open then openAt[p] = now else anyMoveAt[p] = now end
+                            if open then openAt[p], openSeen[p], openTrack[t] = now, now, true else anyMoveAt[p] = now end
                         end
                         if ACTION[t.Priority] then
                             moveAt[p] = now
@@ -747,7 +704,6 @@ end
 local function save()
     local data = {}
     for kind, t in pairs(saved) do data[kind] = t.path end
-    data.reach = CFG.Hitbox
     pcall(writefile, CFG.SaveFile, HttpService:JSONEncode(data))
 end
 
@@ -784,11 +740,6 @@ end
 pcall(function()
     for kind, path in pairs(HttpService:JSONDecode(readfile(CFG.SaveFile))) do
         if NAMES[kind] and type(path) == "table" and #path > 0 then saved[kind] = { path = path } end
-        if kind == "reach" and type(path) == "table" then
-            for k, v in pairs(path) do
-                if sliders[k] and type(v) == "number" then setReach(k, v) end
-            end
-        end
     end
 end)
 
@@ -1269,11 +1220,6 @@ end
 -- Where to slide at the carrier, or nil when it isn't time. Their dribble decides it: an open
 -- protection window would ankle-break you, a cooling one can't stop you, and a ready one only
 -- loses to a slide that gets there before they can react.
--- the size enemies' hitboxes are grown to while tackle is on (0 = left alone)
-local function tackleBox()
-    return (on.tackle and not on.dive and CFG.Hitbox.tackle >= 2) and CFG.Hitbox.tackle or 0
-end
-
 local function tackleAim(root, holder, lead)
     local char = holder.Character
     local r = char and char:FindFirstChild("HumanoidRootPart")
@@ -1282,7 +1228,7 @@ local function tackleAim(root, holder, lead)
     local dist = flat(r.Position - root.Position).Magnitude
     -- Blatant: you're put 3 studs from them before the slide, so it reaches from much further.
     -- Otherwise a carrier a little past the slide's reach gets glided at first.
-    local reach = CFG.Blatant and CFG.TeleportReach or slideReach + tackleBox() / 2
+    local reach = CFG.Blatant and CFG.TeleportReach or slideReach
     local extra = CFG.Blatant and 0 or CFG.TackleGlide
     if dist > reach + extra + 8 then return nil end
     -- where they'll be when the slide gets there; you see them a round trip late, so plus ping
@@ -1330,7 +1276,7 @@ local function moveToward(root, to, dt, faceAt, secs)
 end
 
 ---------------------------------------------------------------- keeper
-local findGoal, goalBase, keeper, pitchCentre -- set in the block below, used further down
+local findGoal, goalBase, keeper, pitchCentre, angleSpot -- set in the block below, used further down
 do
 
     -- closest the ball's path gets to a point over the next second, with the ground as a floor
@@ -1353,6 +1299,8 @@ do
         local v = hum.UseJumpPower and hum.JumpPower or math.sqrt(2 * g * hum.JumpHeight)
         return v / g, v * v / (2 * g)
     end
+
+    local fetchAt, fetchGap, fetchStuck = nil, 0, false -- fetching a ball counted as yours early
 
     local function dive(root, hum, at)
         lastDive = os.clock()
@@ -1438,16 +1386,132 @@ do
         return cross ~= nil and across(cross, goalBase()).Magnitude <= goalHalf + 3
     end
 
+    -- Where to stand for a ball at `p`: on the line splitting the angle between your posts as the
+    -- ball sees them (so nearer the near post for a ball out wide), a few studs off your line toward
+    -- it. Never further than halfway to the ball, and never behind your line.
+    function angleSpot(p)
+        local base = goalBase()
+        local x = base
+        if fieldDir then
+            if flat(p - base):Dot(fieldDir) <= 0 then return base end
+            local side = Vector3.new(-fieldDir.Z, 0, fieldDir.X)
+            local l, r = base - side * goalHalf, base + side * goalHalf
+            local dl, dr = flat(p - l).Magnitude, flat(p - r).Magnitude
+            -- (the angle's bisector cuts the goal line where the posts' distances say)
+            x = (l * dr + r * dl) / math.max(dl + dr, 0.01)
+        end
+        local out = flat(p - x)
+        if out.Magnitude < 0.1 then return x end
+        return x + out.Unit * math.min(CFG.Advance, out.Magnitude * 0.5)
+    end
+
+    -- in front of your goal, close enough to come out for
+    local function inBox(p)
+        local base = goalBase()
+        if not fieldDir then return flat(p - base).Magnitude <= CFG.ClaimRange end
+        local ahead = flat(p - base):Dot(fieldDir)
+        return ahead >= -1 and ahead <= CFG.ClaimRange and across(p, base).Magnitude <= goalHalf + 8
+    end
+
+    -- how soon anyone else can be at `p` (running toward it, or at least at FoeSpeed), and whether
+    -- that's an enemy
+    local function firstThere(p)
+        local best, enemy = math.huge, false
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local r = pl ~= LP and pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+            if r then
+                local off = flat(p - r.Position)
+                local toward = off.Magnitude > 0.1 and flat(velocityOf(r)):Dot(off.Unit) or 0
+                local t = off.Magnitude / math.max(toward, CFG.FoeSpeed)
+                if t < best then best, enemy = t, isEnemy(pl) end
+            end
+        end
+        return best, enemy
+    end
+
+    -- where a loose ball is `t` from now, along the ground or in the air; a ball that's slowing
+    -- stops where it stops instead of rolling back
+    local function ballAt(s, t, floorY)
+        local slow = -s.acc:Dot(s.vel)
+        if slow > 0 then t = math.min(t, s.vel:Dot(s.vel) / slow) end
+        local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
+        if p.Y < floorY then p = Vector3.new(p.X, floorY, p.Z) end
+        return p
+    end
+
+    -- A loose ball in your box (a rebound, a heavy touch, a through ball, a cross along the ground):
+    -- run to where you meet it, if you're clearly there before anyone else. If it's a race with an
+    -- attacker who's nearly on it and a dive covers it, the dive goes at it before they can shoot.
+    local function claim(root, hum, s, lead, dt)
+        local now, myPos = os.clock(), root.Position
+        if now - lastDive < 0.6 then return end -- still getting up from a dive
+        local mySpeed = math.max(hum.WalkSpeed, CFG.Glide and CFG.GlideSpeed or CFG.BurstSpeed)
+        local floorY = myPos.Y - 2.2
+        if CFG.Claim and stickIdle then
+            for i = 0, 45 do
+                local t = i / 30
+                local p = ballAt(s, t, floorY)
+                if p.Y < myPos.Y + 1 and inBox(p) then
+                    local mine = flat(p - myPos).Magnitude / mySpeed + lead
+                    if mine <= t + 0.05 then
+                        -- the first point on its path you'd be at in time: yours if nobody beats you to it
+                        if firstThere(p) > mine + 0.1 then
+                            moveToward(root, p, dt, p, 0.1)
+                            dbg.last = "GK coming out for a loose ball"
+                            return
+                        end
+                        break
+                    end
+                end
+            end
+        end
+        if CFG.Pounce and ready("dive") then
+            local p = ballAt(s, 0.1, floorY)
+            local d = flat(p - myPos).Magnitude
+            if d <= CFG.DiveReach and p.Y < myPos.Y + 1 and inBox(p) then
+                local theirs, enemy = firstThere(p)
+                if enemy and theirs <= CFG.PounceTime and theirs <= d / mySpeed + lead + 0.1 then
+                    dbg.last = "GK dive at a loose ball before they get it"
+                    dive(root, hum, p)
+                end
+            end
+        end
+    end
+
     function keeper(root, hum, ball, s, holder, lead, dt)
         shotPlan = nil
-        if holder == LP then return end
         local now, myPos = os.clock(), root.Position
+        if holder == LP then
+            -- Counted as yours a few studs early: a loose ball not at your feet yet still needs
+            -- fetching. One that moves with you when you move (in your hands) is already yours.
+            local gap = flat(ball.Position - myPos).Magnitude
+            if CFG.Claim and stickIdle and now - lastDive >= 0.6 and gap > 2.2 and not fetchStuck
+                and not ball:IsDescendantOf(LP.Character) then
+                local mine, its = flat(root.AssemblyLinearVelocity), flat(ball.AssemblyLinearVelocity)
+                if not fetchAt then
+                    fetchAt, fetchGap = now, gap
+                elseif (mine.Magnitude > 5 and (its - mine).Magnitude < 3)
+                    or (now - fetchAt > 0.3 and gap > fetchGap - 1) then
+                    fetchStuck, runUntil = true, 0
+                    return
+                end
+                moveToward(root, ball.Position, dt, ball.Position, 0.1)
+            end
+            return
+        end
+        fetchAt, fetchStuck = nil, false
+        if holder and s.vel.Magnitude >= CFG.ShotSpeed and now - (openSeen[holder] or -math.huge) < 0.15 + lead then
+            -- shot-fast out of a wind-up that's still playing: struck, even while it's still beside them
+            holder = nil
+        end
         if holder then
             -- 1v1: an enemy carrying the ball right at you, close enough to smother. Standing still
             -- in front of you (winding up a shot, faking one) only gets it right on top of you.
             local r = isEnemy(holder) and holder.Character and holder.Character:FindFirstChild("HumanoidRootPart")
             local gap = (ball.Position - myPos).Magnitude
-            if r and CFG.Smother > 0 and gap <= CFG.Smother and ready("dive") then
+            -- (a dribble or skill they just started would ankle-break the dive: wait it out)
+            local open = now - (anyMoveAt[holder] or -math.huge) < CFG.Protect + lead
+            if r and CFG.Smother > 0 and gap <= CFG.Smother and ready("dive") and not open then
                 local toMe = flat(myPos - r.Position)
                 local coming = toMe.Magnitude > 0 and flat(velocityOf(r)):Dot(toMe.Unit) > 3
                 if coming or gap <= 4 then dive(root, hum, ball.Position) end
@@ -1455,19 +1519,28 @@ do
             return
         end
         local speed = s.vel.Magnitude
-        if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 then return end
+        if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 then
+            claim(root, hum, s, lead, dt)
+            return
+        end
         -- A fake: a touch or a push keeps the ball at the feet of whoever just had it, while a shot
-        -- leaves them. Anything shot-fast counts straight away.
+        -- leaves them. Anything shot-fast counts straight away, and so does a ball that comes out of
+        -- a shot's wind-up still playing (a wind-up they cancelled, then a push, doesn't).
         local cr = lastCarrier and now - lastCarriedAt < 1 and lastCarrier.Character
             and lastCarrier.Character:FindFirstChild("HumanoidRootPart")
-        if cr and speed < CFG.SureShot and (s.pos - cr.Position).Magnitude < CFG.ReleaseDist then
+        local sure = speed >= CFG.SureShot or (speed >= CFG.ShotSpeed and lastCarrier
+            and now - (openSeen[lastCarrier] or -math.huge) < 0.15 + lead)
+        if cr and not sure and (s.pos - cr.Position).Magnitude < CFG.ReleaseDist then
             dbg.last = "fake? ball still at their feet"
             return
         end
         -- right after the kick its slowing hasn't shown yet: a push that dies out looks like a shot for
-        -- a few frames. Shot-fast balls count straight away.
-        if speed < CFG.SureShot and now - s.kickAt < CFG.ShotConfirm then return end
-        if not onTarget(s) then return end
+        -- a few frames
+        if not sure and now - s.kickAt < CFG.ShotConfirm then return end
+        if not onTarget(s) then
+            claim(root, hum, s, lead, dt)
+            return
+        end
         if fieldDir and now >= diveUntil then
             -- Onto the ball's path where it crosses your line, facing it, so the shot meets you instead
             -- of you chasing it. Kept inside the posts. A glide at a sprint, or with Blatant a snap.
@@ -1767,118 +1840,117 @@ do
     end
 end
 
----------------------------------------------------------------- reach
-local reachStep, shrinkHitboxes, sphere -- set in the block below, used further down
+---------------------------------------------------------------- ball control
+local stopControl -- set in the block below, used further down
 do
 
-    -- The game's own touch between the ball and every part of your body, as if it had reached it
-    -- (firetouchinterest): whatever the game does with a touch (a trap with the feet, a catch with
-    -- the hands), it does from further away.
-    local lastTouch = 0
-    local function touchBall(ball)
-        if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.08 then return end
-        lastTouch = os.clock()
+    -- CONTROL: after you shoot, the ball flies where you look. The camera follows it and its flight
+    -- turns toward the camera's aim, keeping the shot's speed, until it hits something, someone
+    -- takes it, it comes back to you or ControlTime runs out; then the camera comes back to you.
+    -- Moving the ball only counts while your client owns its physics, which the kicker usually does
+    -- for a moment after the kick (isnetworkowner tells, where the executor has it).
+    local ctl -- while steering: { ball, speed, dir, at, ends, lastPos, lastVel, ownedAt }
+    local mineAt, mineBall = -math.huge, nil -- when the ball was last at your feet
+
+    local function owned(ball)
+        if type(isnetworkowner) ~= "function" then return true end
+        local ok, yes = pcall(isnetworkowner, ball)
+        return not ok or yes == true
+    end
+
+    function stopControl()
+        if not ctl then return end
+        local cam = workspace.CurrentCamera
+        if cam and cam.CameraSubject == ctl.ball then
+            local char = LP.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then cam.CameraSubject = hum end
+        end
+        ctl = nil
+        hush("control")
+        paint("control")
+    end
+
+    -- where the camera aims, lifted by ControlLift
+    local function aim(cam)
+        local look = cam.CFrame.LookVector
+        local f = flat(look)
+        if f.Magnitude < 0.05 then return look end
+        local pitch = math.clamp(math.asin(math.clamp(look.Y, -1, 1)) + math.rad(CFG.ControlLift), -1.2, 1.2)
+        return f.Unit * math.cos(pitch) + Vector3.new(0, math.sin(pitch), 0)
+    end
+
+    -- before physics, so the turn applies this frame
+    bind(RunService.Stepped, function(_, dt)
+        if not on.control then
+            stopControl()
+            return
+        end
         local char = LP.Character
-        if not char then return end
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") then
-                pcall(firetouchinterest, part, ball, 0)
-                pcall(firetouchinterest, part, ball, 1)
-            end
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then
+            stopControl()
+            return
         end
-    end
-
-    -- where the reach drawings go: next to the pills (only you see them), or your camera
-    local drawIn = screen.Parent or workspace.CurrentCamera
-
-    -- Enemies' hitboxes (their root parts, on your side only) grown so slides land: the game sees the
-    -- slide touching them from further. A thin red outline shows each one; the part itself stays
-    -- invisible. Each is put back the way it was when tackle goes off.
-    local grown = setmetatable({}, { __mode = "k" }) -- part -> { was = how it was, box = its outline }
-    local function growHitboxes(size)
-        local want = Vector3.new(size, size, size)
-        for _, p in ipairs(Players:GetPlayers()) do
-            local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-            if r and r.Size ~= want then
-                local g = grown[r]
-                if not g then
-                    g = { was = { Size = r.Size, CanCollide = r.CanCollide, CanQuery = r.CanQuery } }
-                    grown[r] = g
-                    if CFG.ShowReach then
-                        pcall(function()
-                            local box = Instance.new("SelectionBox")
-                            box.Adornee = r
-                            box.LineThickness = 0.05
-                            box.Color3 = REACH_COLORS.tackle
-                            box.SurfaceTransparency = 1
-                            box.Parent = drawIn
-                            g.box = box
-                        end)
-                    end
-                end
-                -- touchable (that's what lands the slide) but invisible to raycasts: the camera's
-                -- collision check hit these and snapped the camera in to your head
-                r.Size, r.CanCollide, r.CanQuery = want, false, false
-            end
-        end
-    end
-
-    function shrinkHitboxes()
-        for part, g in pairs(grown) do
-            pcall(function()
-                for k, v in pairs(g.was) do part[k] = v end
-            end)
-            if g.box then g.box:Destroy() end
-            grown[part] = nil
-        end
-    end
-
-    -- Your reach, drawn as a thin ring on the ground around you: an adornment, so nothing is in the
-    -- world for the camera to sit inside or see the pitch tinted through (a sphere, then a filled
-    -- disc, both did). Only you see it.
-    sphere = Instance.new("CylinderHandleAdornment")
-    sphere.Name = "AutoDribbleReach"
-    sphere.Height = 0.15
-    sphere.Transparency = 1
-    sphere.AlwaysOnTop = false
-    sphere.Parent = drawIn
-
-    function reachStep(root, ball, holder)
-        local kind = on.dive and "dive" or on.dribble and "dribble" or nil
-        local r = kind and CFG.Hitbox[kind] or 0
-        if CFG.ShowReach and r > 0 then
-            -- a cylinder adornment runs along its Z axis: tipped over, it lies flat at your feet
-            sphere.Adornee = root
-            sphere.Radius = r
-            sphere.InnerRadius = math.max(0, r - 0.3)
-            sphere.Color3 = REACH_COLORS[kind]
-            sphere.Transparency = 0.25
-            sphere.CFrame = CFrame.new(0, -2.8, 0) * CFrame.Angles(math.pi / 2, 0, 0)
-        else
-            sphere.Transparency = 1
-        end
-        if tackleBox() > 0 then growHitboxes(tackleBox()) elseif next(grown) then shrinkHitboxes() end
+        local ball = ctl and ctl.ball or nearestBall(root.Position)
         if not ball then return end
-        -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
-        -- a couple of studs under your middle and still at your feet)
-        local function gap(pos)
-            local off = pos - root.Position
-            return math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+        if not ball:IsDescendantOf(workspace) then
+            stopControl()
+            return
         end
-        -- now, or a moment from now: a fast ball going past is in reach for only a frame or two
-        local dist = math.min(gap(ball.Position), gap(ball.Position + ball.AssemblyLinearVelocity * 0.08))
-        local enemyHas = holder and holder ~= LP and isEnemy(holder)
-        -- a few studs from you counts as yours to this script, but the game may not think so yet; only
-        -- a ball already at your feet is left alone
-        local loose = not holder or (holder == LP and dist >= 3)
-        if on.dive and dist <= CFG.Hitbox.dive and (loose or enemyHas) then
-            touchBall(ball)
-        elseif on.dribble and not on.dive and loose and dist <= CFG.Hitbox.dribble then
-            touchBall(ball)
-        elseif on.tackle and not on.dive and enemyHas and dist <= CFG.Hitbox.tackle then
-            touchBall(ball)
+        local now, pos, vel = os.clock(), ball.Position, ball.AssemblyLinearVelocity
+        local holder = holderOf(ball)
+        local held = holder and holder ~= LP and holder.Character and ball:IsDescendantOf(holder.Character)
+
+        if not ctl then
+            -- a shot: off your feet a moment ago, much faster than you're moving, and away from you
+            local rel = vel - root.AssemblyLinearVelocity
+            local kicked = not ball.Anchored and rel.Magnitude >= CFG.ControlMin and rel:Dot(pos - root.Position) > 0
+            if holder == LP and not kicked then
+                mineAt, mineBall = now, ball
+            elseif holder and holder ~= LP then
+                mineBall = nil -- someone else's now: their shot isn't yours to steer
+            elseif kicked and not held and mineBall == ball and now - mineAt < 0.25 then
+                ctl = { ball = ball, speed = math.clamp(vel.Magnitude, CFG.ControlMin, CFG.ControlMax), dir = vel.Unit,
+                        at = now, ends = now + CFG.ControlTime, lastPos = pos, lastVel = vel, ownedAt = now }
+                mineAt = -math.huge
+                local cam = workspace.CurrentCamera
+                if CFG.ControlCamera and cam then cam.CameraSubject = ball end
+                say("control", "STEERING", COLORS.learn, WHITE, CFG.ControlTime + 1)
+                dbg.last = "CONTROL steering your shot"
+            end
+            return
         end
-    end
+
+        -- Over: time's up, it was knocked off its course (the post, the net, a keeper, a block: what
+        -- we set last frame plus gravity is what it should be doing), it jumped (a reset after a
+        -- goal), someone has it, or it's back with you.
+        local expected = ctl.lastVel + Vector3.new(0, -workspace.Gravity * dt, 0)
+        if now > ctl.ends or (vel - expected).Magnitude > math.max(30, ctl.speed * 0.3)
+            or (pos - ctl.lastPos).Magnitude > ctl.speed * dt * 3 + 5 or held
+            or (holder == LP and now - ctl.at > 0.3) then
+            stopControl()
+            return
+        end
+        if not owned(ball) then
+            -- the server kept the ball: whatever we set doesn't reach anyone
+            if now - ctl.ownedAt > 0.3 then
+                stopControl()
+            else
+                ctl.lastPos, ctl.lastVel = pos, vel
+            end
+            return
+        end
+        ctl.ownedAt = now
+        local cam = workspace.CurrentCamera
+        if cam then
+            local dir = ctl.dir:Lerp(aim(cam), math.min(1, CFG.ControlTurn * dt))
+            if dir.Magnitude > 0.01 then ctl.dir = dir.Unit end
+        end
+        local v = ctl.dir * ctl.speed
+        ball.AssemblyLinearVelocity = v
+        ctl.lastPos, ctl.lastVel = pos, v
+    end)
 end
 
 ---------------------------------------------------------------- main loop
@@ -1916,8 +1988,8 @@ do
     local function showInfo(root, ball, holder, lead)
         if not CFG.Debug or os.clock() < nextInfo then return end
         nextInfo = os.clock() + 0.1
-        local line1 = ("conn %s sig %s tap %s key %s fti %s | %dms"):format(yn(caps.conn), yn(caps.sig),
-            yn(caps.touch), yn(caps.key), yn(type(firetouchinterest) == "function"), math.floor(lead * 1000 + 0.5))
+        local line1 = ("conn %s sig %s tap %s key %s | %dms"):format(yn(caps.conn), yn(caps.sig),
+            yn(caps.touch), yn(caps.key), math.floor(lead * 1000 + 0.5))
         local line2 = "no ball"
         if ball then
             local who = holder == LP and "YOU" or holder and (isEnemy(holder) and "FOE" or "TEAM") or "free"
@@ -1934,20 +2006,19 @@ do
     bind(RunService.Heartbeat, function(dt)
         if CFG.InfStamina then holdStamina() end
         local root, hum = body()
-        if not root then
-            sphere.Transparency = 1
-            return
-        end
+        if not root then return end
         -- (always: who has the ball and what enemies did a moment ago matter the moment a pill goes on)
         trackPlayers()
         local ball = nearestBall(root.Position)
         local holder = ball and holderOf(ball)
         if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
         if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
+        if (ball ~= nil) ~= ballFound then
+            ballFound = ball ~= nil
+            refresh()
+        end
         if not (on.dribble or on.tackle or on.dive) then
-            -- everything off: nothing else to do each frame (the reach marker hides and any grown
-            -- hitboxes go back)
-            reachStep(root, nil, nil)
+            -- everything off: nothing else to do each frame
             showInfo(root, ball, holder, ping())
             return
         end
@@ -1965,12 +2036,7 @@ do
         lastRoot = root.Position
 
         local lead = ping()
-        if (ball ~= nil) ~= ballFound then
-            ballFound = ball ~= nil
-            refresh()
-        end
         showInfo(root, ball, holder, lead)
-        reachStep(root, ball, holder)
         if not ball then return end
         if on.dive and home and not fieldExact then
             -- No pitch part to read: play happens out on the pitch, so the average direction of the
@@ -2061,15 +2127,12 @@ do
         local ball = nearestBall(root.Position)
         if not ball or holderOf(ball) == LP then return end
         local base = goalBase()
-        local spot = base
+        local spot
         if shotPlan and os.clock() < shotPlan.t and flat(shotPlan.at - base).Magnitude <= goalHalf + 6 then
             -- a ball coming in: get onto its path before the dive, so the dive has less to cover
             spot = shotPlan.at
         else
-            local toBall = flat(ball.Position - base)
-            if toBall.Magnitude > 0.1 then
-                spot = base + toBall.Unit * math.min(CFG.Advance, toBall.Magnitude * 0.5)
-            end
+            spot = angleSpot(ball.Position)
         end
         local step = flat(spot - root.Position)
         if step.Magnitude > 1 then hum:Move(step.Unit) end
@@ -2080,49 +2143,6 @@ end
 do
 
     local dragInput, dragKind, dragStart, startAbs, moved, pressedAt
-
-    -- the bar's height and the readout's place follow what's open
-    local function layout()
-        local y = 25 + (panel.Visible and 55 or 0)
-        info.Position = UDim2.fromOffset(0, y)
-        bar.Size = UDim2.fromOffset(217, CFG.Debug and y + 53 or (panel.Visible and 77 or 22))
-    end
-    layout()
-
-    bind(reachBtn.InputBegan, function(input)
-        local t = input.UserInputType
-        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
-            panel.Visible = not panel.Visible
-            layout()
-        end
-    end)
-
-    -- a slider follows your finger from where it touches the track until you let go
-    local slideInput, slideKind
-    local function slideTo(kind, x)
-        local t = sliders[kind].track
-        setReach(kind, (x - t.AbsolutePosition.X) / math.max(1, t.AbsoluteSize.X) * CFG.HitboxMax)
-    end
-    for _, kind in ipairs(SLIDER_ORDER) do
-        bind(sliders[kind].track.InputBegan, function(input)
-            local t = input.UserInputType
-            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
-                slideInput, slideKind = input, kind
-                slideTo(kind, input.Position.X)
-            end
-        end)
-    end
-    bind(UIS.InputChanged, function(input)
-        if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
-            slideTo(slideKind, input.Position.X)
-        end
-    end)
-    bind(UIS.InputEnded, function(input)
-        if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseButton1) then
-            slideInput = nil
-            save()
-        end
-    end)
 
     for kind, pill in pairs(pills) do
         bind(pill.InputBegan, function(input)
@@ -2165,7 +2185,7 @@ do
             else
                 refresh()
             end
-        elseif os.clock() - pressedAt >= CFG.LongPress then
+        elseif os.clock() - pressedAt >= CFG.LongPress and kind ~= "control" then
             startLearning(kind)
         else
             on[kind] = not on[kind]
@@ -2175,11 +2195,10 @@ do
     end)
 
     env.AutoDribbleStop = function()
-        for _, kind in ipairs(KINDS) do on[kind] = false end
+        for _, kind in ipairs(PILLS) do on[kind] = false end
         stopLearning()
-        shrinkHitboxes()
+        stopControl()
         for r in pairs(blocked) do blocked[r] = nil end
-        sphere:Destroy()
         pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
         for _, c in ipairs(conns) do c:Disconnect() end
         screen:Destroy()
@@ -2191,7 +2210,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v18", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
+            Title = "AutoDribble v19", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
         })
     end)
 end
