@@ -911,6 +911,40 @@ def keeper_jumps_for_a_high_ball():
 
 
 @test
+def keeper_jumps_and_dives_at_a_high_corner_shot():
+    g = keeper_game(goal=True)
+    g.shoot(Vector3(30, 11, 110), Vector3(14, 11, 193), 120)
+    g.run(0.8)
+    check(g.hum.jumps, "jumped")
+    dives = g.presses("dive", "ok")
+    check(dives and 0.05 <= dives[0][0] - g.hum.jumps[0] <= 0.2, f"then dove from the jump ({g.hum.jumps}, {g.events})")
+    check(g.press_look["dive"].x > 0.3, f"toward the top corner (look {g.press_look['dive']})")
+
+
+@test
+def keeper_times_the_jump_to_the_ball():
+    g = keeper_game(goal=True)
+    t0 = g.now
+    g.shoot(Vector3(0, 9, 110), Vector3(0, 9, 200), 100)  # crosses his line 0.8s later, 6 up
+    g.run(1.0)
+    check(g.hum.jumps, "jumped")
+    before = t0 + 0.8 - g.hum.jumps[0]
+    check(0.2 <= before <= 0.4, f"the top of the jump meets the ball ({before:.2f}s before it arrives)")
+
+
+@test
+def keeper_jumps_for_a_lob_coming_down():
+    g = keeper_game(goal=True)
+    g.gravity = 196.2
+    # up and over: peaks around 30 studs high, comes down through 7-8 up at his line
+    g.shoot(Vector3(0, 2, 120), Vector3(0, 2, 121), 1)
+    g.ball_vel = Vector3(0, 78, 106)  # apex ~33 up, then through 11 (8 above him) at z=190 after 0.66s
+    g.run(1.0)
+    check(g.hum.jumps, f"jumped for the lob ({g.events})")
+    check(not g.presses("dive"), f"and didn't dive under it ({g.events})")
+
+
+@test
 def keeper_ignores_a_pass_across_the_pitch():
     g = keeper_game()
     g.shoot(Vector3(-40, 1, 120), Vector3(40, 1, 120), 90)

@@ -44,6 +44,15 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v13
+
+- **Keeper jumps for high shots.** It reads how high the ball crosses your line (curve and dip
+  included) and when, then times the jump so its top meets the ball. A high ball wider than
+  you can reach standing gets a jump, then a dive from near the top of it into the top corner
+  (`JumpDiveDelay`). Lobs coming down over you get a jump too, not a dive underneath. The point
+  where a ball crosses your line is now interpolated between frames, so a dropping lob's height
+  is no longer a stud low.
+
 ## v12
 
 - **Less noticeable:** the keeper and the tackle get there on your own run, with its animation, at
@@ -143,7 +152,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 53 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 56 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

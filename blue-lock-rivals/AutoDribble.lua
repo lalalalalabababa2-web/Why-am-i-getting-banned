@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v12 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v13 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -100,7 +100,8 @@ local CFG = {
     SnapRange    = 30,     -- Blatant: furthest the keeper teleports onto a shot's path
     JumpHigh     = true,   -- jump for high balls close to you instead of diving under them
     HighBall     = 4,      -- studs above your middle that count as high
-    JumpReach    = 5,      -- sideways: a high ball passing closer than this gets a jump, wider gets a dive
+    JumpReach    = 5,      -- sideways: a high ball closer than this gets a jump, wider a jump and a dive
+    JumpDiveDelay = 0.1,   -- the dive after the jump for a high, wide ball: from near the top of it
     Smother      = 7,      -- dive at an enemy carrying the ball this close (0 = never)
     Positioning  = true,   -- move between the ball and your goal while your thumb is off the stick
     Advance      = 6,      -- furthest you step off your spot toward the ball
@@ -1318,15 +1319,20 @@ end
 -- a curler aimed outside the post that bends in (Kaiser's, Rin's) crosses inside it. A ball that
 -- slows to a stop first (a push that dies) never gets there.
 local function crossing(s, base)
-    local prev = flat(s.pos - base):Dot(fieldDir)
+    local prev, prevP = flat(s.pos - base):Dot(fieldDir), s.pos
     if prev <= 0 then return nil end
     for i = 1, 90 do
         local t = i / 60
         local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
         local ahead = flat(p - base):Dot(fieldDir)
-        if ahead <= 0 then return p, t end
+        if ahead <= 0 then
+            -- between the last two steps, where it's exactly on the line (a dropping lob loses a
+            -- stud of height in a step)
+            local f = prev / (prev - ahead)
+            return prevP + (p - prevP) * f, t - (1 - f) / 60
+        end
         if ahead >= prev then return nil end -- stopped, or turned away
-        prev = ahead
+        prev, prevP = ahead, p
     end
     return nil
 end
@@ -1392,8 +1398,29 @@ local function keeper(root, hum, ball, s, holder, lead, dt)
     local t, d, at = closestApproach(s, myPos)
     shotPlan = { at = at, t = now + t } -- positioning walks you onto its path
     local side, up = flat(at - myPos).Magnitude, at.Y - myPos.Y
-    -- a high ball close to you: jump so it meets you at the top of the jump, not under it
-    if CFG.JumpHigh and up > CFG.HighBall and side <= CFG.JumpReach then
+    -- High: how high it is where it crosses your line (curve and dip included), and when. The jump
+    -- goes so its top meets the ball; a high ball wider than you can reach standing gets a dive
+    -- from the jump, up into the top corner. Lobs coming down over you count too.
+    local hc, htc = nil, nil
+    if fieldDir then hc, htc = crossing(s, myPos) end
+    if CFG.JumpHigh and hc and hc.Y - myPos.Y > CFG.HighBall then
+        local apexT = jumpArc(hum)
+        local wide = across(hc, myPos).Magnitude
+        if htc <= apexT + lead and now - lastJump > 1 then
+            lastJump = now
+            hum.Jump = true
+            dbg.last = ("JUMP for a ball %.0f up"):format(hc.Y - myPos.Y)
+            if wide > CFG.JumpReach and wide <= CFG.DiveRange then
+                task.delay(CFG.JumpDiveDelay, function()
+                    if hum.Parent and ready("dive") then dive(root, hum, hc) end
+                end)
+                dbg.last ..= " + DIVE"
+            end
+        end
+        return
+    end
+    -- (no pitch direction yet: the closest point of its path tells high from low)
+    if CFG.JumpHigh and not hc and up > CFG.HighBall and side <= CFG.JumpReach then
         local apexT, apexH = jumpArc(hum)
         if up <= CFG.HighBall + apexH + 2 and t <= apexT + lead and now - lastJump > 1 then
             lastJump = now
