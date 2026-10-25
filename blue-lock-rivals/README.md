@@ -44,6 +44,22 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v12
+
+- **Less noticeable:** the keeper and the tackle get there on your own run, with its animation, at
+  about a sprint for the moment (`BurstSpeed` 26). The walk speed goes back after. No sliding
+  feet, no teleports (`Glide = true` or `Blatant = true` for those).
+- **Keeper vs ability shots:** it predicts the whole path, curve and dip included, not a
+  straight line. A curler aimed far outside the post that bends in (Kaiser's, Rin's) gets read
+  within a few frames, and the keeper starts across right away instead of in the last third of
+  a second. Curves are read faster (up to 500 studs/s² of bend), and so are ability shots the
+  game moves by script.
+- **Tackle steals during a shot or pass wind-up:** they can't dribble out of it, so it goes
+  straight in. Animations named like a dribble or feint, and unnamed ones, still count as
+  dribbles. A wind-up no longer counts as their dribble going on cooldown.
+- **Dribble:** after it fires, you run clear of the tackler for a moment (only with your thumb off
+  the stick, `EscapeAfter`).
+
 ## v11
 
 - **Less noticeable:** no teleports by default (`Blatant = true` brings them back). The keeper
@@ -127,7 +143,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 48 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 53 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v11 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v12 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -32,7 +32,8 @@
            hold ~1s and let go, then tap the same pill = forget the forced button
     Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap.
 
-    By default nothing teleports: the keeper and the tackle glide in at a sprint (GlideSpeed).
+    By default nothing teleports or slides: the keeper and the tackle get there on your own run, at
+    about a sprint for the moment (BurstSpeed). Glide = true slides you there instead (faster).
     BLATANT = true teleports instead: the keeper onto a shot's path, you 3 studs from the carrier.
     Dribble only answers a real tackle, so a fake one next to you doesn't burn it. Tackle fakes
     one of its own at a carrier whose dribble is ready, and slides once that dribble is cooling.
@@ -52,7 +53,10 @@ local CFG = {
     HoldDist     = 5,      -- the nearest player within this of the ball (studs) has it
     Debug        = false,  -- true shows a live readout box under the pills
     Blatant      = false,  -- true = teleports (keeper onto the shot's path, you next to the carrier)
-    GlideSpeed   = 30,     -- without Blatant, how fast the keeper and the tackle step in (studs/s, a sprint)
+    Glide        = false,  -- true = step in by sliding the character (faster, but the feet don't move)
+    GlideSpeed   = 30,     -- Glide: how fast (studs/s)
+    BurstSpeed   = 26,     -- otherwise your own run, at about a sprint for the moment it lasts (studs/s)
+    EscapeAfter  = 0.25,   -- after a dribble, run clear of the tackler this long (thumb off the stick)
     EngineInput  = true,   -- allow the virtual key and click as last resorts
     Cooldowns    = { dribble = 3, tackle = 3, dive = 1.5 }, -- first guesses (s), replaced once learned
     UiScale      = 1,      -- size of the pills and readout: 1.3 = bigger, 0.8 = smaller
@@ -347,12 +351,14 @@ local function updateTrack(ball, dt)
     if dv.Magnitude > (byHand and 8 or 25) then
         -- a kick or a hard bounce: the old forces no longer apply
         s.acc, s.kickAt = Vector3.zero, now
-    elseif not byHand or now - s.kickAt > 0.15 then
+    elseif not byHand or now - s.kickAt > 0.08 then
         -- a hand-moved ball's speed ramps in across the window after a kick; that ramp
         -- isn't acceleration, so its reading waits until the window has caught up
         local a = dv / dt
-        if a.Magnitude > 250 then a = a.Unit * 250 end
-        s.acc = s.acc:Lerp(a, 0.3)
+        if a.Magnitude > 500 then a = a.Unit * 500 end
+        -- quick enough to follow a curve shot's bend within a few frames (a hand-moved ball's
+        -- speed is read over a window, so its bend is noisier and smoothed more)
+        s.acc = s.acc:Lerp(a, byHand and 0.3 or 0.5)
     end
     s.pos, s.vel = pos, vel
     return s
@@ -399,6 +405,22 @@ local moveSeen   = setmetatable({}, { __mode = "k" }) -- animator -> move tracks
 local moveAt     = setmetatable({}, { __mode = "k" }) -- player -> when a new move animation started
 local carryMoveAt = setmetatable({}, { __mode = "k" }) -- player -> when they started one holding the ball
 local anyMoveAt  = setmetatable({}, { __mode = "k" }) -- player -> when any non-walking animation started
+local openAt     = setmetatable({}, { __mode = "k" }) -- player -> when they started winding up a shot or pass
+
+-- A shot or pass wind-up, by its animation's name: while charging it they can't dribble, so it's
+-- the moment to steal. Anything named like a dribble, and anything unnamed, counts as a dribble.
+local OPEN_WORDS = { "shoot", "shot", "charge", "kick", "pass", "windup", "volley" }
+local DRIBBLE_WORDS = { "dribble", "feint", "flick", "dodge", "fake", "juke", "skill" }
+local function opening(track)
+    local name = (track.Name .. " " .. (track.Animation and track.Animation.Name or "")):lower()
+    for _, w in ipairs(DRIBBLE_WORDS) do
+        if name:find(w, 1, true) then return false end
+    end
+    for _, w in ipairs(OPEN_WORDS) do
+        if name:find(w, 1, true) then return true end
+    end
+    return false
+end
 
 -- every frame, for everyone else on the server
 local function trackPlayers()
@@ -438,10 +460,14 @@ local function trackPlayers()
                     if was and not was[t] then
                         -- a dribble needn't play at Action priority: anything that isn't walking
                         -- or standing might be one, and that's enough to keep a slide out of it
-                        if not BASE[t.Priority] then anyMoveAt[p] = now end
+                        local open = opening(t)
+                        if not BASE[t.Priority] then
+                            if open then openAt[p] = now else anyMoveAt[p] = now end
+                        end
                         if ACTION[t.Priority] then
                             moveAt[p] = now
-                            if p == curHolder and now - heldSince > 0.3 then carryMoveAt[p] = now end
+                            -- a wind-up isn't their dribble: it doesn't put that on cooldown
+                            if p == curHolder and now - heldSince > 0.3 and not open then carryMoveAt[p] = now end
                         end
                     end
                 end
@@ -1179,6 +1205,11 @@ local function tackleAim(root, holder, lead)
     local now = os.clock()
     -- mid-move or mid-dash: whatever it is, a dribble's protection may be up
     if now - (anyMoveAt[holder] or -math.huge) < CFG.Protect + lead then return nil end
+    -- winding up a shot or pass: they can't dribble out of it, so go
+    if now - (openAt[holder] or -math.huge) < 0.8 then
+        if aimDist > reach then return aim, "glide" end
+        return aim, "go"
+    end
     if flat(velocityOf(r)).Magnitude > CFG.LungeSpeed then return nil end
     local since = now - (carryMoveAt[holder] or -math.huge)
     local theirsCooling = since < CFG.Protect + CFG.EnemyCooldown
@@ -1196,6 +1227,18 @@ local function glideToward(root, to, dt, faceAt)
     local pos = root.Position + gap.Unit * math.min(gap.Magnitude, CFG.GlideSpeed * dt)
     local look_ = faceAt and Vector3.new(faceAt.X, pos.Y, faceAt.Z) or pos + gap.Unit
     root.CFrame = CFrame.lookAt(pos, look_)
+end
+
+-- Somewhere quickly, the natural way: your own run, with its animation, at about a sprint for the
+-- moment it lasts (the Stepped handler does the moving). Glide slides you there instead.
+local runTo, runUntil = nil, 0
+local speedSaved, speedSet = nil, nil
+local function moveToward(root, to, dt, faceAt, secs)
+    if CFG.Glide then
+        glideToward(root, to, dt, faceAt)
+        return
+    end
+    runTo, runUntil = to, os.clock() + (secs or 0.1)
 end
 
 ---------------------------------------------------------------- keeper
@@ -1271,18 +1314,33 @@ end
 -- A shot: crossing your goal line between the posts (a little to spare), from any angle. Angled
 -- shots from the wing count too; a pass across the box never reaches the line. Until the pitch
 -- direction is known, any fast ball coming at you counts.
+-- Where the ball's path crosses the line through `base`, curve and dip included, within 1.5s:
+-- a curler aimed outside the post that bends in (Kaiser's, Rin's) crosses inside it. A ball that
+-- slows to a stop first (a push that dies) never gets there.
+local function crossing(s, base)
+    local prev = flat(s.pos - base):Dot(fieldDir)
+    if prev <= 0 then return nil end
+    for i = 1, 90 do
+        local t = i / 60
+        local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
+        local ahead = flat(p - base):Dot(fieldDir)
+        if ahead <= 0 then return p, t end
+        if ahead >= prev then return nil end -- stopped, or turned away
+        prev = ahead
+    end
+    return nil
+end
+
+-- sideways from the middle of the goal, along your line
+local function across(p, base)
+    local off = flat(p - base)
+    return off - fieldDir * off:Dot(fieldDir)
+end
+
 local function onTarget(s)
     if not (home and fieldDir) then return true end
-    local p, v = flat(s.pos - goalBase()), flat(s.vel)
-    local closing = -v:Dot(fieldDir) -- speed toward the goal line
-    if closing <= 1 then return false end
-    local tc = p:Dot(fieldDir) / closing
-    if tc < 0 or tc > 1.5 then return false end
-    -- slowing enough to stop before the line (a touch, a push, a feint that rolls dead): no shot
-    local slowing = s.acc:Dot(fieldDir)
-    if slowing > 1 and closing * closing / (2 * slowing) < p:Dot(fieldDir) then return false end
-    local cross = p + v * tc
-    return (cross - fieldDir * cross:Dot(fieldDir)).Magnitude <= goalHalf + 3
+    local cross = crossing(s, goalBase())
+    return cross ~= nil and across(cross, goalBase()).Magnitude <= goalHalf + 3
 end
 
 local function keeper(root, hum, ball, s, holder, lead, dt)
@@ -1319,17 +1377,15 @@ local function keeper(root, hum, ball, s, holder, lead, dt)
         -- Onto the ball's path where it crosses your line, facing it, so the shot meets you instead
         -- of you chasing it. Kept inside the posts. A glide at a sprint, or with Blatant a snap.
         local base = goalBase()
-        local p, v = flat(s.pos - base), flat(s.vel)
-        local closing = -v:Dot(fieldDir)
-        local cross = p + v * (closing > 1 and p:Dot(fieldDir) / closing or 0)
-        local lateral = cross - fieldDir * cross:Dot(fieldDir)
+        local cross = crossing(s, base) or s.pos
+        local lateral = across(cross, base)
         if lateral.Magnitude > goalHalf then lateral = lateral.Unit * goalHalf end
         local spot = Vector3.new(base.X + lateral.X, myPos.Y, base.Z + lateral.Z)
         local jump = (spot - myPos).Magnitude
         if CFG.Blatant and jump > 1 and jump <= CFG.SnapRange then
             root.CFrame = CFrame.lookAt(spot, Vector3.new(s.pos.X, spot.Y, s.pos.Z))
         elseif not CFG.Blatant and jump > 0.3 then
-            glideToward(root, spot, dt, s.pos)
+            moveToward(root, spot, dt, s.pos, 0.1)
         end
         myPos = root.Position
     end
@@ -1617,6 +1673,12 @@ bind(RunService.Heartbeat, function(dt)
             local foe, committed = threat(root, lead)
             if foe and ready("dribble") then
                 launch("dribble", root, hum)
+                -- then out of the tackler's way, if your thumb isn't already taking you somewhere
+                local fr = foe.Character and foe.Character:FindFirstChild("HumanoidRootPart")
+                local away = fr and flat(root.Position - fr.Position)
+                if CFG.EscapeAfter > 0 and stickIdle and away and away.Magnitude > 0.1 then
+                    moveToward(root, root.Position + away.Unit * 8, dt, nil, CFG.EscapeAfter)
+                end
             elseif foe and committed and CFG.Flick and cooling("dribble") and os.clock() - lastFlick > 1
                 and os.clock() - move.dribble.at > CFG.Protect then
                 -- (inside your own protection window the tackle gets ankle-broken anyway)
@@ -1634,7 +1696,7 @@ bind(RunService.Heartbeat, function(dt)
             end
             launch("tackle", root, hum, aim)
         elseif what == "glide" then
-            glideToward(root, aim, dt, aim)
+            moveToward(root, aim, dt, aim, 0.1)
         elseif what == "bait" and CFG.Bait and os.clock() - baitAt > CFG.BaitEvery then
             -- Fake a tackle: a quick step in, the way a slide starts. A carrier who dribbles at it
             -- has it cooling for the next few seconds, and those are when the slide goes in.
@@ -1642,7 +1704,7 @@ bind(RunService.Heartbeat, function(dt)
             dbg.last = "TACKLE fake to draw their dribble"
         end
     end
-    if os.clock() < baitUntil and baitTo then glideToward(root, baitTo, dt, baitTo) end
+    if os.clock() < baitUntil and baitTo then moveToward(root, baitTo, dt, baitTo, 0.05) end
 end)
 
 -- Positioning runs before physics. Roblox's ControlModule has already applied your joystick
@@ -1652,6 +1714,19 @@ bind(RunService.Stepped, function()
     local root, hum = body()
     if not root then return end
     stickIdle = hum.MoveDirection.Magnitude < 0.05
+    -- a run asked for by the keeper, the tackle or the dribble's escape beats the thumb for the
+    -- moment it lasts; the walk speed goes back after, unless the game changed it meanwhile
+    if os.clock() < runUntil and runTo then
+        if speedSaved == nil then speedSaved = hum.WalkSpeed end
+        hum.WalkSpeed = math.max(speedSaved, CFG.BurstSpeed)
+        speedSet = hum.WalkSpeed
+        local gap = flat(runTo - root.Position)
+        if gap.Magnitude > 0.5 then hum:Move(gap.Unit) end
+        return
+    elseif speedSaved ~= nil then
+        if hum.WalkSpeed == speedSet then hum.WalkSpeed = speedSaved end
+        speedSaved, speedSet = nil, nil
+    end
     if not (on.dive and CFG.Positioning and stickIdle and home) or learning or os.clock() < diveUntil then
         return
     end

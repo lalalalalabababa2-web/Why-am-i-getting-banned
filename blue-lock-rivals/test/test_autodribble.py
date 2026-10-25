@@ -66,8 +66,9 @@ class Bot:
 
 
 class Game:
-    def __init__(self, gk=False, hud=True, hide_functions=False, ping=0.05, cooldowns=None, debug=True, blatant=False):
-        self.debug, self.blatant = debug, blatant
+    def __init__(self, gk=False, hud=True, hide_functions=False, ping=0.05, cooldowns=None, debug=True, blatant=False,
+                 cfg=None):
+        self.debug, self.blatant, self.cfg = debug, blatant, cfg or {}
         self.I = Interp()
         self.W = W = World(self.I)
         W.ping = ping
@@ -88,6 +89,8 @@ class Game:
         self.ball_vel = Vector3()
         self.gravity = 0.0
         self.friction = 0.0  # studs/s lost per second while the ball rolls (a touch dies out)
+        self.ball_acc = Vector3()  # a curve's bend (studs/s^2), sideways
+        self.ball_by_hand = False  # an ability shot the game moves itself: no physics velocity
         self.shiftlock = False  # turns you to face the camera (-z) every frame, like shift lock
         self.press_look = {}
 
@@ -211,6 +214,10 @@ class Game:
         # the tests read the readout, and most check the plain (non-teleporting) behaviour
         src = src.replace("Debug        = false", "Debug        = " + ("true" if self.debug else "false"), 1)
         src = src.replace("Blatant      = false", "Blatant      = " + ("true" if self.blatant else "false"), 1)
+        import re
+        for key, value in self.cfg.items():
+            src, n = re.subn(r"(\n    %s\s*=\s*)[^,]+," % key, r"\g<1>%s," % value, src, count=1)
+            assert n == 1, key
         f = self.I.load(src, "AutoDribble")
         if self.hide_functions:
             import roblox
@@ -262,6 +269,13 @@ class Game:
         W.uis.signal("InputEnded").fire(inp, False)
         self.step()
 
+    def clear_bots(self):
+        # gone from the match too, not just from the simulation
+        for b in self.bots:
+            b.char.m_Destroy()
+            b.player.m_Destroy()
+        self.bots.clear()
+
     def bot(self, name, pos, enemy=True):
         b = Bot(self, name, pos, self.team_b if enemy else self.team_a)
         self.bots.append(b)
@@ -280,11 +294,15 @@ class Game:
             sched.spawn(fn, [DT])
         W.run.signal("Stepped").fire(now, DT)
         # physics
-        p = self.root.props["Position"] + self.my_vel * DT
+        # your own run: Move() this frame walks you at WalkSpeed (when the test isn't steering)
+        run = Vector3()
+        if self.my_vel.mag() == 0 and self.hum.moves and self.hum.moves[-1][0] == now:
+            run = self.hum.moves[-1][1].flat().unit() * self.hum.props["WalkSpeed"]
+        p = self.root.props["Position"] + (self.my_vel + run) * DT
         if self.my_lunge and now < self.my_lunge[1]:
             p = p + self.my_lunge[0] * DT
         self.root.props["Position"] = p
-        self.root.props["AssemblyLinearVelocity"] = self.my_vel
+        self.root.props["AssemblyLinearVelocity"] = self.my_vel + run
         self.hum.props["MoveDirection"] = self.my_vel.flat().unit() if self.my_vel.flat().mag() > 0 else Vector3()
         for b in self.bots:
             if b.brain and now >= b.stunned_until:
@@ -322,12 +340,12 @@ class Game:
             self.ball.props["Position"] = hr.props["Position"] + Vector3(0, -2, 1.5)
             self.ball.props["AssemblyLinearVelocity"] = hr.props["AssemblyLinearVelocity"]
         else:
-            self.ball_vel = self.ball_vel + Vector3(0, -self.gravity * DT, 0)
+            self.ball_vel = self.ball_vel + Vector3(0, -self.gravity * DT, 0) + self.ball_acc * DT
             if self.friction and self.ball_vel.flat().mag() > 0:
                 sp = self.ball_vel.flat().mag()
                 self.ball_vel = self.ball_vel * (max(0.0, sp - self.friction * DT) / sp)
             self.ball.props["Position"] = self.ball.props["Position"] + self.ball_vel * DT
-            self.ball.props["AssemblyLinearVelocity"] = self.ball_vel
+            self.ball.props["AssemblyLinearVelocity"] = Vector3() if self.ball_by_hand else self.ball_vel
         self.update_hud()
         W.run.signal("Heartbeat").fire(DT)
         self.check_errors()
@@ -476,6 +494,17 @@ def dribble_catches_a_point_blank_slide_with_no_animation():
 
 
 @test
+def dribble_then_runs_clear_of_the_tackler():
+    g = Game().load()
+    g.tap("dribble")
+    runner_at(g, "Isagi", Vector3(0, 3, -30), 28)
+    g.run(1.5)
+    t = g.presses("dribble", "ok")[0][0]
+    moves = [m for m in g.hum.moves if t <= m[0] <= t + 0.3]
+    check(moves and all(m[1].z > 0.5 for m in moves), f"ran away from them, not into them ({moves[:3]})")
+
+
+@test
 def no_press_without_a_threat():
     g = Game().load()
     g.tap("dribble")
@@ -534,7 +563,7 @@ def cutscene_presses_nothing_and_keeps_the_method():
     check(not g.W.keyboard_used, "no virtual key or click (they flip the game to its PC layout)")
     check("button off screen" in g.readout(), f"readout says why: {g.readout()!r}")
     g.cutscene = False
-    g.bots.clear()
+    g.clear_bots()
     g.holder = g.lp
     g.root.props["Position"] = Vector3(0, 3, 0)
     runner_at(g, "Kaiser2", Vector3(0, 3, -30), 28)
@@ -572,7 +601,7 @@ def misses_skip_a_method_that_doesnt_work():
         g.holder = g.lp
         runner_at(g, f"R{i}", Vector3(0, 3, -30), 28)
         g.run(1.6)
-        g.bots.clear()
+        g.clear_bots()
         g.root.props["Position"] = Vector3(0, 3, 0)
         taps.append(len([v for v in g.W.vim.log if v[1] == "touch" and v[2] == 0 and v[3] > 0]))
     tries = g.presses("dribble", "ignored")
@@ -704,6 +733,21 @@ def tackle_fakes_out_a_ready_dribble_then_slides():
 
 
 @test
+def tackle_steals_during_a_shot_windup():
+    g = Game(ping=0.1, cfg={"Bait": "false"}).load()
+    carrier = g.bot("Kaiser", Vector3(0, 3, -13.5))
+    g.holder = carrier.player
+    g.tap("tackle")
+    g.run(1.0)
+    check(not g.presses("tackle"), f"their dribble is ready: no slide yet ({g.events})")
+    carrier.anim.play("ShootCharge", "Action", 1.0)
+    t = g.now
+    g.run(0.5)
+    ok = g.presses("tackle", "ok")
+    check(ok and ok[0][0] - t < 0.3, f"slid into the shot wind-up straight away ({g.events}, wind-up at {t:.2f})")
+
+
+@test
 def tackle_ignores_teammates():
     g = Game().load()
     mate = g.bot("Chigiri", Vector3(0, 3, -6), enemy=False)
@@ -781,6 +825,56 @@ def keeper_glides_onto_a_corner_shot_without_teleporting():
     steps = [(b - a).flat().mag() for a, b in zip(path, path[1:])]
     check(path[-1].x > path[0].x + 4, f"moved toward the far corner ({path[0]} -> {path[-1]})")
     check(max(steps) <= 30 * DT * 1.2 + 16 * DT, f"at a sprint, no teleport (max step {max(steps):.2f})")
+
+
+def curler(g, by_hand=False):
+    # aimed 50 studs out at the goal line, far wide of the post, bending in to about 15. A straight
+    # line through it only comes inside the post a third of a second before it arrives.
+    g.shoot(Vector3(-10, 2, 110), Vector3(80, 2, 230), 1)
+    g.ball_vel = Vector3(90, 0, 120)
+    g.ball_acc = Vector3(-157, 0, 0)
+    g.ball_by_hand = by_hand
+
+
+@test
+def keeper_reads_a_curler_that_bends_inside_the_post():
+    g = keeper_game(goal=True)
+    x0 = g.root.props["Position"].x
+    curler(g)
+    g.run(0.3)
+    check(g.root.props["Position"].x > x0 + 1.5, f"read the bend early and started across ({g.root.props['Position']})")
+    g.run(0.5)
+    ok = g.presses("dive", "ok")
+    check(ok, f"dove at the curler ({g.events})")
+    check(g.press_look["dive"].x > 0.3, f"toward the side it bends to (look {g.press_look['dive']})")
+
+
+@test
+def keeper_reads_a_scripted_ability_curve():
+    g = keeper_game(goal=True)
+    curler(g, by_hand=True)
+    g.run(0.8)
+    check(g.presses("dive", "ok"), f"dove at an ability shot the game moves itself ({g.events})")
+
+
+@test
+def keeper_runs_instead_of_sliding():
+    g = keeper_game(goal=True)
+    walk = g.hum.props["WalkSpeed"]
+    g.shoot(Vector3(-40, 2, 90), Vector3(19, 2, 193), 150)
+    path, speeds = [], []
+    for _ in range(30):
+        path.append(g.root.props["Position"])
+        g.step()
+        speeds.append(g.hum.props["WalkSpeed"])
+        if g.presses("dive"):
+            break
+    steps = [(b - a).flat().mag() for a, b in zip(path, path[1:])]
+    check(path[-1].x > path[0].x + 3, f"ran toward the corner ({path[0]} -> {path[-1]})")
+    check(max(steps) <= 26 * DT * 1.05, f"at a run (max step {max(steps):.2f})")
+    check(max(speeds) == 26, f"sprint speed while running there ({max(speeds)})")
+    g.run(1.5)
+    check(g.hum.props["WalkSpeed"] == walk, f"and its walk speed back after ({g.hum.props['WalkSpeed']})")
 
 
 @test
