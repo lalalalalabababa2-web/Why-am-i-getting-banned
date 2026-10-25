@@ -1,4 +1,4 @@
-# Auto Dribble + Auto Tackle + Auto GK + Ball Control + Infinite Spins — Blue Lock: Rivals
+# Auto Dribble + Auto Tackle + Auto GK + Ball Control + Hitbox — Blue Lock: Rivals
 
 | | |
 |---|---|
@@ -17,12 +17,15 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v25 Loaded" when it starts.
+notification says "AutoDribble v26 Loaded" when it starts.
 
-Running it again replaces the old copy. Five pills appear on the left in two rows: **DRIBBLE**,
-**TACKLE**, **AUTO GK**, then **CONTROL**, **SPINS**. Tap to toggle, drag to move. Hold about a second and let go, then tap
-the game's button to force which button that pill presses. Turn AUTO GK on standing in your goal;
-it pauses dribble and tackle.
+Running it again replaces the old copy. A round **BL** icon appears on the left. Tap it for the
+menu, and drag it to move it. At the top of the menu are five switches: **DRIBBLE**, **TACKLE**,
+**AUTO GK**, **CONTROL**, **HITBOX**. Tap to toggle. Hold DRIBBLE, TACKLE or AUTO GK about a second
+and let go, then tap the game's button to force which button it presses. Turn AUTO GK on standing in
+your goal; it pauses dribble and tackle. Below the switches is every setting (`-`/`+` for numbers,
+`ON`/`OFF` for the rest), saved between runs. The icon is green while anything's on, and flashes
+what the switches would show while the menu is shut.
 
 ## What each one does
 
@@ -43,57 +46,51 @@ it pauses dribble and tackle.
   that you're the nearest player to. The camera follows the ball and it turns toward wherever the
   camera looks, at its own speed or 120 studs/s, whichever is more. Aim roughly at their goal and
   it bends for the corner away from their keeper. Look up to lift it and down to dip
-  it. It lets go when the ball hits something, someone takes it, or 4 seconds pass, and the camera
-  comes back to you.
+  it. It lets go when the ball hits something, someone takes it, or 8 seconds pass (`Steer for` in
+  the menu), and the camera comes back to you.
 
-- **Spins** is infinite spins as a rollback, the way the public scripts do it. It re-uses the spins
-  you have; it can't make spins out of nothing, so you need at least one spin (or the yen for one).
-  Codes in the game's CODES menu and match rewards are where spins come from. It works by sending it sends
-  `CustomizationService.RE.Customize("Emotes", "Default", "2\255")`: a setting the game's data
-  store can't save (`\255` isn't valid text), so nothing from that session saves.
-  1. Tap SPINS on (blue) **before** spinning.
-  2. Spin in the game's own wheel (styles, flow, golden wheel).
-  3. Got what you wanted? Tap SPINS off. The setting goes back to `"2"` and the game's next save
-     keeps the style.
-  4. Didn't? Hold SPINS: you rejoin a fresh server and the spins are back. The script runs itself
-     again there (if your executor has `queue_on_teleport`) with SPINS already on, so go straight
-     back to 2. A "Data Error" kick on the way in is the old server still holding your save; it
-     rejoins again by itself (up to 5 times).
+- **Hitbox** works two ways at once:
+  - **Ball reach (`Ball reach`, 10 studs):** while the ball is that close (and isn't at your feet
+    or a teammate's), the game gets a real touch from your body through the executor's
+    `firetouchinterest`, a few times a second. Traps, steals and catches happen from further away.
+    Nothing is resized, so there's nothing for the camera to meet.
+  - **Enemy hitboxes (`Enemy hitbox`, 8 studs):** grown on your screen only, so your slides land
+    from further. Auto tackle also slides from that much further. They're kept out of raycasts, so
+    the camera can't snap onto them, and they're put back when it's off.
 
-  **Auto:** name the styles you want before loading the script and SPINS does the spinning:
-
-  ```lua
-  getgenv().SpinFor = { "Kaiser", "NEL Isagi", "Sae" }   -- exact names, any case
-  loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua"))()
-  ```
-
-  Open the style spin screen and tap SPINS on. It spins one at a time (each reel takes a few
-  seconds, and a spin pressed during one is thrown away), lucky spins first, until one of them
-  lands, then puts saves back on. **The first time, it rolls back after just one spin** and checks,
-  in the next server, that the spin came back. Only then does it use the rest: when they run out it
-  rolls back and the next server carries on by itself. If the spin didn't come back, the rollback
-  doesn't work in your version and it stops, so you lose one spin, not all of them. It also stops if
-  the spins aren't getting through, and never rejoins with 0 spins.
+  A ring at your feet shows your reach, and red outlines show the grown hitboxes (`Show hitbox` in
+  the menu). It works as far as the game trusts your device's touches. A game that checks distances
+  on its server will refuse them, and nothing on the client can get around that. The readout's
+  `fti` says whether your executor can do the touches.
 
 - **Codes:** the codes in `CFG.Codes` (October 2026 lists) are redeemed by themselves, once per
   server, through the game's own redeem remote, or by typing them into its code box if there's no
   remote. Old codes just fail. Codes need **level 10, the game's Roblox group joined, and the game
-  liked**.
-
-  Unchecked: whether `"2"` really puts the setting right in your version. The first time, after
-  tapping it off, leave and come back to check the style stayed. Don't play matches with it on,
-  since nothing you earn saves.
+  liked**. They say what they gave, or what the game answered.
 
 ## The readout box
 
 - **Line 1**: what the executor allows (`conn` getconnections, `sig` firesignal, `tap` virtual
-  touch, `key` virtual key; `Y` works, `n` blocked, `?` not tried yet), and your ping.
+  touch, `key` virtual key, `fti` the touches HITBOX uses; `Y` works, `n` blocked, `?` not tried
+  yet), and your ping.
 - **Line 2**: the ball (distance, `YOU` / `FOE` / `TEAM` / `free`) and the nearest enemy (distance,
   seconds until in reach).
 - **Line 3**: the last press: the move, `btn:yes` / `btn:label` / `btn:NO`, the method, `OK` or
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v26
+
+- **Infinite spins removed.** In the last clip the rollback didn't give the spin back, so the game
+  blocks it. Codes stay: they're real free spins, redeemed once per server, and they say what they
+  gave.
+- **Hitbox is back** as a switch, rebuilt (see above). Ball reach comes from real touches instead of
+  anything resized. Enemy hitboxes are out of raycasts, and outlines are adornments, so there's
+  nothing in the world for the camera to hit. Auto tackle reaches the grown hitbox's edge.
+- **One icon and a menu** instead of the pills: the five switches, then every setting in a
+  scrolling list, saved to `AutoDribble_buttons.json` and read back before anything runs. The
+  readout can be switched on from the menu.
 
 ## v25
 
@@ -358,7 +355,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 117 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 104 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

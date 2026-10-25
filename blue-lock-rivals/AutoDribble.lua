@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK + Ball Control v25 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK + Ball Control v26 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -25,23 +25,16 @@
              Aimed at their goal, it bends for the corner away from their keeper. It rides out
              bumps, and lets go when someone takes it, it's back at your feet, or 8s pass; then the
              camera comes back to you. Look up to lift it, down to dip it.
-    SPINS    Infinite spins, as a rollback: it re-uses the spins you have, it can't make new ones
-             (with 0 spins it says so). Tap on BEFORE spinning: from then on nothing from this
-             session saves, so spin in the game's own wheel. Got the style you wanted? Tap it off:
-             saves work again and the game's next save keeps it. Didn't? Hold the pill: you rejoin
-             with the spins back, the script runs itself again there (queue_on_teleport) with
-             saves already off, and a "Data Error" kick on the way in gets another rejoin by
-             itself. Blue = saves are off, so don't play matches with it on.
-             AUTO: with styles in getgenv().SpinFor (or CFG.SpinFor) it spins by itself with the spin
-             screen open, one spin at a time (it waits out each reel), lucky spins first, until one
-             lands, then puts saves back on. The first time, it rolls back after ONE spin and checks
-             in the next server that the spin came back; only then does it use the rest, rolling back
-             and carrying on whenever they run out. If the spin didn't come back it stops, so it
-             never burns your spins on a rollback that doesn't work.
+    HITBOX   Ball reach: while the ball is within BallReach of you (not at your feet, not a teammate's),
+             the game gets a real touch from your body (the executor's firetouchinterest), a few times
+             a second, so traps, steals and catches happen from further. Enemy hitboxes: grown to
+             EnemyHitbox on your screen only, so your slides land from further (and auto tackle
+             slides from that much further too). A ring at your feet shows your reach, red outlines
+             the grown hitboxes. Nothing in the world for the camera to meet. It works as far as the
+             game trusts your device's touches; a game that checks distances on its server won't.
     CODES    The codes in CFG.Codes are redeemed once per server, through the game's own redeem remote
              or its code box: free lucky spins (they need level 10, the group joined, the game liked).
-             Then it says what they gave, or what the game answered. SPINS waits for them, so saves
-             are still on while they go in and what they give is kept.
+             Then it says what they gave, or what the game answered.
 
     How it presses: it finds the game's own "Dribble" / "Slide" / "Dive" button (by its label or its
     name) and tries, top-down: running the button's code (BTN), a virtual second finger on it (TAP),
@@ -54,11 +47,14 @@
     Cooldowns are learned: after a hit it watches the game's button until it looks the way it did
     before the press. Until then it uses the guesses in CFG.Cooldowns.
 
-    Pills: tap = on/off, drag = move them all (they stay on screen).
-           hold ~1s and let go, then tap the game's button = force that button (not CONTROL/SPINS)
-           hold ~1s and let go, then tap the same pill = forget the forced button
-    Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap
-    (CONTROL: blue = steering).
+    Menu: tap the round BL icon to open or shut it; drag the icon to move it (it stays on screen).
+          The five switches are at the top: tap = on/off. Hold DRIBBLE / TACKLE / AUTO GK ~1s and
+          let go, then tap the game's button = force that button; hold again and tap the same
+          switch = forget it. Below them, every setting: - and + for numbers, ON / OFF for the rest.
+          Settings are saved and come back next time.
+    Switches: red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for
+    your tap (CONTROL: blue = steering). The icon: green while anything's on, grey when nothing is,
+    and it flashes what the switches would show while the menu is shut.
 
     By default nothing teleports or slides: the keeper and the tackle get there on your own run, at
     about a sprint for the moment (BurstSpeed). Glide = true slides you there instead (faster).
@@ -67,8 +63,9 @@
     one of its own at a carrier whose dribble is ready, and slides once that dribble is cooling.
     Stamina is held at its max all the time, no button.
 
-    With Debug = true, a black box under the pills is a live readout:
-      line 1  what your executor allows (Y = works, n = blocked, ? = not tried yet), and your ping
+    With Readout on (in the menu), a black box under the icon is a live readout:
+      line 1  what your executor allows (Y = works, n = blocked, ? = not tried yet; fti = the touches
+              HITBOX needs), and your ping
       line 2  the ball and the nearest enemy (distance, and seconds until they reach you)
       line 3  the last press: which move, whether it found the game's button, the method, OK / miss
       line 4  each move's cooldown left (ok = ready), and how far your slide reaches
@@ -158,22 +155,17 @@ local CFG = {
     ControlAssistAngle = 25, -- how close to the goal your aim has to be for that (degrees)
     ControlAssistRange = 160, -- and how near the goal (studs)
 
-    -- infinite spins (the SPINS pill): sent to CustomizationService.RE.Customize. The first is a
-    -- setting the game's data store can't save (not valid text), the second puts it right again
-    SpinPoison   = { "Emotes", "Default", "2\255" },
-    SpinCure     = { "Emotes", "Default", "2" },
-    -- after a SPINS rejoin the executor runs this again in the server you land in (queue_on_teleport),
-    -- with saves off again, so you carry straight on spinning. "" = don't
-    ReloadUrl    = "https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua",
-    RejoinTries  = 5,      -- "Data Error" kicks on the way back in get this many rejoins on their own
-    SpinFor      = {},     -- styles for SPINS to spin for by itself, e.g. { "Kaiser", "NEL Isagi", "Sae" }
-                           -- (or set getgenv().SpinFor before loading the script). Exact names, any case
-    SpinWait     = 8,      -- longest it waits for a spin's result (the reel takes a few seconds)
-    SpinSettle   = 1,      -- and after one, before the next
+    -- hitbox (the HITBOX switch)
+    BallReach    = 10,     -- the ball counts as touching you this far away (studs): a real touch
+    EnemyHitbox  = 8,      -- enemies' hitboxes grown to this on your screen, so your slides land (studs)
+    ShowHitbox   = true,   -- a ring at your feet for your reach, outlines on enemies' grown hitboxes
+    TouchEvery   = 0.1,    -- seconds between touches while the ball is in reach
+
+    -- free spins
     Codes        = { "SPOOKY", "SKELETON", "AIKUCHANGES", "NELAIKU", "HALLOWEEN", "WSNAKE",
                      "SORRYFORDELAYAIKU", "EPICSENDOU", "ONEMOREWEEK", "NELAIKUNEXT", "DONREVAMP",
                      "SENDOUNEXT", "ACEEATER", "NEWMASTER", "UBERSVOTE", "WSNUFFY", "SNUFFYUPD" },
-                           -- free lucky spins, redeemed once per server (October 2026 lists; old ones just fail)
+                           -- redeemed once per server (October 2026 lists; old ones just fail)
     CodeDelay    = 0.5,    -- seconds between codes
 
     LongPress    = 0.7,    -- hold a pill this long to force one of the game's buttons
@@ -204,9 +196,8 @@ local function bind(signal, fn)
 end
 
 local KINDS = { "dribble", "tackle", "dive" } -- the game's moves
-local PILLS = { "dribble", "tackle", "dive", "control", "spins" }
-local on = { dribble = false, tackle = false, dive = false, control = false,
-             spins = env.AutoDribbleNoSave == true } -- (saves stay blocked across a re-run)
+local PILLS = { "dribble", "tackle", "dive", "control", "hitbox" } -- the menu's switches
+local on = { dribble = false, tackle = false, dive = false, control = false, hitbox = false }
 local learning -- nil or one of KINDS
 local lastDive, diveUntil = -math.huge, -math.huge
 local lastJump, lastFlick = -math.huge, -math.huge
@@ -247,6 +238,59 @@ end
 
 ---------------------------------------------------------------- UI
 
+-- The menu's settings: { key, label, min, max, step } for a number, { key, label } for a switch,
+-- { "TITLE" } for a heading. Saved with the forced buttons, and read back before anything runs.
+local SETTINGS = {
+    { "HITBOX" },
+    { "BallReach", "Ball reach", 0, 25, 1 },
+    { "EnemyHitbox", "Enemy hitbox", 2, 20, 1 },
+    { "ShowHitbox", "Show hitbox" },
+    { "DRIBBLE" },
+    { "ReactTime", "Dribble early (s)", 0.05, 0.5, 0.05 },
+    { "Flick", "Flick when cooling" },
+    { "DribbleOnRun", "Dribble at runners" },
+    { "EscapeAfter", "Run clear (s)", 0, 1, 0.05 },
+    { "TACKLE" },
+    { "SmartTackle", "Smart tackle" },
+    { "Bait", "Fake tackles" },
+    { "TackleGlide", "Close in from", 0, 15, 1 },
+    { "KEEPER" },
+    { "Positioning", "Keep position" },
+    { "Advance", "Step off line", 0, 15, 1 },
+    { "Smother", "Smother range", 0, 15, 1 },
+    { "Claim", "Come out for balls" },
+    { "Pounce", "Dive at loose balls" },
+    { "JumpHigh", "Jump for high balls" },
+    { "CONTROL" },
+    { "ControlSpeed", "Ball speed", 60, 200, 10 },
+    { "ControlTurn", "Turn speed", 1, 12, 1 },
+    { "ControlTime", "Steer for (s)", 2, 15, 1 },
+    { "ControlAny", "Take loose balls" },
+    { "ControlAssist", "Aim assist" },
+    { "ControlCamera", "Camera follows" },
+    { "GENERAL" },
+    { "Blatant", "Teleports" },
+    { "Glide", "Glide, don't run" },
+    { "BurstSpeed", "Run speed", 16, 40, 2 },
+    { "InfStamina", "Infinite stamina" },
+    { "Debug", "Readout" },
+    { "UiScale", "Menu size", 0.6, 1.6, 0.1 },
+}
+local SETTING = {} -- key -> its entry in SETTINGS
+for _, s in ipairs(SETTINGS) do
+    if s[2] then SETTING[s[1]] = s end
+end
+
+pcall(function()
+    local data = HttpService:JSONDecode(readfile(CFG.SaveFile))
+    if type(data) == "table" and type(data.settings) == "table" then
+        for k, v in pairs(data.settings) do
+            if SETTING[k] and type(v) == type(CFG[k]) then CFG[k] = v end
+        end
+    end
+end)
+local save -- set with the forced buttons further down (it writes the settings too)
+
 local COLORS = {
     off    = Color3.fromRGB(150, 45, 45),
     on     = Color3.fromRGB(40, 150, 70),
@@ -256,7 +300,7 @@ local COLORS = {
     hit    = Color3.fromRGB(235, 235, 235),
 }
 local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
-local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK", control = "CONTROL", spins = "SPINS" }
+local NAMES = { dribble = "DRIBBLE", tackle = "TACKLE", dive = "AUTO GK", control = "CONTROL", hitbox = "HITBOX" }
 local MOVES = { dribble = "DRIBBLE", tackle = "SLIDE", dive = "DIVE" }
 local DONE  = { dribble = "DRIBBLED", tackle = "SLID", dive = "DIVED" }
 
@@ -269,33 +313,101 @@ if not pcall(function() screen.Parent = (gethui and gethui()) or game:GetService
     screen.Parent = LP:WaitForChild("PlayerGui")
 end
 
+-- One round icon. Tapped, it opens the menu: the five switches, then every setting, scrolled with a
+-- finger. Dragging the icon (or a switch) moves it all, kept on screen.
 local bar = Instance.new("Frame")
-bar.Size = UDim2.fromOffset(192, CFG.Debug and 103 or 47)
+bar.Name = "Bar"
+bar.Size = UDim2.fromOffset(196, 30)
 bar.Position = UDim2.new(0, 12, 0.22, 0)
 bar.BackgroundTransparency = 1
 bar.Parent = screen
-Instance.new("UIScale", bar).Scale = CFG.UiScale
+local uiScale = Instance.new("UIScale", bar)
+uiScale.Scale = CFG.UiScale
 
-local function makePill(x, y)
+local icon = Instance.new("TextButton")
+icon.Name = "Icon"
+icon.Size = UDim2.fromOffset(30, 30)
+icon.AutoButtonColor = false
+icon.BackgroundColor3 = COLORS.paused
+icon.BackgroundTransparency = 0.1
+icon.Font = Enum.Font.GothamBlack
+icon.Text = "BL"
+icon.TextSize = 12
+icon.TextColor3 = WHITE
+icon.Parent = bar
+Instance.new("UICorner", icon).CornerRadius = UDim.new(1, 0)
+
+local MENU_H = 232
+local menu = Instance.new("Frame")
+menu.Name = "Menu"
+menu.Size = UDim2.fromOffset(196, MENU_H)
+menu.Position = UDim2.fromOffset(0, 34)
+menu.BackgroundColor3 = BLACK
+menu.BackgroundTransparency = 0.3
+menu.Visible = false
+menu.Parent = bar
+Instance.new("UICorner", menu).CornerRadius = UDim.new(0, 8)
+
+local function makePill(x, y, kind)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.fromOffset(62, 22)
+    b.Name = "Switch_" .. kind
+    b.Size = UDim2.fromOffset(60, 22)
     b.Position = UDim2.fromOffset(x, y)
     b.AutoButtonColor = false
     b.BackgroundTransparency = 0.15
     b.Font = Enum.Font.GothamBold
-    b.TextScaled = true -- any message fits the small pill
+    b.TextScaled = true -- any message fits the small switch
     b.TextColor3 = WHITE
-    b.Parent = bar
+    b.Parent = menu
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
     Instance.new("UITextSizeConstraint", b).MaxTextSize = 10
     return b
 end
-local pills = { dribble = makePill(0, 0), tackle = makePill(65, 0), dive = makePill(130, 0),
-                control = makePill(0, 25), spins = makePill(65, 25) }
+local pills = { dribble = makePill(4, 4, "dribble"), tackle = makePill(68, 4, "tackle"), dive = makePill(132, 4, "dive"),
+                control = makePill(4, 30, "control"), hitbox = makePill(68, 30, "hitbox") }
+
+local list = Instance.new("ScrollingFrame")
+list.Name = "Settings"
+list.Position = UDim2.fromOffset(4, 58)
+list.Size = UDim2.fromOffset(188, MENU_H - 62)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 3
+list.Parent = menu
+
+local function label(parent, text, x, y, w, h)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.fromOffset(w, h)
+    l.Position = UDim2.fromOffset(x, y)
+    l.BackgroundTransparency = 1
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = 10
+    l.TextColor3 = WHITE
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Text = text
+    l.Parent = parent
+    return l
+end
+
+local function button(parent, name, text, x, y, w)
+    local b = Instance.new("TextButton")
+    b.Name = name
+    b.Size = UDim2.fromOffset(w, 18)
+    b.Position = UDim2.fromOffset(x, y)
+    b.AutoButtonColor = true
+    b.BackgroundColor3 = COLORS.paused
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 10
+    b.TextColor3 = WHITE
+    b.Text = text
+    b.Parent = parent
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+    return b
+end
 
 local info = Instance.new("TextLabel")
-info.Size = UDim2.fromOffset(192, 53)
-info.Position = UDim2.fromOffset(0, 50)
+info.Size = UDim2.fromOffset(196, 53)
+info.Position = UDim2.fromOffset(0, 34)
 info.BackgroundColor3 = BLACK
 info.BackgroundTransparency = 0.35
 info.TextColor3 = WHITE
@@ -308,6 +420,72 @@ info.Visible = CFG.Debug
 info.Parent = bar
 Instance.new("UICorner", info).CornerRadius = UDim.new(0, 6)
 
+-- the bar's height and the readout's place follow what's open
+local function layout()
+    local y = 34 + (menu.Visible and MENU_H + 4 or 0)
+    info.Position = UDim2.fromOffset(0, y)
+    info.Visible = CFG.Debug
+    bar.Size = UDim2.fromOffset(196, y - 4 + (CFG.Debug and 57 or 0))
+end
+layout()
+
+-- one row per setting: a number has - and +, a switch has ON / OFF
+local rows = {} -- key -> { label, value }
+local function show(key)
+    local r, s, v = rows[key], SETTING[key], CFG[key]
+    if not r then return end
+    if type(v) == "boolean" then
+        r.value.Text = v and "ON" or "OFF"
+        r.value.BackgroundColor3 = v and COLORS.on or COLORS.off
+    else
+        r.label.Text = s[2] .. "  " .. (s[5] >= 1 and tostring(math.floor(v + 0.5)) or ("%.2f"):format(v))
+    end
+end
+
+local function setSetting(key, v)
+    local s = SETTING[key]
+    if type(CFG[key]) == "number" then v = math.clamp(math.floor(v / s[5] + 0.5) * s[5], s[3], s[4]) end
+    CFG[key] = v
+    if key == "UiScale" then uiScale.Scale = v end
+    if key == "Debug" then layout() end
+    show(key)
+    if save then save() end
+end
+
+do
+    local y = 0
+    for _, s in ipairs(SETTINGS) do
+        if not s[2] then
+            local h = label(list, "· " .. s[1], 2, y + 2, 180, 14)
+            h.TextColor3 = COLORS.noBall
+            y += 18
+        else
+            local key = s[1]
+            local r = { label = label(list, s[2], 2, y, 110, 18) }
+            if type(CFG[key]) == "boolean" then
+                r.value = button(list, "Set_" .. key, "", 116, y, 64)
+                bind(r.value.Activated, function() setSetting(key, not CFG[key]) end)
+            else
+                local minus = button(list, "Less_" .. key, "-", 116, y, 30)
+                local plus = button(list, "More_" .. key, "+", 150, y, 30)
+                bind(minus.Activated, function() setSetting(key, CFG[key] - s[5]) end)
+                bind(plus.Activated, function() setSetting(key, CFG[key] + s[5]) end)
+            end
+            rows[key] = r
+            show(key)
+            y += 21
+        end
+    end
+    list.CanvasSize = UDim2.fromOffset(0, y + 4)
+end
+
+-- the icon: green while anything's on, grey when nothing is, blue while a button is being learned
+local function paintIcon()
+    local any = false
+    for _, kind in ipairs(PILLS) do any = any or on[kind] end
+    icon.BackgroundColor3 = learning and COLORS.learn or (any and COLORS.on or COLORS.paused)
+end
+
 local function paint(kind)
     local pill = pills[kind]
     pill.TextColor3 = WHITE
@@ -315,16 +493,16 @@ local function paint(kind)
         pill.Text, pill.BackgroundColor3 = "TAP " .. MOVES[kind], COLORS.learn
     elseif not on[kind] then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " OFF", COLORS.off
-    elseif kind == "spins" then
-        pill.Text, pill.BackgroundColor3 = "SPINS ON", COLORS.learn -- (blue: nothing saves while it's on)
     elseif (kind == "dribble" or kind == "tackle") and on.dive then
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " PAUSED", COLORS.paused
+    elseif kind == "hitbox" then
+        pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " ON", COLORS.on
     else
         pill.Text, pill.BackgroundColor3 = NAMES[kind] .. " ON", ballFound and COLORS.on or COLORS.noBall
     end
 end
 
--- a pill showing a short message keeps it until its own timer runs out
+-- a switch showing a short message keeps it until its own timer runs out
 local msgGen, msgOn = {}, {}
 for _, kind in ipairs(PILLS) do msgGen[kind], msgOn[kind] = 0, false end
 
@@ -332,6 +510,7 @@ local function refresh()
     for _, kind in ipairs(PILLS) do
         if not msgOn[kind] then paint(kind) end
     end
+    paintIcon()
 end
 
 local function say(kind, text, bg, fg, secs)
@@ -340,10 +519,13 @@ local function say(kind, text, bg, fg, secs)
     msgOn[kind] = true
     local pill = pills[kind]
     pill.Text, pill.BackgroundColor3, pill.TextColor3 = text, bg, fg
+    -- with the menu shut, the icon shows it instead (a flash of the same colour)
+    if not menu.Visible then icon.BackgroundColor3 = bg end
     task.delay(secs, function()
         if msgGen[kind] == gen then
             msgOn[kind] = false
             paint(kind)
+            paintIcon()
         end
     end)
 end
@@ -755,9 +937,10 @@ local function look(b)
     return table.concat(out, "|")
 end
 
-local function save()
-    local data = {}
+function save()
+    local data = { settings = {} }
     for kind, t in pairs(saved) do data[kind] = t.path end
+    for key in pairs(SETTING) do data.settings[key] = CFG[key] end
     pcall(writefile, CFG.SaveFile, HttpService:JSONEncode(data))
 end
 
@@ -1282,7 +1465,8 @@ local function tackleAim(root, holder, lead)
     local dist = flat(r.Position - root.Position).Magnitude
     -- Blatant: you're put 3 studs from them before the slide, so it reaches from much further.
     -- Otherwise a carrier a little past the slide's reach gets glided at first.
-    local reach = CFG.Blatant and CFG.TeleportReach or slideReach
+    local reach = CFG.Blatant and CFG.TeleportReach
+        or slideReach + ((on.hitbox and CFG.EnemyHitbox > 2) and (CFG.EnemyHitbox - 2) / 2 or 0)
     local extra = CFG.Blatant and 0 or CFG.TackleGlide
     if dist > reach + extra + 8 then return nil end
     -- where they'll be when the slide gets there; you see them a round trip late, so plus ping
@@ -2127,6 +2311,134 @@ do
     end)
 end
 
+---------------------------------------------------------------- hitbox
+local hitboxStep, hitboxOff -- set in the block below, used further down
+do
+
+    -- HITBOX, two ways at once.
+    -- Ball reach: while the ball is within BallReach of you (and isn't at your feet or a teammate's),
+    -- the game is told your body touched it (the executor's firetouchinterest), a few times a second.
+    -- Your character runs on your device, so its touches reach the game the way a real one does:
+    -- whatever the game does with a touch (a trap, a steal, a catch) happens from further away.
+    -- Nothing is resized for it, so there's nothing for the camera to meet.
+    -- Enemy hitboxes: their root parts grown to EnemyHitbox on your screen only, so your slide (also
+    -- on your device) touches them from further. Out of raycasts, so the camera can't snap onto them,
+    -- and put back the way they were when it's off.
+    -- Neither is a promise: a game that checks the distance on its server says no to both.
+
+    local lastTouch = 0
+    local function touchBall(ball)
+        if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < CFG.TouchEvery then return end
+        lastTouch = os.clock()
+        local char = LP.Character
+        if not char then return end
+        local targets = { ball } -- (and any parts inside it: the game may give the ball its own hitbox)
+        for _, d in ipairs(ball:GetDescendants()) do
+            if d:IsA("BasePart") then table.insert(targets, d) end
+        end
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                for _, t in ipairs(targets) do
+                    pcall(firetouchinterest, part, t, 0)
+                    pcall(firetouchinterest, part, t, 1)
+                end
+            end
+        end
+    end
+
+    -- where the drawings go: next to the menu (only you see them), or your camera
+    local drawIn = screen.Parent or workspace.CurrentCamera
+
+    local grown = setmetatable({}, { __mode = "k" }) -- part -> { was = how it was, box = its outline }
+    local function growHitboxes(size)
+        local want = Vector3.new(size, size, size)
+        for _, p in ipairs(Players:GetPlayers()) do
+            local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            if r then
+                local g = grown[r]
+                if not g then
+                    g = { was = { Size = r.Size, CanCollide = r.CanCollide, CanQuery = r.CanQuery } }
+                    grown[r] = g
+                end
+                if r.Size ~= want then
+                    -- touchable (that's what lands the slide), but not solid, and out of the camera's raycasts
+                    r.Size, r.CanCollide, r.CanQuery = want, false, false
+                end
+                if CFG.ShowHitbox and not g.box then
+                    pcall(function()
+                        local box = Instance.new("SelectionBox")
+                        box.Adornee = r
+                        box.LineThickness = 0.05
+                        box.Color3 = Color3.fromRGB(255, 70, 70)
+                        box.SurfaceTransparency = 1
+                        box.Parent = drawIn
+                        g.box = box
+                    end)
+                elseif not CFG.ShowHitbox and g.box then
+                    g.box:Destroy()
+                    g.box = nil
+                end
+            end
+        end
+    end
+
+    local function shrinkHitboxes()
+        for part, g in pairs(grown) do
+            pcall(function()
+                for k, v in pairs(g.was) do part[k] = v end
+            end)
+            if g.box then g.box:Destroy() end
+            grown[part] = nil
+        end
+    end
+
+    -- your reach, as a thin ring at your feet: an adornment, so nothing is in the world
+    local ring = Instance.new("CylinderHandleAdornment")
+    ring.Name = "AutoDribbleReach"
+    ring.Height = 0.15
+    ring.Transparency = 1
+    ring.AlwaysOnTop = false
+    ring.Color3 = Color3.fromRGB(60, 140, 255)
+    ring.Parent = drawIn
+
+    function hitboxStep(root, ball, holder)
+        local active = on.hitbox
+        if active and CFG.ShowHitbox and CFG.BallReach > 0 then
+            -- a cylinder adornment runs along its Z axis: tipped over, it lies flat at your feet
+            ring.Adornee = root
+            ring.Radius = CFG.BallReach
+            ring.InnerRadius = math.max(0, CFG.BallReach - 0.3)
+            ring.Transparency = 0.25
+            ring.CFrame = CFrame.new(0, -2.8, 0) * CFrame.Angles(math.pi / 2, 0, 0)
+        else
+            ring.Transparency = 1
+        end
+        if active and CFG.EnemyHitbox > 2 then
+            growHitboxes(CFG.EnemyHitbox)
+        elseif next(grown) then
+            shrinkHitboxes()
+        end
+        if not (active and ball and CFG.BallReach > 0) then return end
+        if holder and holder ~= LP and not isEnemy(holder) then return end -- (never off a teammate)
+        if LP.Character and ball:IsDescendantOf(LP.Character) then return end
+        -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
+        -- a couple of studs under your middle and still at your feet)
+        local function gap(pos)
+            local off = pos - root.Position
+            return math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+        end
+        -- now, or a moment from now: a fast ball going past is in reach for only a frame or two
+        local dist = math.min(gap(ball.Position), gap(ball.Position + ball.AssemblyLinearVelocity * 0.08))
+        if holder == LP and dist < 3 then return end -- already at your feet
+        if dist <= CFG.BallReach then touchBall(ball) end
+    end
+
+    function hitboxOff()
+        shrinkHitboxes()
+        ring:Destroy()
+    end
+end
+
 ---------------------------------------------------------------- main loop
 do
 
@@ -2162,8 +2474,8 @@ do
     local function showInfo(root, ball, holder, lead)
         if not CFG.Debug or os.clock() < nextInfo then return end
         nextInfo = os.clock() + 0.1
-        local line1 = ("conn %s sig %s tap %s key %s | %dms"):format(yn(caps.conn), yn(caps.sig),
-            yn(caps.touch), yn(caps.key), math.floor(lead * 1000 + 0.5))
+        local line1 = ("conn %s sig %s tap %s key %s fti %s | %dms"):format(yn(caps.conn), yn(caps.sig),
+            yn(caps.touch), yn(caps.key), yn(type(firetouchinterest) == "function"), math.floor(lead * 1000 + 0.5))
         local line2 = "no ball"
         if ball then
             local who = holder == LP and "YOU" or holder and (isEnemy(holder) and "FOE" or "TEAM") or "free"
@@ -2181,12 +2493,13 @@ do
         if CFG.InfStamina then holdStamina() end
         local root, hum = body()
         if not root then return end
-        -- (always: who has the ball and what enemies did a moment ago matter the moment a pill goes on)
+        -- (always: who has the ball and what enemies did a moment ago matter the moment a switch goes on)
         trackPlayers()
         local ball = nearestBall(root.Position)
         local holder = ball and holderOf(ball)
         if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
         if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
+        hitboxStep(root, ball, holder)
         if (ball ~= nil) ~= ballFound then
             ballFound = ball ~= nil
             refresh()
@@ -2313,20 +2626,13 @@ do
     end)
 end
 
----------------------------------------------------------------- infinite spins
-local setSpins, rollback, spinsLeft, startAuto, stopAuto, spinTargets, spinsTap -- set in the block below, used further down
+---------------------------------------------------------------- codes
 do
 
-    -- SPINS: a rollback, the way the public "infinite spin" scripts do it. While it's on, your save
-    -- holds a setting the game's data store can't store (a string that isn't valid text), so nothing
-    -- from this session saves: spin as much as you like, then hold the pill to rejoin with the spins
-    -- back. Got the style you wanted? Tap it off first: the setting is put right, and the game's next
-    -- save (every so often, and when you leave) keeps the style. A "Data Error" kick on the way back
-    -- in is the old server still holding your save: rejoin again.
-    -- With styles in SpinFor it does the spinning too, one spin at a time (the reel takes a few
-    -- seconds), lucky spins first. The first time, it tries the rollback after a single spin and
-    -- checks the spin came back before using any more; after that it spins them all, rolls back and
-    -- goes again until one of the styles lands.
+    -- Free spins: the codes in CFG.Codes, once per server, through the game's own redeem remote (a
+    -- Knit service remote named like redeem or code) or, without one, typed into its code box. They
+    -- need level 10, the game's Roblox group joined and the game liked. Then it says what they gave,
+    -- or what the game answered.
 
     -- something under ReplicatedStorage.Packages.Knit.Services (the services folder itself with no names)
     local function knit(...)
@@ -2339,208 +2645,23 @@ do
 
     local function tell(text, secs)
         pcall(function()
-            game:GetService("StarterGui"):SetCore("SendNotification", { Title = "SPINS", Text = text, Duration = secs })
+            game:GetService("StarterGui"):SetCore("SendNotification", { Title = "CODES", Text = text, Duration = secs })
         end)
     end
 
-    -- What the game's spin screen shows: your spins, your lucky spins (nil for one it doesn't show),
-    -- and the last 'SPUN "..."' result.
-    local function screen()
+    -- your spins plus lucky spins, read off the game's spin screen (nil when it isn't there)
+    local function spinCount()
         local pg = playerGui()
-        if not pg then return nil, nil, nil end
-        local normal, lucky, spun
+        if not pg then return nil end
+        local total
         for _, d in ipairs(pg:GetDescendants()) do
             if d:IsA("TextLabel") or d:IsA("TextButton") then
-                local ok, text = pcall(function() return d.ContentText end) -- (without rich-text tags)
-                text = (ok and type(text) == "string" and text ~= "") and text or d.Text
-                local up = text:upper()
-                local n = up:match("SPINS%s*LEFT%s*:?%s*(%d+)")
-                local l = up:match("LUCKY%s*SPINS%s*:?%s*(%d+)")
-                if n then normal = (normal or 0) + tonumber(n) end
-                if l then lucky = (lucky or 0) + tonumber(l) end
-                local s = up:match('^%s*SPUN%s*"(.-)"') and text:match('"(.-)"')
-                if s then spun = s end
+                local up = d.Text:upper()
+                local n = up:match("SPINS%s*LEFT%s*:?%s*(%d+)") or up:match("LUCKY%s*SPINS%s*:?%s*(%d+)")
+                if n then total = (total or 0) + tonumber(n) end
             end
         end
-        return normal, lucky, spun
-    end
-
-    -- spins and lucky spins together, or nil when the spin screen isn't there to read
-    function spinsLeft()
-        local normal, lucky = screen()
-        if normal == nil and lucky == nil then return nil end
-        return (normal or 0) + (lucky or 0)
-    end
-
-    local sessionStart -- your spins when saves went off in this server (what a rollback should give back)
-
-    -- saves off (true) or back on (false); false back when the game's remote isn't there
-    function setSpins(block)
-        local r = knit("CustomizationService", "RE", "Customize")
-        if not r then return false end
-        local ok = pcall(function() r:FireServer(unpack(block and CFG.SpinPoison or CFG.SpinCure)) end)
-        if ok then
-            env.AutoDribbleNoSave = block or nil
-            if block and sessionStart == nil then sessionStart = spinsLeft() end
-        end
-        return ok
-    end
-
-    -- the styles to spin for: getgenv().SpinFor if it's set, else CFG.SpinFor
-    function spinTargets()
-        local t = env.SpinFor
-        if type(t) ~= "table" or #t == 0 then t = CFG.SpinFor end
-        return t
-    end
-
-    -- The executor runs this script again in the server you land in, told it came from a rollback:
-    -- how many more "Data Error" rejoins it may make, what it's spinning for, how many spins you had
-    -- (so it can check they came back), and whether a rollback has been seen to work
-    local function comeBack(tries)
-        if type(queue_on_teleport) ~= "function" or CFG.ReloadUrl == "" then return end
-        local names = {}
-        for _, n in ipairs(spinTargets()) do table.insert(names, ("%q"):format(tostring(n))) end
-        local before = sessionStart or spinsLeft() or -1
-        pcall(queue_on_teleport, ("getgenv().AutoDribbleRolledBack = %d\ngetgenv().SpinFor = { %s }\n"
-            .. "getgenv().AutoDribbleSpinsBefore = %d\ngetgenv().AutoDribbleRollbackOK = %s\n")
-            :format(tries, table.concat(names, ", "), before, tostring(env.AutoDribbleRollbackOK == true))
-            .. 'loadstring(game:HttpGet("' .. CFG.ReloadUrl .. '"))()')
-    end
-
-    local function rejoin()
-        pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LP) end)
-    end
-
-    -- saves off if they aren't, then into a fresh server: everything since the last save is undone
-    function rollback()
-        if not on.spins and not setSpins(true) then return false end
-        on.spins = true
-        comeBack(CFG.RejoinTries)
-        task.delay(1, rejoin) -- (the server needs the setting before you leave)
-        return true
-    end
-
-    local function noSpins()
-        notify("spins", "0 SPINS", COLORS.noBall)
-        tell("You have 0 spins. A rollback gives back spins you had, it can't make new ones: get 1 spin "
-            .. "(a code, or the yen for one) first, spin, then hold SPINS to get it back.", 8)
-    end
-
-    -- the auto spinner: one at a time, stopped by bumping the generation
-    local autoGen = 0
-    function stopAuto()
-        autoGen += 1
-    end
-
-    local function wanted(name)
-        local n = tostring(name):lower()
-        for _, t in ipairs(spinTargets()) do
-            if tostring(t):lower() == n then return true end
-        end
-        return false
-    end
-
-    -- got one: saves back on, so the next save keeps it
-    local function landed(name)
-        stopAuto()
-        if setSpins(false) then on.spins = false end
-        refresh()
-        notify("spins", "GOT IT", COLORS.on)
-        tell("Got " .. tostring(name) .. "! Saves are back on: stay a minute, or leave the game normally, and it's kept.", 12)
-    end
-
-    -- false and why when it can't: nothing to spin for, no spin remote or style to read, or the spin
-    -- screen isn't open (its counts say when the spins run out and whether a rollback worked)
-    function startAuto()
-        if #spinTargets() == 0 then return false, "nothing" end
-        local spin = knit("StyleService", "RE", "Spin")
-        local stats = LP:FindFirstChild("PlayerStats")
-        local style = stats and stats:FindFirstChild("Style")
-        if not (spin and style) then return false, "remote" end
-        if spinsLeft() == nil then return false, "screen" end
-        stopAuto()
-        local gen, done, misses = autoGen, 0, 0
-        task.spawn(function()
-            while gen == autoGen and on.spins do
-                if wanted(style.Value) then
-                    landed(style.Value)
-                    return
-                end
-                local normal, lucky, spunBefore = screen()
-                local left = (normal or 0) + (lucky or 0)
-                sessionStart = sessionStart or left
-                if left <= 0 then
-                    stopAuto()
-                    if done == 0 then
-                        noSpins() -- nothing to roll back: rejoining would only go round in circles
-                    else
-                        rollback()
-                        notify("spins", "REJOINING", COLORS.learn)
-                    end
-                    return
-                end
-                -- one spin (a lucky one while there are any), then wait for its result: the reel takes a
-                -- few seconds, and a spin pressed while it's going is thrown away
-                local styleBefore = style.Value
-                pcall(function() spin:FireServer((lucky or 0) > 0) end)
-                local t0, result, counted = os.clock(), nil, false
-                while gen == autoGen and os.clock() - t0 < CFG.SpinWait do
-                    task.wait(0.25)
-                    local n2, l2, s2 = screen()
-                    if (n2 or 0) + (l2 or 0) ~= left then counted = true end
-                    if s2 ~= nil and s2 ~= spunBefore then
-                        result = s2
-                        break
-                    end
-                    if style.Value ~= styleBefore then
-                        result = style.Value
-                        break
-                    end
-                end
-                if gen ~= autoGen then return end
-                if not (result or counted) then
-                    -- nothing happened: three of those and the spins aren't getting through from here
-                    misses += 1
-                    if misses >= 3 then
-                        stopAuto()
-                        notify("spins", "SPIN BY HAND", COLORS.noBall)
-                        tell("The spins aren't going through from here. Spin in the game's wheel yourself; SPINS still "
-                            .. "rolls them back when you hold it.", 8)
-                        return
-                    end
-                else
-                    misses = 0
-                    done += 1
-                    say("spins", "SPIN " .. done, COLORS.learn, WHITE, CFG.SpinWait + 3)
-                    if result and wanted(result) then
-                        landed(result)
-                        return
-                    end
-                    task.wait(CFG.SpinSettle)
-                    if env.AutoDribbleRollbackOK ~= true and not wanted(style.Value) then
-                        -- the rollback hasn't been seen to work here yet: try it now, at the cost of one
-                        -- spin, before using any more
-                        stopAuto()
-                        rollback()
-                        notify("spins", "TESTING", COLORS.learn)
-                        tell("Testing the rollback with 1 spin: you'll rejoin, and if the spin comes back, it carries on "
-                            .. "by itself.", 8)
-                        return
-                    end
-                end
-            end
-        end)
-        return true
-    end
-
-    -- Free spins: the codes in CFG.Codes, once per server, through the game's own redeem remote (a
-    -- Knit service remote named like redeem or code) or, without one, typed into its code box. They
-    -- need level 10, the game's Roblox group joined and the game liked. Saves don't go off until
-    -- they're done, so what they give is kept.
-    local codesBusy = false
-    local function waitCodes()
-        local t = os.clock()
-        while codesBusy and os.clock() - t < 40 do task.wait(0.25) end
+        return total
     end
 
     local function redeemRemote()
@@ -2597,8 +2718,7 @@ do
         end
         if not (remote or box) then return end
         env.AutoDribbleCodesIn = game.JobId
-        codesBusy = true
-        local before, replies = spinsLeft(), {}
+        local before, replies = spinCount(), {}
         for _, code in ipairs(CFG.Codes) do
             if remote and remote:IsA("RemoteFunction") then
                 -- (an answer is waited for, but not for ever)
@@ -2623,8 +2743,7 @@ do
             task.wait(CFG.CodeDelay)
         end
         task.wait(1.5)
-        local after = spinsLeft()
-        codesBusy = false
+        local after = spinCount()
         dbg.last = "CODES via " .. (remote and remote:GetFullName() or "the code box")
         local gained = (before and after) and after - before or nil
         local text
@@ -2640,104 +2759,6 @@ do
         tell(text, 10)
     end
     task.spawn(redeemCodes)
-
-    -- the SPINS pill's tap: saves off (after any codes), and the auto spinner when there's something
-    -- to spin for; or saves back on
-    function spinsTap()
-        if on.spins then
-            stopAuto()
-            if setSpins(false) then
-                on.spins = false
-                refresh()
-            else
-                notify("spins", "NO REMOTE", COLORS.off)
-            end
-            return
-        end
-        task.spawn(function()
-            if codesBusy then
-                say("spins", "CODES...", COLORS.learn, WHITE, 40)
-                waitCodes()
-                hush("spins")
-            end
-            if not setSpins(true) then
-                notify("spins", "NO REMOTE", COLORS.off)
-                return
-            end
-            on.spins = true
-            refresh()
-            if spinsLeft() == 0 then
-                noSpins() -- nothing to roll back: the game won't spin without a spin (or the yen for one)
-                return
-            end
-            local ok, why = startAuto()
-            if not ok and why == "screen" then
-                notify("spins", "OPEN SPINS", COLORS.noBall)
-                tell("Open the style spin screen (it shows your spins) and tap SPINS again to spin by itself.", 8)
-            elseif not ok and why == "remote" then
-                notify("spins", "SPIN BY HAND", COLORS.noBall) -- (no spin remote or style to read: you spin)
-            end
-        end)
-    end
-
-    -- Landed here from a rollback: codes first (saves still on), then saves off again. If it knows how
-    -- many spins you had, it checks they came back before spinning on: if they didn't, the rollback
-    -- doesn't work in this version of the game, and it stops so it won't use any more. A "Data Error"
-    -- kick on the way in is the old server still holding your save: rejoin again, a few times.
-    local tries = env.AutoDribbleRolledBack
-    if type(tries) == "number" then
-        env.AutoDribbleRolledBack = nil
-        local before = env.AutoDribbleSpinsBefore
-        env.AutoDribbleSpinsBefore = nil
-        task.spawn(function()
-            task.wait(0.5) -- (codes get going first)
-            waitCodes()
-            for _ = 1, 60 do
-                if on.spins or setSpins(true) then
-                    on.spins = true
-                    refresh()
-                    break
-                end
-                task.wait(0.5)
-            end
-            if not on.spins then return end
-            if type(before) == "number" and before >= 0 then
-                local left
-                for i = 1, 240 do
-                    left = spinsLeft()
-                    if left then break end
-                    if i == 20 then tell("Open the style spin screen so SPINS can check your spins came back.", 8) end
-                    task.wait(0.5)
-                end
-                if left == nil then return end
-                if left < before then
-                    env.AutoDribbleRollbackOK = false
-                    stopAuto()
-                    if setSpins(false) then on.spins = false end
-                    refresh()
-                    notify("spins", "NO ROLLBACK", COLORS.off)
-                    tell(("The rollback didn't give your spins back (%d before, %d now): this version of the game "
-                        .. "blocks it. SPINS stopped so it won't use any more."):format(before, left), 15)
-                    return
-                end
-                env.AutoDribbleRollbackOK = true
-                tell(("Rollback works: %d spins back."):format(left), 6)
-            end
-            if #spinTargets() == 0 then return end
-            for _ = 1, 60 do
-                if startAuto() then return end
-                task.wait(0.5)
-            end
-        end)
-        local arrived = os.clock()
-        bind(GuiService.ErrorMessageChanged, function(msg)
-            if tries > 0 and type(msg) == "string" and msg ~= "" and os.clock() - arrived < 90 then
-                comeBack(tries - 1)
-                tries = 0
-                rejoin()
-            end
-        end)
-    end
 end
 
 ---------------------------------------------------------------- pills: tap / hold / drag
@@ -2745,8 +2766,8 @@ do
 
     local dragInput, dragKind, dragStart, startAbs, moved, pressedAt
 
-    for kind, pill in pairs(pills) do
-        bind(pill.InputBegan, function(input)
+    local function pressable(obj, kind)
+        bind(obj.InputBegan, function(input)
             local t = input.UserInputType
             if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
                 dragInput, dragKind, dragStart, startAbs, moved = input, kind, input.Position, bar.AbsolutePosition, false
@@ -2754,6 +2775,8 @@ do
             end
         end)
     end
+    for kind, pill in pairs(pills) do pressable(pill, kind) end
+    pressable(icon, "menu")
 
     bind(UIS.InputChanged, function(input)
         if not dragInput then return end
@@ -2776,6 +2799,11 @@ do
         dragInput = nil
         if moved then return end
         local kind = dragKind
+        if kind == "menu" then
+            menu.Visible = not menu.Visible
+            layout()
+            return
+        end
         hush(kind)
         if learning then
             local was = learning
@@ -2786,14 +2814,7 @@ do
             else
                 refresh()
             end
-        elseif kind == "spins" then
-            -- tap: saves off / on (and the auto spinner); hold: roll back
-            if os.clock() - pressedAt >= CFG.LongPress then
-                if rollback() then notify(kind, "REJOINING", COLORS.learn) else notify(kind, "NO REMOTE", COLORS.off) end
-            else
-                spinsTap()
-            end
-        elseif os.clock() - pressedAt >= CFG.LongPress and kind ~= "control" then
+        elseif os.clock() - pressedAt >= CFG.LongPress and MOVES[kind] then
             startLearning(kind)
         else
             on[kind] = not on[kind]
@@ -2806,6 +2827,7 @@ do
         for _, kind in ipairs(PILLS) do on[kind] = false end
         stopLearning()
         stopControl("script stopped")
+        hitboxOff()
         for r in pairs(blocked) do blocked[r] = nil end
         pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
         for _, c in ipairs(conns) do c:Disconnect() end
@@ -2818,7 +2840,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v25", Text = "Loaded. Tap a pill to turn it on.", Duration = 4,
+            Title = "AutoDribble v26", Text = "Loaded. Tap the BL icon for the menu.", Duration = 4,
         })
     end)
 end

@@ -858,6 +858,13 @@ class Frame(GuiObject):
     DEFAULTS = {"Style": None}
 
 
+class ScrollingFrame(GuiObject):
+    CLASS = "ScrollingFrame"
+    ISA = ("ScrollingFrame",)
+    DEFAULTS = {"CanvasSize": lambda: UDim2(), "CanvasPosition": lambda: Vector2(), "ScrollBarThickness": 12,
+                "ScrollingDirection": None, "ScrollingEnabled": True}
+
+
 TEXT = {"Text": "", "TextColor3": lambda: Color3(), "TextSize": 14, "Font": None, "TextXAlignment": None,
         "TextYAlignment": None, "TextTransparency": 0, "TextScaled": False, "TextWrapped": False, "RichText": False,
         "TextStrokeTransparency": 1, "TextStrokeColor3": lambda: Color3(), "LineHeight": 1, "FontFace": None,
@@ -1292,7 +1299,7 @@ CLASSES = {c.CLASS: c for c in [Folder, Model, Team, BasePart, Humanoid, Animato
                                  Frame, TextLabel, TextButton, ImageLabel, ImageButton, UICorner, UIStroke,
                                  BindableEvent, Camera, UIScale, UITextSizeConstraint, NumberValue, IntValue,
                                  RemoteEvent, CylinderHandleAdornment, SelectionBox, BodyVelocity, BodyGyro,
-                                 LinearVelocity, TextBox, StringValue, RemoteFunction]}
+                                 LinearVelocity, TextBox, StringValue, RemoteFunction, ScrollingFrame]}
 CLASSES["Part"] = BasePart
 
 

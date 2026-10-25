@@ -255,8 +255,18 @@ class Game:
         return [c for c in self.gui().children if isinstance(c, Frame)][0]
 
     def pill(self, kind):
-        pills = [c for c in self.bar().children if isinstance(c, TextButton)]
-        return pills[["dribble", "tackle", "dive", "control", "spins"].index(kind)]
+        return next(d for d in self.bar().descendants() if d.name == "Switch_" + kind)
+
+    def icon(self):
+        return self.bar().m_FindFirstChild("Icon")
+
+    def menu(self):
+        return self.bar().m_FindFirstChild("Menu")
+
+    def press_setting(self, btn):
+        """A tap on a plain button of the script's own (the settings' - / + / ON)."""
+        btn.signal("Activated").fire()
+        self.step()
 
     def readout(self):
         return [c for c in self.bar().children if isinstance(c, TextLabel)][0].props["Text"]
@@ -457,18 +467,23 @@ def script_compiles_within_luaus_limits():
 
 
 @test
-def loads_and_shows_five_pills():
+def loads_as_an_icon_with_a_menu():
     g = Game().load()
     g.run(0.5)
-    kinds = ("dribble", "tackle", "dive", "control", "spins")
-    check([g.pill_text(k) for k in kinds] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF", "CONTROL OFF", "SPINS OFF"],
-          f"pills read {[g.pill_text(k) for k in kinds]}")
+    check(g.icon().props["Text"] == "BL" and g.menu().props["Visible"] is False, "an icon, the menu shut")
+    kinds = ("dribble", "tackle", "dive", "control", "hitbox")
+    check([g.pill_text(k) for k in kinds] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF", "CONTROL OFF", "HITBOX OFF"],
+          f"switches read {[g.pill_text(k) for k in kinds]}")
     line1 = g.readout().split("\n")[0]
     check("conn Y sig Y tap ?" in line1, f"readout line 1 is {line1!r}")
     check(not [v for v in g.W.vim.log if v[1] == "touch"], "no test touch on the screen at startup")
     check(g.readout().count("\n") == 4, "the readout has five lines")
     size = g.bar().get_AbsoluteSize()
-    check(size.x <= 200 and size.y <= 105, f"the UI is small: two rows and the readout ({size})")
+    check(size.x <= 200 and size.y <= 90, f"just the icon and the readout ({size})")
+    tap_icon(g)
+    check(g.menu().props["Visible"] is True, "tapping the icon opens the menu")
+    tap_icon(g)
+    check(g.menu().props["Visible"] is False, "and again shuts it")
 
 
 @test
@@ -1276,7 +1291,7 @@ def readout_hidden_by_default():
     g.run(0.3)
     label = [c for c in g.bar().children if isinstance(c, TextLabel)][0]
     check(label.props["Visible"] is False, "no black box")
-    check(g.bar().get_AbsoluteSize().y <= 50, f"just the two rows of pills ({g.bar().get_AbsoluteSize()})")
+    check(g.bar().get_AbsoluteSize().y <= 32, f"just the icon ({g.bar().get_AbsoluteSize()})")
 
 
 @test
@@ -1381,22 +1396,144 @@ def touches_of(g, ball=True):
     return [t for t in g.W.touches if (t[2] is g.ball) == ball]
 
 
+def tap_icon(g):
+    inp = InputObject(g.W, "InputObject", UserInputType=ENUM.item("UserInputType", "Touch"),
+                      UserInputState=ENUM.item("UserInputState", "Begin"), Position=Vector3(20, 300, 0))
+    g.icon().signal("InputBegan").fire(inp)
+    g.W.uis.signal("InputEnded").fire(inp, False)
+    g.step()
+
+
+def setting(g, key, which):
+    """The menu's button for a setting: "Set" (a switch), "Less" or "More" (a number)."""
+    return next(d for d in g.bar().descendants() if d.name == f"{which}_{key}")
+
+
+def setting_label(g, key, start):
+    return next(d.props["Text"] for d in g.menu().descendants() if d.CLASS == "TextLabel"
+                and d.props["Text"].startswith(start))
+
+
 @test
-def no_hitbox_extender_left():
+def menu_settings_change_and_save():
+    import json
+    g = Game(debug=False).load()
+    tap_icon(g)
+    check(setting_label(g, "BallReach", "Ball reach") == "Ball reach  10", "shows the value")
+    g.press_setting(setting(g, "BallReach", "More"))
+    g.press_setting(setting(g, "BallReach", "More"))
+    check(setting_label(g, "BallReach", "Ball reach") == "Ball reach  12", "+ twice")
+    flick = setting(g, "Flick", "Set")
+    check(flick.props["Text"] == "ON", "a switch shows ON")
+    g.press_setting(flick)
+    check(flick.props["Text"] == "OFF", "tap: OFF")
+    g.press_setting(setting(g, "Debug", "Set"))
+    check(g.readout() is not None and [c for c in g.bar().children if c.CLASS == "TextLabel"][0].props["Visible"],
+          "the readout comes up from the menu")
+    for _ in range(40):
+        g.press_setting(setting(g, "BallReach", "More"))
+    check(setting_label(g, "BallReach", "Ball reach") == "Ball reach  25", "kept within its range")
+    saved = json.loads(g.W.files["AutoDribble_buttons.json"])["settings"]
+    check(saved["BallReach"] == 25 and saved["Flick"] is False, f"saved ({saved})")
+    g2 = Game(debug=False)
+    g2.W.files["AutoDribble_buttons.json"] = json.dumps({"settings": saved})
+    g2.load()
+    check(setting_label(g2, "BallReach", "Ball reach") == "Ball reach  25" and setting(g2, "Flick", "Set").props["Text"] == "OFF",
+          "and back next time")
+
+
+@test
+def menu_switches_dont_learn_for_control_and_hitbox():
+    g = Game().load()
+    g.tap("hitbox", hold=1.0)
+    check(g.pill_text("hitbox") == "HITBOX ON", f"a hold just switches it ({g.pill_text('hitbox')!r})")
+    g.tap("dribble", hold=1.0)
+    check(g.pill_text("dribble") == "TAP DRIBBLE", "a move's switch still learns its button")
+
+
+@test
+def hitbox_touches_the_ball_in_reach():
+    g = Game(debug=False).load()
+    g.tap("hitbox")
+    g.holder = None
+    g.ball.props["Position"] = Vector3(0, 1, -14)
+    g.run(0.3)
+    check(not touches_of(g), "nothing at 14 studs (reach 10)")
+    g.ball.props["Position"] = Vector3(0, 1, -8)
+    g.run(0.3)
+    ts = touches_of(g)
+    check(ts and any(t[1].name == "HumanoidRootPart" for t in ts), f"touched at 8 studs ({len(ts)})")
+    check({t[3] for t in ts} == {0, 1}, "a touch and its end, like a real one")
+    n = len(ts)
+    g.run(1.0)
+    check(len(touches_of(g)) - n <= 25, f"a few a second, not every frame ({len(touches_of(g)) - n})")
+
+
+@test
+def hitbox_never_takes_a_teammates_ball():
+    g = Game(debug=False).load()
+    g.tap("hitbox")
+    mate = g.bot("Chigiri", Vector3(0, 3, -7), enemy=False)
+    g.holder = mate.player
+    g.run(0.5)
+    check(not touches_of(g), "left with your teammate")
+
+
+@test
+def hitbox_off_does_nothing():
     g = Game(debug=False).load()
     foe = g.bot("Rin", Vector3(0, 3, -6))
-    g.tap("dribble")
-    g.tap("tackle")
     g.holder = None
-    g.ball.props["Position"] = Vector3(0, 1, -3.5)
+    g.ball.props["Position"] = Vector3(0, 1, -5)
     g.run(0.5)
-    texts = [c.props["Text"] for c in g.bar().children if isinstance(c, TextButton)]
-    check(len(texts) == 5 and "R" not in texts, f"five pills, no R button ({texts})")
-    check(not [c for c in g.bar().children if isinstance(c, Frame)], "no slider panel")
-    check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True, "enemy hitboxes left alone")
-    check(not touches_of(g), "no fake touches on the ball")
-    check(not [d for d in g.W.hui.descendants() if d.CLASS in ("SelectionBox", "CylinderHandleAdornment")],
-          "nothing drawn in the world")
+    check(not touches_of(g) and foe.root.props["Size"].x == 2, "no touches, no grown hitboxes")
+    check(not [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"], "nothing drawn")
+
+
+@test
+def hitbox_grows_enemy_hitboxes_and_puts_them_back():
+    g = Game().load()
+    foe = g.bot("Rin", Vector3(30, 3, 0))
+    mate = g.bot("Chigiri", Vector3(-30, 3, 0), enemy=False)
+    g.tap("hitbox")
+    g.step()
+    check(foe.root.props["Size"].x == 8, f"enemy hitbox grown to 8 ({foe.root.props['Size']})")
+    boxes = [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"]
+    check(len(boxes) == 1 and boxes[0].props["Adornee"] is foe.root, f"one red outline, on the enemy ({boxes})")
+    check(foe.root.props["CanCollide"] is False and foe.root.props["CanQuery"] is False
+          and foe.root.props["CanTouch"] is True, "touchable, not solid, out of the camera's raycasts")
+    check(mate.root.props["Size"].x == 2, "teammates left alone")
+    g.tap("hitbox")
+    g.step()
+    check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True and foe.root.props["CanCollide"] is True,
+          f"put back ({foe.root.props['Size']})")
+    check(not [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"], "outline gone")
+
+
+@test
+def hitbox_ring_shows_your_reach():
+    g = Game().load()
+    ring = g.W.hui.m_FindFirstChild("AutoDribbleReach")
+    check(ring is not None and ring.props["Transparency"] == 1, "hidden while off")
+    g.tap("hitbox")
+    g.step()
+    check(ring.props["Radius"] == 10 and ring.props["Transparency"] < 1 and ring.props["Adornee"] is g.root,
+          f"a ring of your reach at your feet ({ring.props['Radius']})")
+    check(not g.W.workspace.props["CurrentCamera"].children, "nothing in the world for the camera to sit inside")
+
+
+@test
+def tackle_reaches_further_with_hitbox():
+    g = Game(cfg={"EnemyHitbox": "12"}).load()
+    carrier = g.bot("Barou", Vector3(0, 3, -18))
+    g.holder = carrier.player
+    g.run(0.4)
+    carrier.dribble()
+    g.run(1.2)  # their dribble is cooling
+    g.tap("hitbox")
+    g.tap("tackle")
+    g.run(0.1)
+    check(g.presses("tackle", "ok"), f"slid at 18 studs: 14 of reach plus half a 12-stud hitbox ({g.events})")
 
 
 def stamina_service(g):
@@ -1788,166 +1925,6 @@ def control_lets_go_when_the_server_keeps_the_ball():
     check(not our_movers(g) and bv.props["MaxForce"].mag() > 0, "and the game's kick left as it was")
 
 
-def customization_service(g):
-    """BLR's CustomizationService.RE.Customize, and a server whose saves fail once your data holds
-    a string that isn't valid UTF-8 (the data store can't store it)."""
-    from roblox import RemoteEvent
-    path = g.W.rs
-    for name in ("Packages", "Knit", "Services", "CustomizationService", "RE"):
-        f = path.m_FindFirstChild(name)
-        if f is None:
-            f = Folder(g.W, name)
-            f.set_parent(path)
-        path = f
-    remote = RemoteEvent(g.W, "Customize")
-    remote.set_parent(path)
-    server = {"slot": "1", "fired": []}
-
-    def saves():
-        try:
-            server["slot"].encode("latin-1").decode("utf-8")
-            return True
-        except UnicodeDecodeError:
-            return False
-    server["saves"] = saves
-
-    def on_customize(category, item, slot):
-        server["fired"].append((category, item, slot))
-        server["slot"] = slot
-    remote.server.append(on_customize)
-    return server
-
-
-@test
-def spins_tap_stops_saves_and_tap_again_lets_them_back():
-    g = Game().load()
-    server = customization_service(g)
-    g.tap("spins")
-    check(g.pill_text("spins") == "SPINS ON", f"pill reads {g.pill_text('spins')!r}")
-    check(server["fired"] == [("Emotes", "Default", "2\xff")], f"sent the unsaveable setting ({server['fired']})")
-    check(not server["saves"](), "so nothing from now on saves: spin away")
-    g.tap("spins")
-    check(g.pill_text("spins") == "SPINS OFF", f"pill reads {g.pill_text('spins')!r}")
-    check(server["saves"](), f"and saves work again, with the style you got ({server['fired']})")
-    check(not g.W.teleports, "no rejoin from a tap")
-
-
-@test
-def spins_hold_rolls_back():
-    g = Game().load()
-    server = customization_service(g)
-    g.tap("spins", hold=1.0)
-    check(not server["saves"](), "saves off first")
-    check(g.pill_text("spins") == "REJOINING", f"pill reads {g.pill_text('spins')!r}")
-    g.run(1.2)
-    check(g.W.teleports and g.W.teleports[0][1] == 1 and g.W.teleports[0][2] is g.lp,
-          f"then back into the game: this session's spins never saved ({g.W.teleports})")
-
-
-@test
-def spins_say_so_when_the_game_has_no_remote():
-    g = Game().load()
-    g.tap("spins")
-    check(g.pill_text("spins") == "NO REMOTE", f"pill reads {g.pill_text('spins')!r}")
-    g.run(1.2)
-    check(g.pill_text("spins") == "SPINS OFF", "and stays off")
-    g.tap("spins", hold=1.0)
-    g.run(1.2)
-    check(not g.W.teleports, "no rejoin without saves off: that would just lose nothing and gain nothing")
-
-
-@test
-def spins_stay_on_across_a_rerun():
-    g = Game().load()
-    server = customization_service(g)
-    g.tap("spins")
-    g.load()  # running the script again replaces the old copy
-    g.run(0.3)
-    check(g.pill_text("spins") == "SPINS ON", f"the new copy knows saves are off ({g.pill_text('spins')!r})")
-    check(len(server["fired"]) == 1 and not server["saves"](), "and left them that way")
-
-
-def spin_screen(g, left, lucky=0):
-    """The game's spin screen, as the recording shows it."""
-    sg = ScreenGui(g.W, "StylesSpin")
-    sg.set_parent(g.pg)
-    for text in (f"SPINS LEFT: {left}", f"LUCKY SPINS: {lucky}", "SPIN $2,500"):
-        TextLabel(g.W, "Label", Text=text).set_parent(sg)
-
-
-@test
-def spins_tell_you_when_you_have_none():
-    g = Game().load()
-    customization_service(g)
-    spin_screen(g, 0)
-    g.tap("spins")
-    check(g.pill_text("spins") == "0 SPINS", f"pill reads {g.pill_text('spins')!r}")
-    check(any("0 spins" in n for n in g.W.notes), f"and says why nothing will spin ({g.W.notes})")
-    g.run(1.2)
-    check(g.pill_text("spins") == "SPINS ON", "still on: buy a spin with yen and it rolls back too")
-
-
-@test
-def spins_say_nothing_when_you_have_some():
-    g = Game().load()
-    customization_service(g)
-    spin_screen(g, 3)
-    g.tap("spins")
-    check(g.pill_text("spins") == "SPINS ON" and not any("0 spins" in n for n in g.W.notes),
-          f"just on ({g.pill_text('spins')!r}, {g.W.notes})")
-
-
-def queued(g):
-    q = []
-    g.I.G.set("queue_on_teleport", lambda code: q.append(tostr(code)))
-    return q
-
-
-@test
-def spins_rollback_brings_the_script_back():
-    g = Game().load()
-    customization_service(g)
-    q = queued(g)
-    g.tap("spins", hold=1.0)
-    g.run(1.2)
-    check(len(q) == 1 and "AutoDribbleRolledBack = 5" in q[0] and "ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua" in q[0],
-          f"the next server runs it again, told it's a rollback ({q})")
-
-
-def arrive_from_rollback(g, tries=5):
-    """What the code queued by a rollback sets before running the script in the next server."""
-    env = g.I.call(g.I.G.get("getgenv"), [])
-    env = env[0] if isinstance(env, list) else env
-    env.set("AutoDribbleRolledBack", tries)
-
-
-@test
-def spins_carry_on_after_a_rollback():
-    g = Game()
-    arrive_from_rollback(g)
-    server = customization_service(g)
-    g.load()
-    g.run(0.5)
-    check(g.pill_text("spins") == "SPINS ON" and not server["saves"](), "saves off again on arrival: keep spinning")
-    q = queued(g)
-    g.W.guisvc.signal("ErrorMessageChanged").fire("Data Error")
-    g.run(0.1)
-    check(len(g.W.teleports) == 1, f"a Data Error kick gets another rejoin ({g.W.teleports})")
-    check(q and "AutoDribbleRolledBack = 4" in q[0], f"one try fewer each time ({q})")
-    g.W.guisvc.signal("ErrorMessageChanged").fire("Data Error")
-    g.run(0.1)
-    check(len(g.W.teleports) == 1, "once per server")
-
-
-@test
-def spins_dont_rejoin_on_an_ordinary_error():
-    g = Game().load()
-    customization_service(g)
-    g.W.guisvc.signal("ErrorMessageChanged").fire("Disconnected")
-    g.run(0.1)
-    check(not g.W.teleports, "only after a rollback")
-
-
 def knit_folder(g, *names):
     path = g.W.rs
     for name in ("Packages", "Knit", "Services") + names:
@@ -1959,202 +1936,15 @@ def knit_folder(g, *names):
     return path
 
 
-def style_service(g, rolls, spins=5, lucky=0, reel=0.0, equip=True, screen=True):
-    """StyleService.RE.Spin and the spin screen. A spin with true uses a lucky spin, otherwise an
-    ordinary one: the count drops straight away, the reel runs `reel` seconds (a spin pressed while
-    it's going is thrown away), then it lands on the next style in `rolls` (Isagi once they run
-    out): 'SPUN "..."' on the screen, and your style unless `equip` is off."""
-    from roblox import RemoteEvent, StringValue
-    remote = RemoteEvent(g.W, "Spin")
-    remote.set_parent(knit_folder(g, "StyleService", "RE"))
-    stats = g.lp.m_FindFirstChild("PlayerStats")
-    if stats is None:
-        stats = Folder(g.W, "PlayerStats")
-        stats.set_parent(g.lp)
-    style = StringValue(g.W, "Style", Value="Isagi")
-    style.set_parent(stats)
+def spin_screen(g, left, lucky=0):
+    """The game's spin screen, as the recording shows it: its labels, to change as spins come in."""
     sg = ScreenGui(g.W, "StylesSpin")
-    if screen:
-        sg.set_parent(g.pg)
-    left, luck, spun = TextLabel(g.W, "Left"), TextLabel(g.W, "Lucky"), TextLabel(g.W, "Spun", Text="")
-    for lbl in (left, luck, spun):
-        lbl.set_parent(sg)
-    state = {"spins": spins, "lucky": lucky, "rolls": list(rolls), "args": [], "rejected": [], "style": style,
-             "busy_until": -INF, "pending": None, "remote": remote}
-
-    def show():
-        left.props["Text"] = f"SPINS LEFT: {state['spins']}"
-        luck.props["Text"] = f"LUCKY SPINS: {state['lucky']}"
-    show()
-
-    def finish():
-        r, state["pending"] = state["pending"], None
-        spun.props["Text"] = f'SPUN "{r}"'
-        if equip:
-            style.props["Value"] = r
-
-    def on_spin(*args):
-        if g.now < state["busy_until"]:
-            state["rejected"].append(args)
-            return
-        if args and args[0] is True and state["lucky"] > 0:
-            state["lucky"] -= 1
-        elif state["spins"] > 0:
-            state["spins"] -= 1
-        else:
-            return  # "Not enough money and no spins!"
-        state["args"].append(args)
-        state["pending"] = state["rolls"].pop(0) if state["rolls"] else "Isagi"
-        state["busy_until"] = g.now + reel
-        show()
-        if reel == 0:
-            finish()
-    remote.server.append(on_spin)
-    g.hooks.append(lambda now: finish() if state["pending"] and now >= state["busy_until"] else None)
-    return state
-
-
-def set_env(g, **values):
-    env = g.I.call(g.I.G.get("getgenv"), [])
-    env = env[0] if isinstance(env, list) else env
-    for k, v in values.items():
-        env.set(k, LuaTable(v) if isinstance(v, list) else v)
-    return env
-
-
-def spin_game(verified=False, **cfg):
-    base = {"SpinFor": '{ "Kaiser" }', "SpinWait": "3", "SpinSettle": "0.2", "Codes": "{}"}
-    base.update(cfg)
-    g = Game(cfg=base)
-    if verified:
-        set_env(g, AutoDribbleRollbackOK=True)
-    return g
-
-
-@test
-def spins_first_round_tests_the_rollback_with_one_spin():
-    g = spin_game().load()
-    customization_service(g)
-    st = style_service(g, ["Nagi"], spins=5, lucky=2)
-    q = queued(g)
-    g.tap("spins")
-    g.run(3.0)
-    check(len(st["args"]) == 1, f"one spin, no more, until the rollback's been seen to work ({st['args']})")
-    check(len(g.W.teleports) == 1, f"then rejoined ({g.W.teleports})")
-    check(q and "AutoDribbleSpinsBefore = 7" in q[0] and "AutoDribbleRollbackOK = false" in q[0],
-          f"telling the next server to check 7 spins come back ({q})")
-
-
-@test
-def spins_auto_spins_until_the_style_lands():
-    g = spin_game(verified=True).load()
-    server = customization_service(g)
-    st = style_service(g, ["Nagi", "Bachira", "Kaiser", "Rin"], spins=5, lucky=2)
-    g.tap("spins")
-    g.run(4.0)
-    check(st["style"].props["Value"] == "Kaiser", f"stopped on Kaiser ({st['style'].props['Value']}, {st['args']})")
-    check(len(st["args"]) == 3, f"three spins, no more ({st['args']})")
-    check([a[0] for a in st["args"]] == [True, True, False], f"lucky spins first ({st['args']})")
-    check(server["saves"](), "saves back on, so it keeps")
-    check(g.pill_text("spins") in ("GOT IT", "SPINS OFF") and not g.W.teleports, f"and stays ({g.pill_text('spins')!r})")
-
-
-@test
-def spins_wait_for_each_reel():
-    g = spin_game(verified=True).load()
-    customization_service(g)
-    st = style_service(g, ["Nagi", "Bachira", "Kaiser"], spins=5, reel=2.0)
-    g.tap("spins")
-    g.run(10.0)
-    check(not st["rejected"], f"never pressed while the reel was going ({len(st['rejected'])} thrown away)")
-    check(st["style"].props["Value"] == "Kaiser" and len(st["args"]) == 3, f"and got there ({st['args']})")
-
-
-@test
-def spins_land_on_the_spun_result():
-    g = spin_game(verified=True).load()
-    server = customization_service(g)
-    st = style_service(g, ["Nagi", "Kaiser", "Rin"], spins=5, equip=False)  # the result only shows as SPUN
-    g.tap("spins")
-    g.run(3.0)
-    check(len(st["args"]) == 2 and server["saves"](), f"stopped at the SPUN Kaiser ({st['args']})")
-
-
-@test
-def spins_auto_rolls_back_when_the_spins_run_out():
-    g = spin_game(verified=True).load()
-    customization_service(g)
-    st = style_service(g, ["Nagi", "Bachira", "Chigiri"], spins=3)
-    q = queued(g)
-    g.tap("spins")
-    g.run(4.0)
-    check(len(st["args"]) == 3, f"used all three ({st['args']})")
-    check(len(g.W.teleports) == 1, f"then rejoined for them back ({g.W.teleports})")
-    check(q and 'getgenv().SpinFor = { "Kaiser" }' in q[0] and "AutoDribbleSpinsBefore = 3" in q[0]
-          and "AutoDribbleRollbackOK = true" in q[0], f"and the next server carries on for Kaiser ({q})")
-
-
-@test
-def spins_carry_on_after_a_rollback_that_worked():
-    g = spin_game(SpinFor="{}")
-    set_env(g, AutoDribbleRolledBack=5, AutoDribbleSpinsBefore=2, AutoDribbleRollbackOK=False, SpinFor=["Kaiser"])
-    server = customization_service(g)
-    st = style_service(g, ["Nagi", "Kaiser"], spins=2)
-    g.load()
-    g.run(4.0)
-    check(any("Rollback works" in n for n in g.W.notes), f"the 2 spins came back, and it says so ({g.W.notes})")
-    check(len(st["args"]) == 2 and st["style"].props["Value"] == "Kaiser" and not g.W.teleports,
-          f"so it spun on past a miss without testing again, and got it ({st['args']}, {g.W.teleports})")
-    check(server["saves"](), "saves back on")
-
-
-@test
-def spins_stop_when_the_rollback_didnt_work():
-    g = spin_game()
-    set_env(g, AutoDribbleRolledBack=5, AutoDribbleSpinsBefore=8, AutoDribbleRollbackOK=False)
-    server = customization_service(g)
-    st = style_service(g, ["Kaiser"], spins=0, lucky=7)  # one short: the test spin was kept
-    g.load()
-    g.run(3.0)
-    check(not st["args"], f"no more spins used ({st['args']})")
-    check(server["saves"](), "saves back on")
-    check(any("didn't give your spins back" in n for n in g.W.notes), f"and says why ({g.W.notes})")
-
-
-@test
-def spins_auto_never_rejoins_in_circles_with_none():
-    g = spin_game()
-    arrive_from_rollback(g)
-    customization_service(g)
-    st = style_service(g, [], spins=0, lucky=0)
-    g.load()
-    g.run(3.0)
-    check(not g.W.teleports and not st["args"], f"no spins, so no spinning and no rejoining ({g.W.teleports})")
-    check(any("0 spins" in n for n in g.W.notes), f"and says why ({g.W.notes})")
-
-
-@test
-def spins_auto_gives_up_when_spins_dont_go_through():
-    g = spin_game(verified=True).load()
-    customization_service(g)
-    st = style_service(g, ["Nagi"], spins=5)
-    st["remote"].server.clear()  # the server ignores them (say the game wants other arguments)
-    g.tap("spins")
-    g.run(12.0)
-    fired = [f for f in g.W.fired if f[1] is st["remote"]]
-    check(len(fired) == 3, f"gave up after three that did nothing ({len(fired)})")
-    check(not g.W.teleports, f"no rejoining over spins that go nowhere ({g.W.teleports})")
-    check(any("aren't going through" in n for n in g.W.notes), f"and says so ({g.W.notes})")
-
-
-@test
-def spins_ask_for_the_spin_screen():
-    g = spin_game(verified=True).load()
-    customization_service(g)
-    st = style_service(g, ["Kaiser"], spins=5, screen=False)
-    g.tap("spins")
-    check(g.pill_text("spins") == "OPEN SPINS", f"pill reads {g.pill_text('spins')!r}")
-    check(any("spin screen" in n for n in g.W.notes) and not st["args"], f"and spins nothing blind ({g.W.notes})")
+    sg.set_parent(g.pg)
+    labels = {}
+    for key, text in (("left", f"SPINS LEFT: {left}"), ("lucky", f"LUCKY SPINS: {lucky}"), ("buy", "SPIN $2,500")):
+        labels[key] = TextLabel(g.W, "Label", Text=text)
+        labels[key].set_parent(sg)
+    return labels
 
 
 @test
@@ -2202,15 +1992,14 @@ def codes_typed_into_the_code_box_without_a_remote():
 @test
 def codes_say_what_they_gave():
     from roblox import RemoteFunction
-    g = Game(cfg={"Codes": '{ "AAA", "OLD" }', "CodeDelay": "0.1", "SpinFor": "{}"})
-    st = style_service(g, [], spins=0, lucky=8)
+    g = Game(cfg={"Codes": '{ "AAA", "OLD" }', "CodeDelay": "0.1"})
+    labels = spin_screen(g, 0, 8)
     rf = RemoteFunction(g.W, "RedeemCode")
     rf.set_parent(knit_folder(g, "CodesService", "RF"))
 
     def redeem(code):
         if tostr(code) == "AAA":
-            st["lucky"] += 5
-            g.pg.m_FindFirstChild("StylesSpin").m_FindFirstChild("Lucky").props["Text"] = f"LUCKY SPINS: {st['lucky']}"
+            labels["lucky"].props["Text"] = "LUCKY SPINS: 13"
             return "Redeemed!"
         return "Code expired"
     rf.server = redeem
@@ -2222,8 +2011,8 @@ def codes_say_what_they_gave():
 @test
 def codes_that_give_nothing_say_why():
     from roblox import RemoteFunction
-    g = Game(cfg={"Codes": '{ "AAA" }', "CodeDelay": "0.1", "SpinFor": "{}"})
-    style_service(g, [], spins=0, lucky=8)
+    g = Game(cfg={"Codes": '{ "AAA" }', "CodeDelay": "0.1"})
+    spin_screen(g, 0, 8)
     rf = RemoteFunction(g.W, "RedeemCode")
     rf.set_parent(knit_folder(g, "CodesService", "RF"))
     rf.server = lambda code: "You must be level 10"
@@ -2231,26 +2020,6 @@ def codes_that_give_nothing_say_why():
     g.run(4.0)
     check(any("gave no spins" in n and "level 10" in n and "You must be level 10" in n for n in g.W.notes),
           f"says they gave nothing, and what the game said ({g.W.notes})")
-
-
-@test
-def codes_finish_before_saves_go_off():
-    from roblox import RemoteFunction
-    g = Game(cfg={"Codes": '{ "AAA", "BBB", "CCC" }', "CodeDelay": "0.5", "SpinFor": "{}"})
-    server = customization_service(g)
-    when = {}
-    rf = RemoteFunction(g.W, "RedeemCode")
-    rf.set_parent(knit_folder(g, "CodesService", "RF"))
-    rf.server = lambda code: when.__setitem__(tostr(code), g.now)
-    g.load()
-    g.run(0.3)
-    g.tap("spins")  # while the codes are still going in
-    check(g.pill_text("spins") == "CODES...", f"pill reads {g.pill_text('spins')!r}")
-    g.run(4.0)
-    poisoned = [t for t, r, a in g.W.fired if r.name == "Customize"]
-    check(len(when) == 3 and poisoned and poisoned[0] > max(when.values()),
-          f"saves went off after the last code, so what they gave is kept ({when}, {poisoned})")
-    check(g.pill_text("spins") == "SPINS ON", f"then on ({g.pill_text('spins')!r})")
 
 
 @test
