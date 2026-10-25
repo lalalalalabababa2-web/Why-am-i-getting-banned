@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto GK v5 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto GK v5.1 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the same frame it sees an enemy about to reach you
@@ -12,7 +12,8 @@
     tries, in order: running the button's code (BTN), a virtual second finger on it (TAP), having the
     executor fire its signals (SIG), Q into the game's input code (KEY), a virtual Q key (VKEY), a
     virtual click on the button (CLICK). At startup it checks which of those your executor allows and
-    skips the rest. After every press it checks you really moved, and switches by itself when you didn't.
+    skips the ones it blocks. After every press it checks you really moved, and switches by itself
+    when you didn't.
 
     Pills: tap = on/off, drag = move both (they stay on screen).
            hold ~1s and let go, then tap the game's button = force that button
@@ -440,35 +441,50 @@ local function buttonFor(obj)
     if obj:IsA("GuiButton") then return obj end
     local b = obj:FindFirstAncestorWhichIsA("GuiButton")
     if b then return b end
+    -- a sibling button the label sits on; failing that, the only one beside it. Any button in a
+    -- shared row could be Shoot, so with several and none under the label it takes none of them.
+    local c = obj.AbsolutePosition + obj.AbsoluteSize / 2
+    local only, count = nil, 0
     for _, sib in ipairs(obj.Parent:GetChildren()) do
-        if sib:IsA("GuiButton") and shown(sib) then return sib end
+        if sib:IsA("GuiButton") and shown(sib) then
+            local p, s = sib.AbsolutePosition, sib.AbsoluteSize
+            if c.X >= p.X and c.X <= p.X + s.X and c.Y >= p.Y and c.Y <= p.Y + s.Y then return sib end
+            only, count = sib, count + 1
+        end
     end
-    return nil
+    if count == 1 then return only end
+    -- no button object at all, just an image with its own touch code: the finger and the click
+    -- only need the spot, and the label sits on it
+    return obj
 end
 
 local function byLabel(kind)
     local pg = playerGui()
     if not pg then return nil end
     local hit = found[kind]
-    if hit and hit.by:IsDescendantOf(pg) and names(hit.by, kind) and shown(hit.by) then
+    if hit and not hit.bare and hit.by:IsDescendantOf(pg) and names(hit.by, kind) and shown(hit.by) then
         return hit.button
     end
-    -- labels first (they're what you see), then button names
-    local byName
+    -- a label on a button first (it's what you see), then a button named after the move, and only
+    -- then a bare label with no button object at all, so a "Dribble" hint elsewhere never wins
+    local byName, bare
     for _, d in ipairs(pg:GetDescendants()) do
         if (d:IsA("GuiObject")) and not d:IsDescendantOf(screen) and names(d, kind) and shown(d) then
             local isText = d:IsA("TextLabel") or d:IsA("TextButton")
             local b = buttonFor(d)
-            if b and isText and d.Text:lower():gsub("%s", "") == CFG.Labels[kind] then
+            local labelled = isText and d.Text:lower():gsub("%s", "") == CFG.Labels[kind]
+            if labelled and b:IsA("GuiButton") then
                 found[kind] = { by = d, button = b }
                 return b
-            elseif b and not byName then
-                byName = { by = d, button = b }
+            elseif not labelled then
+                byName = byName or { by = d, button = b }
+            else
+                bare = bare or { by = d, button = b, bare = true }
             end
         end
     end
-    found[kind] = byName
-    return byName and byName.button
+    found[kind] = byName or bare
+    return found[kind] and found[kind].button
 end
 
 local function save()
@@ -515,6 +531,29 @@ end)
 
 ---------------------------------------------------------------- pressing
 
+-- a field of a connection getconnections handed back; some executors' connections throw on
+-- fields they don't have instead of returning nil
+local function field(k, name)
+    local ok, v = pcall(function() return k[name] end)
+    if ok then return v end
+    return nil
+end
+
+-- What runs a game connection: its function, or its own Fire on executors that keep the function
+-- hidden. Nothing for one that's switched off, lives in another Lua state, or is the engine's own.
+local function runner(k)
+    if field(k, "ForeignState") or field(k, "LuaConnection") == false or field(k, "Enabled") == false then
+        return nil
+    end
+    local fn = field(k, "Function")
+    if type(fn) == "function" then return fn end
+    local fireFn = field(k, "Fire")
+    if type(fireFn) == "function" then
+        return function(...) return fireFn(k, ...) end
+    end
+    return nil
+end
+
 -- Runs the game's own Lua functions connected to a signal, skipping ours.
 -- Returns how many ran; nothing passes through Roblox's input system.
 local function fire(signal, ...)
@@ -522,8 +561,8 @@ local function fire(signal, ...)
     if not ok or type(list) ~= "table" then return 0 end
     local n = 0
     for _, c in ipairs(list) do
-        local fn = c.Function
-        if type(fn) == "function" and not mine[fn] and not c.ForeignState and c.Enabled ~= false then
+        local fn = runner(c)
+        if fn and not mine[fn] then
             task.spawn(pcall, fn, ...)
             n += 1
         end
@@ -541,7 +580,8 @@ local function listenerCount(obj)
         local ok, list = pcall(function() return getconnections(obj[name]) end)
         if ok and type(list) == "table" then
             for _, c in ipairs(list) do
-                if type(c.Function) == "function" and not mine[c.Function] then n += 1 end
+                local fn = runner(c)
+                if fn and not mine[fn] then n += 1 end
             end
         end
     end
@@ -553,29 +593,28 @@ local TOUCH_ID = 271828
 -- What this executor actually allows, tried on things of our own so nothing in the game moves.
 local function probe()
     caps.conn, caps.sig = false, false
-    local ok, be = pcall(Instance.new, "BindableEvent")
-    if ok and be then
-        local function probeFn() end
-        local c = be.Event:Connect(probeFn)
-        local okList, list = pcall(getconnections, be.Event)
-        if okList and type(list) == "table" then
-            for _, k in ipairs(list) do
-                if k.Function == probeFn then caps.conn = true end
-            end
-        end
-        c:Disconnect()
-        if type(firesignal) == "function" then
-            local hit = false
-            local c2 = be.Event:Connect(function() hit = true end)
-            pcall(firesignal, be.Event)
-            task.delay(0.2, function() -- some executors fire right away, some a frame later
-                caps.sig = hit
-                c2:Disconnect()
-                be:Destroy()
-            end)
-        else
+    local function test(start, set)
+        local ok, be = pcall(Instance.new, "BindableEvent")
+        if not (ok and be) then return end
+        local hit = false
+        local c = be.Event:Connect(function() hit = true end)
+        pcall(start, be.Event)
+        task.delay(0.2, function() -- some executors run it right away, some a frame later
+            set(hit)
+            c:Disconnect()
             be:Destroy()
+        end)
+    end
+    -- getconnections: run what it hands back instead of comparing it to ours. Some executors hand
+    -- back a wrapped copy, which never equals the original but runs just the same.
+    test(function(signal)
+        for _, k in ipairs(getconnections(signal)) do
+            local fn = runner(k)
+            if fn then fn() end
         end
+    end, function(v) caps.conn = v end)
+    if type(firesignal) == "function" then
+        test(firesignal, function(v) caps.sig = v end)
     end
     -- an "up" for a finger that never touched down does nothing, but shows the call is allowed
     caps.touch = VIM ~= nil and pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, -1, -1) end)
@@ -628,8 +667,9 @@ end
 
 -- TAP: a second finger on the button through Roblox's input system. It's still a touch,
 -- so the joystick keeps its own finger and nothing flips into keyboard mode.
+-- Tried on every press whatever the startup check said: a refused call costs nothing.
 local function tapButton(b)
-    if not VIM or caps.touch == false then return false end
+    if not VIM then return false end
     local c = screenCentre(b)
     caps.touch = pcall(function() VIM:SendTouchEvent(TOUCH_ID, 0, c.X, c.Y) end) -- Begin
     if not caps.touch then return false end
@@ -646,36 +686,47 @@ local function sigButton(b)
     return true
 end
 
--- KEY: Q straight into the game's InputBegan listeners and any ContextActionService binding
-local function casCall(state)
+-- KEY: Q straight into the game's InputBegan listeners and its ContextActionService binding.
+-- The binding needs no getconnections (CallFunction runs it), so it's tried even when that's blocked.
+-- An action named after the move wins; otherwise every action bound to Q.
+local function casCall(kind, state)
     local n = 0
     pcall(function()
-        for name, info_ in pairs(CAS:GetAllBoundActionInfo()) do
-            if type(info_.inputTypes) == "table" and table.find(info_.inputTypes, CFG.Key) then
-                CAS:CallFunction(name, state, lastInput)
-                n += 1
+        local all, picked = CAS:GetAllBoundActionInfo(), {}
+        for name in pairs(all) do
+            if tostring(name):lower():find(CFG.Labels[kind], 1, true) then table.insert(picked, name) end
+        end
+        if #picked == 0 then
+            for name, info_ in pairs(all) do
+                if type(info_.inputTypes) == "table" and table.find(info_.inputTypes, CFG.Key) then
+                    table.insert(picked, name)
+                end
             end
+        end
+        for _, name in ipairs(picked) do
+            CAS:CallFunction(name, state, lastInput)
+            n += 1
         end
     end)
     return n
 end
 
-local function pressKey()
-    if not caps.conn then return false end
+local function pressKey(kind)
     local K = Enum.UserInputType.Keyboard
-    local n = fire(UIS.InputBegan, fakeInput(K, CFG.Key, Enum.UserInputState.Begin), false)
-    n += casCall(Enum.UserInputState.Begin)
+    local n = caps.conn and fire(UIS.InputBegan, fakeInput(K, CFG.Key, Enum.UserInputState.Begin), false) or 0
+    n += casCall(kind, Enum.UserInputState.Begin)
+    if n == 0 then return false end
     task.delay(0.03, function()
-        fire(UIS.InputEnded, fakeInput(K, CFG.Key, Enum.UserInputState.End), false)
-        casCall(Enum.UserInputState.End)
+        if caps.conn then fire(UIS.InputEnded, fakeInput(K, CFG.Key, Enum.UserInputState.End), false) end
+        casCall(kind, Enum.UserInputState.End)
     end)
-    return n > 0
+    return true
 end
 
 -- VKEY / CLICK: real virtual input. Last resorts: a keyboard or mouse event can make some games
 -- switch their buttons to PC layout for a moment, until your next touch.
 local function vkey()
-    if not (VIM and CFG.EngineInput) or caps.key == false then return false end
+    if not (VIM and CFG.EngineInput) then return false end
     caps.key = pcall(function() VIM:SendKeyEvent(true, CFG.Key, false, game) end)
     if not caps.key then return false end
     task.delay(0.03, function()
@@ -705,7 +756,9 @@ end
 -- Did the move really happen? A new move-priority animation, or a lunge you can't walk.
 local function verify(root, hum, before, speed0, done)
     local _, animator = playingSet(hum)
+    local limit = math.max(speed0 + 20, 30)
     local t0 = os.clock()
+    local lastP, lastT = root.Position, t0
     while os.clock() - t0 < 0.45 do
         task.wait()
         if animator then
@@ -713,7 +766,14 @@ local function verify(root, hum, before, speed0, done)
                 if not before[t] and ACTION[t.Priority] then return done(true) end
             end
         end
-        if flat(root.AssemblyLinearVelocity).Magnitude > math.max(speed0 + 20, 30) then return done(true) end
+        -- a lunge the game moves by CFrame has no physics speed, so it's read from position too;
+        -- without that, a method that works would count as a miss and get dropped
+        local now, speed = os.clock(), flat(root.AssemblyLinearVelocity).Magnitude
+        if now - lastT >= 0.05 then
+            speed = math.max(speed, flat(root.Position - lastP).Magnitude / (now - lastT))
+            lastP, lastT = root.Position, now
+        end
+        if speed > limit then return done(true) end
     end
     done(false)
 end
@@ -723,11 +783,11 @@ end
 local METHODS = { "BTN", "TAP", "SIG", "KEY", "VKEY", "CLICK" }
 local method = { dribble = { i = 1, misses = 0, sure = false }, dive = { i = 1, misses = 0, sure = false } }
 
-local function attempt(how, b)
+local function attempt(how, b, kind)
     if how == "BTN" then return b ~= nil and pressButton(b) end
     if how == "TAP" then return b ~= nil and tapButton(b) end
     if how == "SIG" then return b ~= nil and sigButton(b) end
-    if how == "KEY" then return pressKey() end
+    if how == "KEY" then return pressKey(kind) end
     if how == "VKEY" then return vkey() end
     return b ~= nil and clickButton(b)
 end
@@ -754,18 +814,20 @@ local function trigger(kind, root, hum)
     local before = playingSet(hum)
     local speed0 = flat(root.AssemblyLinearVelocity).Magnitude
     local m = method[kind]
+    -- "label" = found only the text, no button object: the finger and click can still hit it
+    local seen = b and (b:IsA("GuiButton") and "yes" or "label") or "NO"
     for k = 0, #METHODS - 1 do
         local i = (m.i - 1 + k) % #METHODS + 1
         local how = METHODS[i]
-        if attempt(how, b) then
+        if attempt(how, b, kind) then
             m.i = i
-            dbg.last = ("%s btn:%s via %s"):format(MOVES[kind], b and "yes" or "NO", how)
+            dbg.last = ("%s btn:%s via %s"):format(MOVES[kind], seen, how)
             flash(kind, MOVES[kind] .. ": " .. how)
             verify(root, hum, before, speed0, function(ok) result(kind, ok) end)
             return
         end
     end
-    dbg.last = ("%s btn:%s nothing worked"):format(MOVES[kind], b and "yes" or "NO")
+    dbg.last = ("%s btn:%s nothing worked"):format(MOVES[kind], seen)
     say(kind, "NO BUTTON", COLORS.off, WHITE, 1.5)
 end
 
