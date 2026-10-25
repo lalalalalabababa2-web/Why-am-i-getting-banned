@@ -79,6 +79,8 @@ class Game:
         self.my_lunge = None
         self.ball_vel = Vector3()
         self.gravity = 0.0
+        self.shiftlock = False  # turns you to face the camera (-z) every frame, like shift lock
+        self.press_look = {}
 
         self.team_a, self.team_b = Team(W, "Blue"), Team(W, "Red")
         self.lp = Player(W, "Me", Team=self.team_a)
@@ -177,6 +179,7 @@ class Game:
         self.log(kind, "ok", via)
         self.update_hud()
         look = self.root.look.flat().unit()
+        self.press_look[kind] = look
         if kind == "dribble":
             self.protect_until = self.now + self.protect
             self.anim.play("Dribble_Anim", "Action", 0.5)
@@ -257,6 +260,10 @@ class Game:
         sched.now += DT
         now = sched.now
         sched.run_due()
+        if self.shiftlock:
+            self.root.look = Vector3(0, 0, -1)
+        for _, fn in sorted(W.run.render.values(), key=lambda pf: tostr(pf[0])):
+            sched.spawn(fn, [DT])
         W.run.signal("Stepped").fire(now, DT)
         # physics
         p = self.root.props["Position"] + self.my_vel * DT
@@ -378,6 +385,38 @@ def dribble_breaks_a_sliding_tackle():
     check(g.holder is g.lp, "you still have the ball")
     check("via BTN" in g.readout().split("\n")[2], f"pressed by running the button's code: {g.readout()!r}")
     check(not g.hum.jumps, f"no flick inside its own protection window (jumps {g.hum.jumps})")
+
+
+@test
+def dribble_while_running_from_a_chaser():
+    g = Game().load()
+    g.tap("dribble")
+    g.my_vel = Vector3(28, 0, 0)
+    b = g.bot("Chaser", Vector3(-22, 3, 0))
+
+    def brain(bot, now):
+        to = (g.root.props["Position"] - bot.pos).flat()
+        if not bot.slid and to.mag() < 11:
+            bot.vel = Vector3()
+            bot.slide_at(g.root.props["Position"] + Vector3(28 * 0.25, 0, 0), speed=48)
+            bot.anim.playing.clear()
+            bot.anim.play("Slide", "Movement", 0.4)  # not an Action animation
+        elif not bot.slid:
+            bot.vel = to.unit() * 34
+    b.brain = brain
+    g.run(2.5)
+    check(g.presses("dribble", "ok"), f"dribbled while running ({g.events})")
+    check(any(e[1] == "ankle" for e in g.events) and g.holder is g.lp, f"kept the ball ({g.events})")
+
+
+@test
+def dribble_against_a_contact_steal():
+    g = Game().load()
+    g.tap("dribble")
+    b = g.bot("Shadow", Vector3(0, 3, -9))
+    b.brain = lambda bot, now: setattr(bot, "vel", (g.root.props["Position"] - bot.pos).flat().unit() * 4)
+    g.run(2.0)
+    check(g.presses("dribble", "ok"), f"dribbled when someone walked right into you ({g.events})")
 
 
 @test
@@ -507,7 +546,7 @@ def no_button_ever_uses_the_key():
 @test
 def tackle_slides_at_a_carrier_in_reach():
     g = Game().load()
-    carrier = g.bot("Barou", Vector3(0, 3, -11))
+    carrier = g.bot("Barou", Vector3(0, 3, -8))
     g.holder = carrier.player
     carrier.brain = lambda bot, now: setattr(bot, "vel", Vector3(10, 0, 0))
     g.tap("tackle")
@@ -541,6 +580,31 @@ def tackle_waits_out_their_dribble_then_goes_in():
 
 
 @test
+def tackle_stays_out_of_any_dribble_animation():
+    g = Game().load()
+    carrier = g.bot("Otoya", Vector3(0, 3, -6))
+    g.holder = None
+    g.tap("tackle")
+    g.run(0.2)
+    g.holder = carrier.player  # receives it and dribbles straight away
+    carrier.anim.play("Feint", "Movement", 0.5)
+    t = g.now
+    g.run(0.8)
+    check(not [e for e in g.presses("tackle") if e[0] < t + 0.85], f"no slide into a fresh move ({g.events})")
+
+
+@test
+def tackle_leaves_a_dashing_carrier():
+    g = Game().load()
+    carrier = g.bot("Karasu", Vector3(0, 3, -7))
+    g.holder = carrier.player
+    carrier.brain = lambda bot, now: setattr(bot, "vel", Vector3(45, 0, 0))
+    g.tap("tackle")
+    g.run(0.25)
+    check(not g.presses("tackle"), f"no slide at someone mid-dash ({g.events})")
+
+
+@test
 def tackle_ignores_teammates():
     g = Game().load()
     mate = g.bot("Chigiri", Vector3(0, 3, -6), enemy=False)
@@ -571,6 +635,31 @@ def keeper_dives_at_a_shot():
     arrive = 50 / 150
     check(ok[0][0] - (g.now - 0.5) < arrive, "before the ball arrived")
     check(g.root.look.x > 0.3, f"toward the ball's side (look {g.root.look})")
+
+
+@test
+def keeper_dives_the_right_way_with_shiftlock():
+    g = keeper_game()
+    g.shiftlock = True
+    g.run(0.2)
+    g.shoot(Vector3(10, 2, 140), Vector3(8, 2, 192), 150)
+    g.run(0.5)
+    check(g.presses("dive", "ok"), f"dove ({g.events})")
+    look = g.press_look["dive"]
+    check(look.x > 0.3, f"dove toward the ball, not where shift lock pointed (look {look})")
+
+
+@test
+def slide_aims_with_shiftlock():
+    g = Game().load()
+    g.shiftlock = True
+    carrier = g.bot("Reo", Vector3(6, 3, -4))
+    g.holder = carrier.player
+    g.tap("tackle")
+    g.run(1.0)
+    check(g.presses("tackle", "ok"), f"slid ({g.events})")
+    look = g.press_look["tackle"]
+    check(look.x > 0.5, f"slid at them, not where shift lock pointed (look {look})")
 
 
 @test

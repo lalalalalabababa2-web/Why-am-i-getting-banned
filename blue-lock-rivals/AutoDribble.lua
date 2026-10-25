@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v6 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v7 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -52,10 +52,11 @@ local CFG = {
     -- dribble
     ScanDist     = 40,     -- watch enemies this far out (dashes close fast)
     Reach        = 4,      -- roughly how far a tackle reaches
-    ReactTime    = 0.2,    -- dribble this long before an enemy is in reach, plus your ping
+    ReactTime    = 0.25,   -- dribble this long before an enemy is in reach, plus your ping
     MinClosing   = 6,      -- studs/s toward you; slower than this isn't a run at you
-    LungeSpeed   = 50,     -- an enemy's own speed toward you above this is a slide or dash, not a run
-    TackleDist   = 12,     -- an enemy this close starting any move or a tackle animation is a tackle
+    LungeSpeed   = 40,     -- an enemy's own speed toward you above this is a slide or dash, not a run
+    TackleDist   = 16,     -- an enemy this close starting any move or a tackle animation is a tackle
+    CloseDist    = 5,      -- an enemy this close and not backing off can steal: dribble
     TackleWords  = { "tackle", "steal", "slide" },
     Flick        = true,   -- jump with the ball over a tackle that comes while dribble is cooling down
 
@@ -63,7 +64,7 @@ local CFG = {
     SlideSpeed   = 55,     -- studs/s, a first guess for timing where they'll be
     SlideReach   = 14,     -- studs, a first guess, then measured from your own slides
     SmartTackle  = true,   -- false = slide whenever in reach (still never into an open dribble window)
-    TackleSnap   = 0.3,    -- an enemy whose dribble is ready only gets slid at when this close (s)
+    TackleSnap   = 0.22,   -- an enemy whose dribble is ready only gets slid at when this close (s)
     Protect      = 0.8,    -- a dribble (yours or theirs) protects against tackles this long after it starts (s)
     EnemyCooldown= 3,      -- and is down this long after that (s)
 
@@ -336,11 +337,16 @@ end
 
 ---------------------------------------------------------------- players
 
-local ACTION = {} -- animation priorities moves play at (walking and idling sit below these)
-for _, name in ipairs({ "Action", "Action2", "Action3", "Action4" }) do
-    local ok, item = pcall(function() return Enum.AnimationPriority[name] end)
-    if ok and item then ACTION[item] = true end
+local function priorities(names)
+    local set = {}
+    for _, name in ipairs(names) do
+        local ok, item = pcall(function() return Enum.AnimationPriority[name] end)
+        if ok and item then set[item] = true end
+    end
+    return set
 end
+local ACTION = priorities({ "Action", "Action2", "Action3", "Action4" }) -- what moves play at
+local BASE = priorities({ "Core", "Idle" }) -- standing and walking; everything else may be a move
 
 local function teamOf(p) return p.Team or p:GetAttribute("Team") end
 
@@ -369,6 +375,7 @@ local motion     = setmetatable({}, { __mode = "k" }) -- root -> { hist, vel } m
 local moveSeen   = setmetatable({}, { __mode = "k" }) -- animator -> move tracks playing last frame
 local moveAt     = setmetatable({}, { __mode = "k" }) -- player -> when a new move animation started
 local carryMoveAt = setmetatable({}, { __mode = "k" }) -- player -> when they started one holding the ball
+local anyMoveAt  = setmetatable({}, { __mode = "k" }) -- player -> when any non-walking animation started
 
 -- every frame, for everyone else on the server
 local function trackPlayers()
@@ -398,9 +405,12 @@ local function trackPlayers()
             if animator then
                 local was, now_ = moveSeen[animator], {}
                 for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
-                    if ACTION[t.Priority] then
-                        now_[t] = true
-                        if was and not was[t] then
+                    now_[t] = true
+                    if was and not was[t] then
+                        -- a dribble needn't play at Action priority: anything that isn't walking
+                        -- or standing might be one, and that's enough to keep a slide out of it
+                        if not BASE[t.Priority] then anyMoveAt[p] = now end
+                        if ACTION[t.Priority] then
                             moveAt[p] = now
                             if p == curHolder and now - heldSince > 0.3 then carryMoveAt[p] = now end
                         end
@@ -445,7 +455,11 @@ local function threat(root, lead)
                 local committed = flat(vel):Dot(off.Unit) > CFG.LungeSpeed or tackling(h)
                     or now - (moveAt[p] or -math.huge) < 0.3
                 if committed and (soon or dist < CFG.TackleDist) then return p, true end
-                if soon then runner_ = runner_ or p end
+                -- right on you (running side by side, or catching you from behind): it can steal
+                -- (moving: someone ankle-broken lies there too)
+                if soon or (dist < CFG.CloseDist and closing > -2 and flat(vel).Magnitude > 3) then
+                    runner_ = runner_ or p
+                end
             end
         end
     end
@@ -1004,6 +1018,7 @@ end
 -- Turn toward `at` for a moment (dives and slides go the way you face). The game's auto-rotate
 -- would turn you back toward your thumb, so it's off for the turn and comes back after.
 local autoSaved, autoGen = nil, 0
+local faceDir, faceUntil = nil, 0 -- a direction held every frame for a moment (see refaceNow)
 local function face(root, hum, at)
     local look_ = Vector3.new(at.X, root.Position.Y, at.Z)
     if (look_ - root.Position).Magnitude < 0.5 then return end
@@ -1012,6 +1027,8 @@ local function face(root, hum, at)
     local gen = autoGen
     hum.AutoRotate = false
     root.CFrame = CFrame.lookAt(root.Position, look_)
+    -- the direction, not the point: a dive or slide carries you past the point
+    faceDir, faceUntil = (look_ - root.Position).Unit, os.clock() + 0.35
     hum:Move((look_ - root.Position).Unit)
     task.delay(0.4, function()
         if autoGen ~= gen then return end
@@ -1020,17 +1037,14 @@ local function face(root, hum, at)
     end)
 end
 
--- Press a move, turned toward `at` first when given. The turn gets a frame to reach the server
--- before the press does.
+-- Press a move, turned toward `at` first when given. The press goes in the same frame as the
+-- turn, before shift lock or the camera can turn you back.
 local function launch(kind, root, hum, at)
     local m = move[kind]
     m.busy, m.tried = true, os.clock()
     task.spawn(function()
         local from = root.Position
-        if at then
-            face(root, hum, at)
-            task.wait()
-        end
+        if at then face(root, hum, at) end
         -- an error mid-press must not leave the move marked busy for good
         local ok, pressed = pcall(trigger, kind, root, hum)
         if not ok then dbg.last = MOVES[kind] .. " error: " .. tostring(pressed) end
@@ -1126,8 +1140,11 @@ local function tackleAim(root, holder, lead)
     local t = dist / CFG.SlideSpeed + lead
     local aim = r.Position + flat(velocityOf(r)) * t
     if flat(aim - root.Position).Magnitude > slideReach then return nil end
-    local since = os.clock() - (carryMoveAt[holder] or -math.huge)
-    if since < CFG.Protect then return nil end
+    local now = os.clock()
+    -- mid-move or mid-dash: whatever it is, a dribble's protection may be up
+    if now - (anyMoveAt[holder] or -math.huge) < CFG.Protect + lead then return nil end
+    if flat(velocityOf(r)).Magnitude > CFG.LungeSpeed then return nil end
+    local since = now - (carryMoveAt[holder] or -math.huge)
     local theirsCooling = since < CFG.Protect + CFG.EnemyCooldown
     if CFG.SmartTackle and not theirsCooling and t > CFG.TackleSnap then return nil end
     return aim
@@ -1237,6 +1254,16 @@ local function body()
     return nil
 end
 
+-- Shift lock (and some games' cameras) turn your character to face the camera every frame. While
+-- a dive or slide goes off, this turns it back to the target after them, every frame.
+local function refaceNow()
+    local root = body()
+    if root and faceDir and os.clock() < faceUntil then
+        root.CFrame = CFrame.lookAt(root.Position, root.Position + faceDir)
+    end
+end
+pcall(function() RunService:BindToRenderStep("AutoDribbleFace", Enum.RenderPriority.Last.Value, refaceNow) end)
+
 local nextInfo = 0
 local function yn(v) return v == nil and "?" or (v and "Y" or "n") end
 local function left(kind)
@@ -1331,6 +1358,7 @@ end)
 -- Positioning runs before physics. Roblox's ControlModule has already applied your joystick
 -- for this frame by then, so MoveDirection here is your thumb, never our own last move.
 bind(RunService.Stepped, function()
+    refaceNow()
     local root, hum = body()
     if not root then return end
     stickIdle = hum.MoveDirection.Magnitude < 0.05
@@ -1410,6 +1438,7 @@ end)
 env.AutoDribbleStop = function()
     for _, kind in ipairs(KINDS) do on[kind] = false end
     stopLearning()
+    pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
     for _, c in ipairs(conns) do c:Disconnect() end
     screen:Destroy()
     env.AutoDribbleStop = nil

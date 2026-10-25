@@ -43,6 +43,12 @@ the other two.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 
+## v7
+
+- **Shift lock:** dives and slides go where they should. Shift lock turns you to the camera every frame, so the turn is held every frame while the move goes off, and the press goes in the same frame as the turn.
+- **Dribble while running:** reacts earlier to chasers and to slides (40 studs/s and up, any animation), and dribbles when someone is right on you and moving.
+- **Tackle:** never slides while the carrier is starting any move (whatever animation priority it plays at) or dashing, and only snaps at a carrier whose dribble is ready from closer in.
+
 ## v6, from the recording
 
 | Seen in the recording | Fix |
@@ -66,7 +72,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 20 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 26 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

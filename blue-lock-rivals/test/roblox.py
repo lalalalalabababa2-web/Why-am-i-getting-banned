@@ -953,6 +953,16 @@ class RunServiceC(Service):
     ISA = ("RunService",)
     EVENTS = ("Heartbeat", "Stepped", "RenderStepped", "PreSimulation", "PostSimulation", "PreRender")
 
+    def __init__(self, world, name=None, **props):
+        super().__init__(world, name, **props)
+        self.render = {}  # name -> (priority, fn)
+
+    def m_BindToRenderStep(self, name, priority, fn):
+        self.render[name] = (priority, fn)
+
+    def m_UnbindFromRenderStep(self, name):
+        self.render.pop(name, None)
+
     def m_IsClient(self):
         return True
 
