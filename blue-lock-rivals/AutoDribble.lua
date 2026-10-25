@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v17 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v18 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -881,8 +881,9 @@ do
         if type(firesignal) == "function" then
             test(firesignal, function(v) caps.sig = v end)
         end
-        -- an "up" for a finger that never touched down does nothing, but shows the call is allowed
-        caps.touch = VIM ~= nil and pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, -1, -1) end)
+        -- (the virtual finger is only tried on a real press: a test touch at startup could confuse
+        -- the game's touch camera)
+        caps.touch = VIM == nil and false or nil
     end
 
     local function fakeInput(inputType, keyCode, state, pos)
@@ -1708,7 +1709,7 @@ do
         if stam.hooked == nil then stam.hooked = CFG.StaminaHook and hookRemotes() or false end
         if stam.hooked then blocked[r] = true end
         stam.how = (stam.hooked and "blocked " or "NaN ") .. stam.remotes[1].Name
-        stam.nextNaN = 0
+        stam.nanFor = nil
     end
 
     -- ReplicatedStorage is searched once; remotes that arrive later (a service loading late) are
@@ -1727,8 +1728,8 @@ do
             end)
         end
         if not stam.remotes then return end
-        if not stam.hooked and os.clock() >= (stam.nextNaN or 0) then
-            stam.nextNaN = os.clock() + 10 -- again after a respawn or a new match
+        if not stam.hooked and LP.Character and stam.nanFor ~= LP.Character then
+            stam.nanFor = LP.Character -- once per life: a new character (respawn, new match) gets it again
             for _, r in ipairs(stam.remotes) do pcall(function() r:FireServer(0 / 0) end) end
         end
     end
@@ -1801,7 +1802,7 @@ do
             if r and r.Size ~= want then
                 local g = grown[r]
                 if not g then
-                    g = { was = { Size = r.Size, CanCollide = r.CanCollide } }
+                    g = { was = { Size = r.Size, CanCollide = r.CanCollide, CanQuery = r.CanQuery } }
                     grown[r] = g
                     if CFG.ShowReach then
                         pcall(function()
@@ -1815,7 +1816,9 @@ do
                         end)
                     end
                 end
-                r.Size, r.CanCollide = want, false
+                -- touchable (that's what lands the slide) but invisible to raycasts: the camera's
+                -- collision check hit these and snapped the camera in to your head
+                r.Size, r.CanCollide, r.CanQuery = want, false, false
             end
         end
     end
@@ -2188,7 +2191,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v17", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
+            Title = "AutoDribble v18", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
         })
     end)
 end

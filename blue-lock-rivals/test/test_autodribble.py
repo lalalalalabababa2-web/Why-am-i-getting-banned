@@ -416,7 +416,8 @@ def loads_and_shows_three_pills():
     check([g.pill_text(k) for k in ("dribble", "tackle", "dive")] == ["DRIBBLE OFF", "TACKLE OFF", "AUTO GK OFF"],
           f"pills read {[g.pill_text(k) for k in ('dribble', 'tackle', 'dive')]}")
     line1 = g.readout().split("\n")[0]
-    check("conn Y sig Y tap Y" in line1, f"readout line 1 is {line1!r}")
+    check("conn Y sig Y tap ?" in line1, f"readout line 1 is {line1!r}")
+    check(not [v for v in g.W.vim.log if v[1] == "touch"], "no test touch on the screen at startup")
     check(g.readout().count("\n") == 4, "the readout has five lines")
     size = g.bar().get_AbsoluteSize()
     check(size.x <= 220 and size.y <= 80, f"the UI is small ({size})")
@@ -1300,10 +1301,12 @@ def tackle_reach_grows_enemy_hitboxes_and_puts_them_back():
     boxes = [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"]
     check(len(boxes) == 1 and boxes[0].props["Adornee"] is foe.root, f"one red outline, on the enemy ({boxes})")
     check(foe.root.props["Transparency"] == 0 and foe.root.props["CanCollide"] is False, "their part itself isn't recoloured")
+    check(foe.root.props["CanQuery"] is False and foe.root.props["CanTouch"] is True,
+          "out of the camera's raycasts, still touchable")
     check(mate.root.props["Size"].x == 2, "teammates left alone")
     g.tap("tackle")
     g.step()
-    check(foe.root.props["Size"].x == 2, f"put back ({foe.root.props['Size']})")
+    check(foe.root.props["Size"].x == 2 and foe.root.props["CanQuery"] is True, f"put back ({foe.root.props['Size']})")
     check(not [d for d in g.W.hui.descendants() if d.CLASS == "SelectionBox"], "outline gone")
 
 
@@ -1376,6 +1379,10 @@ def stamina_nan_without_hooks():
     g.load()
     g.run(3.5)
     check(math.isnan(server["stamina"]), f"0/0 sent: the server's stamina is NaN and never runs out ({server})")
+    nans = [f for f in g.W.fired if f[1] is remote and f[2] and f[2][0] != f[2][0]]
+    g.run(15)
+    nans2 = [f for f in g.W.fired if f[1] is remote and f[2] and f[2][0] != f[2][0]]
+    check(len(nans) == 1 and len(nans2) == 1, f"once per life, not every few seconds ({len(nans)}, {len(nans2)})")
     check("stamina NaN DecreaseStamina" in g.readout(), f"readout: {g.readout()!r}")
 
 

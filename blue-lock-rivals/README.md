@@ -49,6 +49,13 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v18
+
+- **Camera:** grown enemy hitboxes no longer show up in raycasts (`CanQuery` off, still
+  touchable), so the camera's collision check can't snap the camera to your head when one is in
+  the way. No test touch on the screen at startup. The stamina 0/0 goes once per life, not every
+  10s.
+
 ## v17
 
 - **Camera: the stamina hook is off by default.** v15 was the first version that ran, and the
