@@ -49,6 +49,18 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v16
+
+- **Camera hitching fixed.** The stamina search ran all the time, even with every pill off. It
+  scanned the whole of ReplicatedStorage every 3 seconds and walked all of the game's script
+  memory every 20, and each pass froze the game for a moment on a phone. ReplicatedStorage is now
+  searched once, and remotes that load later are checked as they arrive. The memory walk only
+  runs if there's no stamina remote or value, only once, in slices of 400 per frame.
+- **The reach marker is a flat disc on the ground**, not a sphere around you: with the camera
+  inside the sphere, the whole screen went hazy.
+- **With every pill off it does almost nothing per frame:** it only keeps track of the ball and
+  what enemies just did, so the pills know it the moment they go on.
+
 ## v15
 
 - **Fixes v14 not starting at all.** v14 had 209 local variables alive at once in its main chunk,
@@ -186,7 +198,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 65 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 67 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

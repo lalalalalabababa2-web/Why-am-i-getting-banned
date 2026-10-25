@@ -173,17 +173,46 @@ class Vector2(Host):
 
 
 class CFrame(Host):
+    """Position plus a rotation (columns: right, up, back), like Roblox's."""
     TYPE = "CFrame"
 
-    def __init__(self, pos, look=None):
+    def __init__(self, pos, look=None, rot=None):
         self.pos = pos
-        self.look = look or Vector3(0, 0, -1)
+        if rot is not None:
+            self.rot = rot
+        else:
+            look = (look or Vector3(0, 0, -1)).unit()
+            up = Vector3(0, 1, 0)
+            if abs(look.y) > 0.999:
+                up = Vector3(0, 0, 1)
+            right = Vector3(look.y * up.z - look.z * up.y, look.z * up.x - look.x * up.z, look.x * up.y - look.y * up.x).unit()
+            up2 = Vector3(right.y * look.z - right.z * look.y, right.z * look.x - right.x * look.z, right.x * look.y - right.y * look.x)
+            self.rot = (right, up2, -look)
+
+    @property
+    def look(self):
+        return -self.rot[2]
+
+    def apply(self, v):
+        r, u, b = self.rot
+        return Vector3(r.x * v.x + u.x * v.y + b.x * v.z, r.y * v.x + u.y * v.y + b.y * v.z, r.z * v.x + u.z * v.y + b.z * v.z)
+
+    def __mul__(self, o):
+        if isinstance(o, CFrame):
+            return CFrame(self.pos + self.apply(o.pos), rot=tuple(self.apply(c) for c in o.rot))
+        if isinstance(o, Vector3):
+            return self.pos + self.apply(o)
+        raise LuaError(f"attempt to multiply a CFrame with {luatype(o)}")
 
     def lua_index(self, key):
         if key in ("Position", "p"):
             return self.pos
         if key == "LookVector":
             return self.look
+        if key == "RightVector":
+            return self.rot[0]
+        if key == "UpVector":
+            return self.rot[1]
         raise LuaError(f"{tostr(key)} is not a valid member of CFrame")
 
 
@@ -1283,7 +1312,16 @@ class World:
         def look_at(pos, target, up=None):
             d = target - pos
             return CFrame(pos, d.unit() if d.mag() > 0 else Vector3(0, 0, -1))
-        G.set("CFrame", static(lookAt=look_at, new=lambda *a: CFrame(Vector3(*a) if a and not isinstance(a[0], Vector3) else (a[0] if a else Vector3()))))
+        def angles(rx=0, ry=0, rz=0):
+            import math as m
+            cx, sx, cy, sy, cz, sz = m.cos(rx), m.sin(rx), m.cos(ry), m.sin(ry), m.cos(rz), m.sin(rz)
+            # Roblox: Angles(rx, ry, rz) = Rx * Ry * Rz; columns of that matrix
+            rot = (Vector3(cy * cz, cx * sz + sx * sy * cz, sx * sz - cx * sy * cz),
+                   Vector3(-cy * sz, cx * cz - sx * sy * sz, sx * cz + cx * sy * sz),
+                   Vector3(sy, -sx * cy, cx * cy))
+            return CFrame(Vector3(), rot=rot)
+        G.set("CFrame", static(lookAt=look_at, Angles=angles, fromEulerAnglesXYZ=angles,
+                               new=lambda *a: CFrame(Vector3(*a) if a and not isinstance(a[0], Vector3) else (a[0] if a else Vector3()))))
         G.set("UDim", static(new=lambda s=0, o=0: UDim(s, o)))
         G.set("UDim2", static(new=lambda xs=0, xo=0, ys=0, yo=0: UDim2(xs, xo, ys, yo),
                               fromOffset=lambda x=0, y=0: UDim2(0, x, 0, y),

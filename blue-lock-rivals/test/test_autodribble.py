@@ -1254,8 +1254,11 @@ def reach_sphere_shows_your_reach():
     g = keeper_game()
     cam = g.W.workspace.props["CurrentCamera"]
     sphere = cam.m_FindFirstChild("AutoDribbleReach")
-    check(sphere is not None, "a sphere in your camera (only you see it)")
-    check(sphere.props["Size"].x == 12 and sphere.props["Transparency"] < 1, f"GK reach 6 -> 12 across ({sphere.props['Size']})")
+    check(sphere is not None, "a marker in your camera (only you see it)")
+    size = sphere.props["Size"]
+    check(size.y == 12 and size.z == 12 and size.x < 1 and sphere.props["Transparency"] < 1,
+          f"a flat disc 12 across for GK reach 6 ({size})")
+    check(sphere.get_CFrame().pos.y < g.root.props["Position"].y - 2, "on the ground, not around the camera")
     g.tap("dive")
     g.step()
     check(sphere.props["Transparency"] == 1, "hidden when nothing is on")
@@ -1371,6 +1374,43 @@ def stamina_nan_without_hooks():
     g.run(3.5)
     check(math.isnan(server["stamina"]), f"0/0 sent: the server's stamina is NaN and never runs out ({server})")
     check("stamina NaN DecreaseStamina" in g.readout(), f"readout: {g.readout()!r}")
+
+
+@test
+def idle_does_no_heavy_searching():
+    # every few seconds a full ReplicatedStorage scan and every 20s a full memory walk hitched the
+    # game (and the camera) all the time, even with everything off
+    g = Game()
+    counts = {"rs": 0, "gc": 0}
+    orig = g.W.rs.m_GetDescendants
+
+    def counted():
+        counts["rs"] += 1
+        return orig()
+    g.W.rs.m_GetDescendants = counted
+
+    def getgc(include=None):
+        counts["gc"] += 1
+        return LuaTable([LuaTable() for _ in range(50)])
+    g.I.G.set("getgc", getgc)
+    g.load()
+    g.run(30)
+    check(counts["rs"] <= 1 and counts["gc"] <= 1, f"searched once, not over and over ({counts})")
+
+
+@test
+def stamina_remote_that_loads_late_is_still_blocked():
+    from roblox import install_hooks
+    g = Game()
+    install_hooks(g.W)
+    g.load()
+    g.run(4)
+    remote, server, client = stamina_service(g)  # BLR's services load after the script
+    g.I.sched.spawn(client, [])
+    g.run(0.5)
+    level = server["stamina"]
+    g.run(1.0)
+    check(server["stamina"] == level, f"blocked as soon as it arrived ({level} -> {server['stamina']})")
 
 
 @test

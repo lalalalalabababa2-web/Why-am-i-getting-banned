@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v15 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v16 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -1616,12 +1616,14 @@ do
             or (stam.deep and "searching" or "none")
     end
 
-    -- A script's own table with a stamina field, found by walking the game's memory (getgc) a slice
-    -- per frame so it doesn't hitch. Once at the start, then again every 20s while nothing is found.
+    -- A script's own table with a stamina field, found by walking the game's memory (getgc) a small
+    -- slice per frame so the game never hitches. Only when there's no stamina remote and no stamina
+    -- value, and only once: walking it again and again froze the game for a moment every time.
     local function deepStep()
         local d = stam.deep
         if not d then
             if type(getgc) ~= "function" or os.clock() < stam.nextDeep then return end
+            if not stam.searched or stam.remotes or #stam.list > 0 then return end
             local ok, objs = pcall(getgc, true)
             if not (ok and type(objs) == "table") then
                 stam.nextDeep = math.huge
@@ -1630,7 +1632,7 @@ do
             d = { objs = objs, i = 1, found = {} }
             stam.deep = d
         end
-        local stop = math.min(d.i + 1500, #d.objs)
+        local stop = math.min(d.i + 400, #d.objs)
         for i = d.i, stop do
             local o = d.objs[i]
             if type(o) == "table" then
@@ -1647,7 +1649,7 @@ do
         d.i = stop + 1
         if d.i > #d.objs then
             stam.deep, stam.gc = nil, d.found
-            stam.nextDeep = (#d.found == 0 and #stam.list == 0) and os.clock() + 20 or math.huge
+            stam.nextDeep = math.huge
         end
     end
 
@@ -1697,22 +1699,31 @@ do
         return ok
     end
 
+    local function adopt(r)
+        stam.remotes = stam.remotes or {}
+        table.insert(stam.remotes, r)
+        if stam.hooked == nil then stam.hooked = hookRemotes() end
+        if stam.hooked then blocked[r] = true end
+        stam.how = (stam.hooked and "blocked " or "NaN ") .. stam.remotes[1].Name
+        stam.nextNaN = 0
+    end
+
+    -- ReplicatedStorage is searched once; remotes that arrive later (a service loading late) are
+    -- checked as they come. Searching it every few seconds hitched the game each time.
     local function staminaRemotes()
-        if not stam.remotes then
-            local found = {}
+        if not stam.searched then
+            stam.searched = true
             pcall(function()
-                for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-                    if isStaminaRemote(d) then table.insert(found, d) end
+                local rs = game:GetService("ReplicatedStorage")
+                for _, d in ipairs(rs:GetDescendants()) do
+                    if isStaminaRemote(d) then adopt(d) end
                 end
+                bind(rs.DescendantAdded, function(d)
+                    if isStaminaRemote(d) then adopt(d) end
+                end)
             end)
-            if #found == 0 then return end
-            stam.remotes = found
-            stam.hooked = hookRemotes()
-            for _, r in ipairs(found) do
-                if stam.hooked then blocked[r] = true end
-            end
-            stam.how = (stam.hooked and "blocked " or "NaN ") .. found[1].Name
         end
+        if not stam.remotes then return end
         if not stam.hooked and os.clock() >= (stam.nextNaN or 0) then
             stam.nextNaN = os.clock() + 10 -- again after a respawn or a new match
             for _, r in ipairs(stam.remotes) do pcall(function() r:FireServer(0 / 0) end) end
@@ -1801,12 +1812,14 @@ do
         end
     end
 
-    -- your reach, drawn around you: a see-through sphere that only you see (it lives in your camera)
+    -- Your reach, drawn as a flat see-through disc on the ground under you, that only you see (it
+    -- lives in your camera). A sphere put the camera inside it whenever the camera came close, and
+    -- the whole screen went hazy.
     sphere = Instance.new("Part")
     sphere.Name = "AutoDribbleReach"
-    sphere.Shape = Enum.PartType.Ball
+    sphere.Shape = Enum.PartType.Cylinder
     sphere.Anchored, sphere.CanCollide, sphere.CanTouch, sphere.CanQuery, sphere.CastShadow = true, false, false, false, false
-    sphere.Material = Enum.Material.ForceField
+    sphere.Material = Enum.Material.Neon
     sphere.Transparency = 1
     pcall(function() sphere.Parent = workspace.CurrentCamera end)
 
@@ -1814,10 +1827,11 @@ do
         local kind = on.dive and "dive" or on.dribble and "dribble" or nil
         local r = kind and CFG.Hitbox[kind] or 0
         if CFG.ShowReach and r > 0 then
-            sphere.Size = Vector3.new(r * 2, r * 2, r * 2)
+            -- a cylinder's round faces are on its X axis: turned on its side, it lies flat
+            sphere.Size = Vector3.new(0.2, r * 2, r * 2)
             sphere.Color = REACH_COLORS[kind]
-            sphere.Transparency = 0.35
-            sphere.CFrame = CFrame.new(root.Position)
+            sphere.Transparency = 0.75
+            sphere.CFrame = CFrame.new(root.Position - Vector3.new(0, 2.8, 0)) * CFrame.Angles(0, 0, math.pi / 2)
         else
             sphere.Transparency = 1
         end
@@ -1894,8 +1908,23 @@ do
     bind(RunService.Heartbeat, function(dt)
         if CFG.InfStamina then holdStamina() end
         local root, hum = body()
-        if not root then return end
+        if not root then
+            sphere.Transparency = 1
+            return
+        end
+        -- (always: who has the ball and what enemies did a moment ago matter the moment a pill goes on)
         trackPlayers()
+        local ball = nearestBall(root.Position)
+        local holder = ball and holderOf(ball)
+        if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
+        if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
+        if not (on.dribble or on.tackle or on.dive) then
+            -- everything off: nothing else to do each frame (the reach marker hides and any grown
+            -- hitboxes go back)
+            reachStep(root, nil, nil)
+            showInfo(root, ball, holder, ping())
+            return
+        end
 
         -- keeper's spot: where you stood when you turned it on, re-set after any teleport (kickoff, reset)
         if on.dive and (not home or (lastRoot and (root.Position - lastRoot).Magnitude > 25)) then
@@ -1910,14 +1939,10 @@ do
         lastRoot = root.Position
 
         local lead = ping()
-        local ball = nearestBall(root.Position)
         if (ball ~= nil) ~= ballFound then
             ballFound = ball ~= nil
             refresh()
         end
-        local holder = ball and holderOf(ball)
-        if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
-        if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
         showInfo(root, ball, holder, lead)
         reachStep(root, ball, holder)
         if not ball then return end
@@ -2140,7 +2165,7 @@ do
     -- so you can tell it's running
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "AutoDribble v15", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
+            Title = "AutoDribble v16", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
         })
     end)
 end
