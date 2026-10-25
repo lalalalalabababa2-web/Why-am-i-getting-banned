@@ -17,7 +17,7 @@ f()
 ```
 
 If it doesn't compile, the executor's console says why instead of nothing happening. A corner
-notification says "AutoDribble v24 Loaded" when it starts.
+notification says "AutoDribble v25 Loaded" when it starts.
 
 Running it again replaces the old copy. Five pills appear on the left in two rows: **DRIBBLE**,
 **TACKLE**, **AUTO GK**, then **CONTROL**, **SPINS**. Tap to toggle, drag to move. Hold about a second and let go, then tap
@@ -67,9 +67,13 @@ it pauses dribble and tackle.
   loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua"))()
   ```
 
-  Tap SPINS on in the lobby. It spins (lucky spins first) until one of them lands, then puts saves
-  back on. When the spins run out, it rolls back and the next server carries on by itself. It
-  stops instead of looping if the spins aren't getting through, and it never rejoins with 0 spins.
+  Open the style spin screen and tap SPINS on. It spins one at a time (each reel takes a few
+  seconds, and a spin pressed during one is thrown away), lucky spins first, until one of them
+  lands, then puts saves back on. **The first time, it rolls back after just one spin** and checks,
+  in the next server, that the spin came back. Only then does it use the rest: when they run out it
+  rolls back and the next server carries on by itself. If the spin didn't come back, the rollback
+  doesn't work in your version and it stops, so you lose one spin, not all of them. It also stops if
+  the spins aren't getting through, and never rejoins with 0 spins.
 
 - **Codes:** the codes in `CFG.Codes` (October 2026 lists) are redeemed by themselves, once per
   server, through the game's own redeem remote, or by typing them into its code box if there's no
@@ -90,6 +94,24 @@ it pauses dribble and tackle.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v25
+
+From the clip: it spun (8 lucky → 7, Aiku → Yukimiya), but it pressed every 1.2s while one spin's
+reel takes about 5s, so 6 of 7 presses were thrown away. Codes said "Tried 17" and gave nothing,
+with no way to tell why.
+
+- **One spin at a time:** press, then wait for its result (`SPUN "..."` on screen, your style
+  changing, or the counts dropping), up to `SpinWait`. A `SPUN` result counts even when it isn't
+  equipped. Three presses that change nothing stop it.
+- **Rollback tested first:** the first round is one spin, then a rollback. The next server checks
+  the spins came back (`AutoDribbleSpinsBefore`) before using any more, and stops with a message if
+  they didn't.
+- **Needs the spin screen** for auto (its counts say when the spins run out and whether a rollback
+  worked). It says so if it isn't open.
+- **Codes report back:** `+N spins`, or "gave no spins" plus the game's own answer (from a
+  RemoteFunction). SPINS waits for codes to finish (`CODES...`), so saves are still on while they
+  go in.
 
 ## v24
 
@@ -336,7 +358,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 109 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 117 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

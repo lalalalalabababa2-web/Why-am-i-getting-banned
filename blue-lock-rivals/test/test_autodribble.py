@@ -94,6 +94,7 @@ class Game:
         self.ball_by_hand = False  # an ability shot the game moves itself: no physics velocity
         self.shiftlock = False  # turns you to face the camera (-z) every frame, like shift lock
         self.press_look = {}
+        self.hooks = []  # the fake server's timed work, run every frame
         self.game_movers = []  # the movers the game itself put on the ball for a kick
         self.server_owns_ball = False
         self.ball_stuck = False
@@ -372,6 +373,8 @@ class Game:
             self.ball.props["AssemblyLinearVelocity"] = Vector3() if self.ball_by_hand else self.ball_vel
         self._ball_v = self.ball.props["AssemblyLinearVelocity"]
         self.update_hud()
+        for h in list(self.hooks):
+            h(now)
         W.run.signal("Heartbeat").fire(DT)
         self.check_errors()
 
@@ -1956,9 +1959,11 @@ def knit_folder(g, *names):
     return path
 
 
-def style_service(g, rolls, spins=5, lucky=0):
-    """StyleService.RE.Spin and the spin screen: a spin with true uses a lucky spin, otherwise an
-    ordinary one, and rolls the next style in `rolls` (Isagi once they run out)."""
+def style_service(g, rolls, spins=5, lucky=0, reel=0.0, equip=True, screen=True):
+    """StyleService.RE.Spin and the spin screen. A spin with true uses a lucky spin, otherwise an
+    ordinary one: the count drops straight away, the reel runs `reel` seconds (a spin pressed while
+    it's going is thrown away), then it lands on the next style in `rolls` (Isagi once they run
+    out): 'SPUN "..."' on the screen, and your style unless `equip` is off."""
     from roblox import RemoteEvent, StringValue
     remote = RemoteEvent(g.W, "Spin")
     remote.set_parent(knit_folder(g, "StyleService", "RE"))
@@ -1969,45 +1974,84 @@ def style_service(g, rolls, spins=5, lucky=0):
     style = StringValue(g.W, "Style", Value="Isagi")
     style.set_parent(stats)
     sg = ScreenGui(g.W, "StylesSpin")
-    sg.set_parent(g.pg)
-    left = TextLabel(g.W, "Left")
-    left.set_parent(sg)
-    luck = TextLabel(g.W, "Lucky")
-    luck.set_parent(sg)
-    state = {"spins": spins, "lucky": lucky, "rolls": list(rolls), "args": [], "style": style}
+    if screen:
+        sg.set_parent(g.pg)
+    left, luck, spun = TextLabel(g.W, "Left"), TextLabel(g.W, "Lucky"), TextLabel(g.W, "Spun", Text="")
+    for lbl in (left, luck, spun):
+        lbl.set_parent(sg)
+    state = {"spins": spins, "lucky": lucky, "rolls": list(rolls), "args": [], "rejected": [], "style": style,
+             "busy_until": -INF, "pending": None, "remote": remote}
 
     def show():
         left.props["Text"] = f"SPINS LEFT: {state['spins']}"
         luck.props["Text"] = f"LUCKY SPINS: {state['lucky']}"
     show()
 
+    def finish():
+        r, state["pending"] = state["pending"], None
+        spun.props["Text"] = f'SPUN "{r}"'
+        if equip:
+            style.props["Value"] = r
+
     def on_spin(*args):
-        state["args"].append(args)
+        if g.now < state["busy_until"]:
+            state["rejected"].append(args)
+            return
         if args and args[0] is True and state["lucky"] > 0:
             state["lucky"] -= 1
         elif state["spins"] > 0:
             state["spins"] -= 1
         else:
             return  # "Not enough money and no spins!"
-        style.props["Value"] = state["rolls"].pop(0) if state["rolls"] else "Isagi"
+        state["args"].append(args)
+        state["pending"] = state["rolls"].pop(0) if state["rolls"] else "Isagi"
+        state["busy_until"] = g.now + reel
         show()
+        if reel == 0:
+            finish()
     remote.server.append(on_spin)
+    g.hooks.append(lambda now: finish() if state["pending"] and now >= state["busy_until"] else None)
     return state
 
 
-def spin_game(**cfg):
-    base = {"SpinFor": '{ "Kaiser" }', "SpinDelay": "0.3", "Codes": "{}"}
+def set_env(g, **values):
+    env = g.I.call(g.I.G.get("getgenv"), [])
+    env = env[0] if isinstance(env, list) else env
+    for k, v in values.items():
+        env.set(k, LuaTable(v) if isinstance(v, list) else v)
+    return env
+
+
+def spin_game(verified=False, **cfg):
+    base = {"SpinFor": '{ "Kaiser" }', "SpinWait": "3", "SpinSettle": "0.2", "Codes": "{}"}
     base.update(cfg)
-    return Game(cfg=base)
+    g = Game(cfg=base)
+    if verified:
+        set_env(g, AutoDribbleRollbackOK=True)
+    return g
+
+
+@test
+def spins_first_round_tests_the_rollback_with_one_spin():
+    g = spin_game().load()
+    customization_service(g)
+    st = style_service(g, ["Nagi"], spins=5, lucky=2)
+    q = queued(g)
+    g.tap("spins")
+    g.run(3.0)
+    check(len(st["args"]) == 1, f"one spin, no more, until the rollback's been seen to work ({st['args']})")
+    check(len(g.W.teleports) == 1, f"then rejoined ({g.W.teleports})")
+    check(q and "AutoDribbleSpinsBefore = 7" in q[0] and "AutoDribbleRollbackOK = false" in q[0],
+          f"telling the next server to check 7 spins come back ({q})")
 
 
 @test
 def spins_auto_spins_until_the_style_lands():
-    g = spin_game().load()
+    g = spin_game(verified=True).load()
     server = customization_service(g)
     st = style_service(g, ["Nagi", "Bachira", "Kaiser", "Rin"], spins=5, lucky=2)
     g.tap("spins")
-    g.run(3.0)
+    g.run(4.0)
     check(st["style"].props["Value"] == "Kaiser", f"stopped on Kaiser ({st['style'].props['Value']}, {st['args']})")
     check(len(st["args"]) == 3, f"three spins, no more ({st['args']})")
     check([a[0] for a in st["args"]] == [True, True, False], f"lucky spins first ({st['args']})")
@@ -2016,31 +2060,65 @@ def spins_auto_spins_until_the_style_lands():
 
 
 @test
+def spins_wait_for_each_reel():
+    g = spin_game(verified=True).load()
+    customization_service(g)
+    st = style_service(g, ["Nagi", "Bachira", "Kaiser"], spins=5, reel=2.0)
+    g.tap("spins")
+    g.run(10.0)
+    check(not st["rejected"], f"never pressed while the reel was going ({len(st['rejected'])} thrown away)")
+    check(st["style"].props["Value"] == "Kaiser" and len(st["args"]) == 3, f"and got there ({st['args']})")
+
+
+@test
+def spins_land_on_the_spun_result():
+    g = spin_game(verified=True).load()
+    server = customization_service(g)
+    st = style_service(g, ["Nagi", "Kaiser", "Rin"], spins=5, equip=False)  # the result only shows as SPUN
+    g.tap("spins")
+    g.run(3.0)
+    check(len(st["args"]) == 2 and server["saves"](), f"stopped at the SPUN Kaiser ({st['args']})")
+
+
+@test
 def spins_auto_rolls_back_when_the_spins_run_out():
-    g = spin_game().load()
+    g = spin_game(verified=True).load()
     customization_service(g)
     st = style_service(g, ["Nagi", "Bachira", "Chigiri"], spins=3)
     q = queued(g)
     g.tap("spins")
-    g.run(3.0)
+    g.run(4.0)
     check(len(st["args"]) == 3, f"used all three ({st['args']})")
     check(len(g.W.teleports) == 1, f"then rejoined for them back ({g.W.teleports})")
-    check(q and 'getgenv().SpinFor = { "Kaiser" }' in q[0], f"and the next server carries on for Kaiser ({q})")
+    check(q and 'getgenv().SpinFor = { "Kaiser" }' in q[0] and "AutoDribbleSpinsBefore = 3" in q[0]
+          and "AutoDribbleRollbackOK = true" in q[0], f"and the next server carries on for Kaiser ({q})")
 
 
 @test
-def spins_auto_carries_on_after_a_rollback():
+def spins_carry_on_after_a_rollback_that_worked():
     g = spin_game(SpinFor="{}")
-    arrive_from_rollback(g)
-    env = g.I.call(g.I.G.get("getgenv"), [])
-    env = env[0] if isinstance(env, list) else env
-    env.set("SpinFor", LuaTable(["Kaiser"]))
+    set_env(g, AutoDribbleRolledBack=5, AutoDribbleSpinsBefore=2, AutoDribbleRollbackOK=False, SpinFor=["Kaiser"])
     server = customization_service(g)
-    st = style_service(g, ["Kaiser"], spins=2)
+    st = style_service(g, ["Nagi", "Kaiser"], spins=2)
     g.load()
-    g.run(2.0)
-    check(st["args"] and st["style"].props["Value"] == "Kaiser", f"spun on arrival and got it ({st['args']})")
+    g.run(4.0)
+    check(any("Rollback works" in n for n in g.W.notes), f"the 2 spins came back, and it says so ({g.W.notes})")
+    check(len(st["args"]) == 2 and st["style"].props["Value"] == "Kaiser" and not g.W.teleports,
+          f"so it spun on past a miss without testing again, and got it ({st['args']}, {g.W.teleports})")
     check(server["saves"](), "saves back on")
+
+
+@test
+def spins_stop_when_the_rollback_didnt_work():
+    g = spin_game()
+    set_env(g, AutoDribbleRolledBack=5, AutoDribbleSpinsBefore=8, AutoDribbleRollbackOK=False)
+    server = customization_service(g)
+    st = style_service(g, ["Kaiser"], spins=0, lucky=7)  # one short: the test spin was kept
+    g.load()
+    g.run(3.0)
+    check(not st["args"], f"no more spins used ({st['args']})")
+    check(server["saves"](), "saves back on")
+    check(any("didn't give your spins back" in n for n in g.W.notes), f"and says why ({g.W.notes})")
 
 
 @test
@@ -2057,18 +2135,26 @@ def spins_auto_never_rejoins_in_circles_with_none():
 
 @test
 def spins_auto_gives_up_when_spins_dont_go_through():
-    g = spin_game().load()
+    g = spin_game(verified=True).load()
     customization_service(g)
-    style_service(g, ["Nagi"], spins=5)
-    spin = knit_folder(g, "StyleService", "RE").m_FindFirstChild("Spin")
-    spin.server.clear()  # the server ignores them (say the game wants other arguments)
+    st = style_service(g, ["Nagi"], spins=5)
+    st["remote"].server.clear()  # the server ignores them (say the game wants other arguments)
     g.tap("spins")
-    g.run(10.0)
-    fired = [f for f in g.W.fired if f[1] is spin]
-    check(6 <= len(fired) <= 8, f"gave up after a handful ({len(fired)})")
+    g.run(12.0)
+    fired = [f for f in g.W.fired if f[1] is st["remote"]]
+    check(len(fired) == 3, f"gave up after three that did nothing ({len(fired)})")
     check(not g.W.teleports, f"no rejoining over spins that go nowhere ({g.W.teleports})")
-    check(g.pill_text("spins") in ("SPIN BY HAND", "SPINS ON"), f"pill reads {g.pill_text('spins')!r}")
     check(any("aren't going through" in n for n in g.W.notes), f"and says so ({g.W.notes})")
+
+
+@test
+def spins_ask_for_the_spin_screen():
+    g = spin_game(verified=True).load()
+    customization_service(g)
+    st = style_service(g, ["Kaiser"], spins=5, screen=False)
+    g.tap("spins")
+    check(g.pill_text("spins") == "OPEN SPINS", f"pill reads {g.pill_text('spins')!r}")
+    check(any("spin screen" in n for n in g.W.notes) and not st["args"], f"and spins nothing blind ({g.W.notes})")
 
 
 @test
@@ -2080,10 +2166,10 @@ def codes_redeemed_through_the_games_remote():
     rf.set_parent(knit_folder(g, "CodesService", "RF"))
     rf.server = lambda code: got.append(tostr(code)) or "Redeemed!"
     g.load()
-    g.run(1.0)
+    g.run(3.0)
     check(got == ["AAA", "BBB"], f"each code sent once ({got})")
     g.load()  # run again in the same server
-    g.run(1.0)
+    g.run(3.0)
     check(got == ["AAA", "BBB"], f"not again in the same server ({got})")
 
 
@@ -2108,9 +2194,63 @@ def codes_typed_into_the_code_box_without_a_remote():
     """, "GameCodes")
     g.I.sched.spawn(client, [])
     g.load()
-    g.run(1.0)
+    g.run(3.0)
     got = [tostr(v) for v in g.I.G.get("_G").get("redeemed").array()]
     check(got == ["AAA", "BBB"], f"typed in and redeemed, each once ({got})")
+
+
+@test
+def codes_say_what_they_gave():
+    from roblox import RemoteFunction
+    g = Game(cfg={"Codes": '{ "AAA", "OLD" }', "CodeDelay": "0.1", "SpinFor": "{}"})
+    st = style_service(g, [], spins=0, lucky=8)
+    rf = RemoteFunction(g.W, "RedeemCode")
+    rf.set_parent(knit_folder(g, "CodesService", "RF"))
+
+    def redeem(code):
+        if tostr(code) == "AAA":
+            st["lucky"] += 5
+            g.pg.m_FindFirstChild("StylesSpin").m_FindFirstChild("Lucky").props["Text"] = f"LUCKY SPINS: {st['lucky']}"
+            return "Redeemed!"
+        return "Code expired"
+    rf.server = redeem
+    g.load()
+    g.run(4.0)
+    check(any("+5 spins" in n for n in g.W.notes), f"says how many it gave ({g.W.notes})")
+
+
+@test
+def codes_that_give_nothing_say_why():
+    from roblox import RemoteFunction
+    g = Game(cfg={"Codes": '{ "AAA" }', "CodeDelay": "0.1", "SpinFor": "{}"})
+    style_service(g, [], spins=0, lucky=8)
+    rf = RemoteFunction(g.W, "RedeemCode")
+    rf.set_parent(knit_folder(g, "CodesService", "RF"))
+    rf.server = lambda code: "You must be level 10"
+    g.load()
+    g.run(4.0)
+    check(any("gave no spins" in n and "level 10" in n and "You must be level 10" in n for n in g.W.notes),
+          f"says they gave nothing, and what the game said ({g.W.notes})")
+
+
+@test
+def codes_finish_before_saves_go_off():
+    from roblox import RemoteFunction
+    g = Game(cfg={"Codes": '{ "AAA", "BBB", "CCC" }', "CodeDelay": "0.5", "SpinFor": "{}"})
+    server = customization_service(g)
+    when = {}
+    rf = RemoteFunction(g.W, "RedeemCode")
+    rf.set_parent(knit_folder(g, "CodesService", "RF"))
+    rf.server = lambda code: when.__setitem__(tostr(code), g.now)
+    g.load()
+    g.run(0.3)
+    g.tap("spins")  # while the codes are still going in
+    check(g.pill_text("spins") == "CODES...", f"pill reads {g.pill_text('spins')!r}")
+    g.run(4.0)
+    poisoned = [t for t, r, a in g.W.fired if r.name == "Customize"]
+    check(len(when) == 3 and poisoned and poisoned[0] > max(when.values()),
+          f"saves went off after the last code, so what they gave is kept ({when}, {poisoned})")
+    check(g.pill_text("spins") == "SPINS ON", f"then on ({g.pill_text('spins')!r})")
 
 
 @test
