@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v9 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v10 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -32,7 +32,11 @@
            hold ~1s and let go, then tap the same pill = forget the forced button
     Red = off, green = on, amber = on but no ball found, grey = paused, blue = waiting for your tap.
 
-    The black box under the pills is a live readout (Debug = false hides it):
+    BLATANT (on by default): the keeper teleports onto a shot's path and dives into it; tackle puts
+    you 3 studs from the carrier before the slide. Both still skip fakes and open dribble windows.
+    Stamina is held at its max all the time, no button.
+
+    With Debug = true, a black box under the pills is a live readout:
       line 1  what your executor allows (Y = works, n = blocked, ? = not tried yet), and your ping
       line 2  the ball and the nearest enemy (distance, and seconds until they reach you)
       line 3  the last press: which move, whether it found the game's button, the method, OK / miss
@@ -44,20 +48,21 @@ local CFG = {
     Labels       = { dribble = { "dribble" }, tackle = { "slide", "tackle", "steal" }, dive = { "dive" } },
     BallNames    = { Football = true, Ball = true, SoccerBall = true },
     HoldDist     = 5,      -- the nearest player within this of the ball (studs) has it
-    Debug        = true,   -- the live readout under the pills
+    Debug        = false,  -- true shows a live readout box under the pills
+    Blatant      = true,   -- teleports: the keeper onto the shot's path, you next to the carrier to slide
     EngineInput  = true,   -- allow the virtual key and click as last resorts
     Cooldowns    = { dribble = 3, tackle = 3, dive = 1.5 }, -- first guesses (s), replaced once learned
     UiScale      = 1,      -- size of the pills and readout: 1.3 = bigger, 0.8 = smaller
-    InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side
+    InfStamina   = true,   -- hold stamina at its max, wherever the game keeps it on your side (always on)
     Retry        = 0.5,    -- gap between tries of a ready move, in case the game swallowed a press
 
     -- dribble
     ScanDist     = 40,     -- watch enemies this far out (dashes close fast)
     Reach        = 4,      -- roughly how far a tackle reaches
-    ReactTime    = 0.25,   -- dribble this long before an enemy is in reach, plus your ping
+    ReactTime    = 0.3,    -- dribble this long before an enemy is in reach, plus your ping
     MinClosing   = 6,      -- studs/s toward you; slower than this isn't a run at you
     LungeSpeed   = 40,     -- an enemy's own speed toward you above this is a slide or dash, not a run
-    TackleDist   = 16,     -- an enemy this close starting any move or a tackle animation is a tackle
+    TackleDist   = 18,     -- an enemy this close starting any move or a tackle animation is a tackle
     CloseDist    = 5,      -- an enemy this close and not backing off can steal: dribble
     TackleWords  = { "tackle", "steal", "slide" },
     Flick        = true,   -- jump with the ball over a tackle that comes while dribble is cooling down
@@ -66,6 +71,7 @@ local CFG = {
     SlideSpeed   = 55,     -- studs/s, a first guess for timing where they'll be
     SlideReach   = 14,     -- studs, a first guess, then measured from your own slides
     SmartTackle  = true,   -- false = slide whenever in reach (still never into an open dribble window)
+    TeleportReach = 30,    -- Blatant: carriers this far away get a teleport and a slide
     TackleSnap   = 0.22,   -- an enemy whose dribble is ready only gets slid at when this close (s)
     Protect      = 0.8,    -- a dribble (yours or theirs) protects against tackles this long after it starts (s)
     EnemyCooldown= 3,      -- and is down this long after that (s)
@@ -81,6 +87,7 @@ local CFG = {
     DiveLead     = 0.2,    -- dive this long before the ball arrives, plus ping and travel time
     DiveSpeed    = 60,     -- roughly how fast a dive covers ground (studs/s)
     DiveReach    = 12,     -- roughly how far a dive carries you: wider than this, move first, dive last
+    SnapRange    = 30,     -- Blatant: furthest the keeper teleports onto a shot's path
     JumpHigh     = true,   -- jump for high balls close to you instead of diving under them
     HighBall     = 4,      -- studs above your middle that count as high
     JumpReach    = 5,      -- sideways: a high ball passing closer than this gets a jump, wider gets a dive
@@ -1144,11 +1151,13 @@ local function tackleAim(root, holder, lead)
     local h = char and char:FindFirstChildOfClass("Humanoid")
     if not (r and h and h.Health > 0) then return nil end
     local dist = flat(r.Position - root.Position).Magnitude
-    if dist > slideReach + 8 then return nil end
+    -- Blatant: you're put 3 studs from them before the slide, so it reaches from much further
+    local reach = CFG.Blatant and CFG.TeleportReach or slideReach
+    if dist > reach + 8 then return nil end
     -- where they'll be when the slide gets there; you see them a round trip late, so plus ping
-    local t = dist / CFG.SlideSpeed + lead
+    local t = (CFG.Blatant and math.min(dist, 3) or dist) / CFG.SlideSpeed + lead
     local aim = r.Position + flat(velocityOf(r)) * t
-    if flat(aim - root.Position).Magnitude > slideReach then return nil end
+    if flat(aim - root.Position).Magnitude > reach then return nil end
     local now = os.clock()
     -- mid-move or mid-dash: whatever it is, a dribble's protection may be up
     if now - (anyMoveAt[holder] or -math.huge) < CFG.Protect + lead then return nil end
@@ -1276,6 +1285,22 @@ local function keeper(root, hum, ball, s, holder, lead)
     -- a few frames. Shot-fast balls count straight away.
     if speed < CFG.SureShot and now - s.kickAt < CFG.ShotConfirm then return end
     if not onTarget(s) then return end
+    if CFG.Blatant and fieldDir and now >= diveUntil then
+        -- Snap onto the ball's path where it crosses your line, facing it: the shot meets you
+        -- instead of you chasing it. Kept inside the posts.
+        local base = goalBase()
+        local p, v = flat(s.pos - base), flat(s.vel)
+        local closing = -v:Dot(fieldDir)
+        local cross = p + v * (closing > 1 and p:Dot(fieldDir) / closing or 0)
+        local lateral = cross - fieldDir * cross:Dot(fieldDir)
+        if lateral.Magnitude > goalHalf then lateral = lateral.Unit * goalHalf end
+        local spot = Vector3.new(base.X + lateral.X, myPos.Y, base.Z + lateral.Z)
+        local jump = (spot - myPos).Magnitude
+        if jump > 1 and jump <= CFG.SnapRange then
+            root.CFrame = CFrame.lookAt(spot, Vector3.new(s.pos.X, spot.Y, s.pos.Z))
+            myPos = spot
+        end
+    end
     local t, d, at = closestApproach(s, myPos)
     shotPlan = { at = at, t = now + t } -- positioning walks you onto its path
     local side, up = flat(at - myPos).Magnitude, at.Y - myPos.Y
@@ -1306,13 +1331,46 @@ end
 -- "stamina" on you, your character or what they hold, or (with getgc) a script's table with a
 -- Stamina field. Each is held at its max: a "Max..." next to it if there is one, else the highest
 -- it has been. Stamina the server keeps to itself can't be reached from here.
-local stam = { found = "off", list = {}, nextScan = 0, nextDeep = 0 }
-local STAM_KEYS = { "Stamina", "stamina", "CurrentStamina", "currentStamina" }
+local stam = { found = "searching", list = {}, gc = {}, nextScan = 0, deep = nil, nextDeep = 0 }
+local STAM_WORDS = { "stamina", "energy", "endurance" }
+local NOT_STAM = { "max", "regen", "cost", "drain", "rate", "recover", "delay", "cooldown" }
 
 local function isStamina(name)
     local n = tostring(name):lower()
-    return n:find("stamina", 1, true) ~= nil and not (n:find("max", 1, true) or n:find("regen", 1, true)
-        or n:find("cost", 1, true) or n:find("drain", 1, true) or n:find("rate", 1, true))
+    for _, w in ipairs(NOT_STAM) do
+        if n:find(w, 1, true) then return false end
+    end
+    if n == "stam" then return true end
+    for _, w in ipairs(STAM_WORDS) do
+        if n:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+-- its max, from whatever sits next to it: MaxStamina, maxStamina, Max<name>, ...
+local function maxNear(get, name)
+    local cap = name:sub(1, 1):upper() .. name:sub(2)
+    for _, k in ipairs({ "Max" .. cap, "max" .. cap, "Max" .. name, "MaxStamina", "maxStamina", "MaxEnergy", "Max" }) do
+        local ok, v = pcall(get, k)
+        if ok and type(v) == "number" then return v end
+    end
+    return nil
+end
+
+-- the game's per-player data folders: ReplicatedStorage.PlayerData.<you> and the like
+local function playerFolders()
+    local out, mineNames = {}, { [LP.Name] = true, [tostring(LP.UserId)] = true }
+    for _, svc in ipairs({ game:GetService("ReplicatedStorage"), workspace }) do
+        for _, c in ipairs(svc:GetChildren()) do
+            if mineNames[c.Name] and c ~= LP.Character then table.insert(out, c) end
+            if c:IsA("Folder") or c:IsA("Configuration") then
+                for _, cc in ipairs(c:GetChildren()) do
+                    if mineNames[cc.Name] then table.insert(out, cc) end
+                end
+            end
+        end
+    end
+    return out
 end
 
 local function scanStamina()
@@ -1322,51 +1380,70 @@ local function scanStamina()
         if not (ok and type(all) == "table") then return end
         for name, v in pairs(all) do
             if type(v) == "number" and isStamina(name) then
-                table.insert(list, { kind = "attr", inst = inst, name = name, max = all["Max" .. name] or all.MaxStamina })
+                table.insert(list, { kind = "attr", inst = inst, name = name,
+                    max = maxNear(function(k) return all[k] end, name) })
             end
         end
     end
     local function values(root)
+        attrs(root)
         for _, d in ipairs(root:GetDescendants()) do
             if (d:IsA("NumberValue") or d:IsA("IntValue")) and isStamina(d.Name) then
-                local m = d.Parent:FindFirstChild("Max" .. d.Name) or d.Parent:FindFirstChild("MaxStamina")
-                table.insert(list, { kind = "value", inst = d, max = m and m.Value })
+                local parent = d.Parent
+                table.insert(list, { kind = "value", inst = d, name = d.Name,
+                    max = maxNear(function(k) return parent:FindFirstChild(k).Value end, d.Name) })
             end
             attrs(d)
         end
     end
     attrs(LP)
     for _, c in ipairs(LP:GetChildren()) do
-        if not (c:IsA("PlayerGui") or c.Name == "PlayerScripts") then
-            attrs(c)
-            values(c)
-        end
+        if not (c:IsA("PlayerGui") or c.Name == "PlayerScripts") then values(c) end
     end
-    local char = LP.Character
-    if char then
-        attrs(char)
-        values(char)
-    end
-    if #list == 0 and type(getgc) == "function" and os.clock() >= stam.nextDeep then
-        stam.nextDeep = os.clock() + 15 -- a full memory scan is heavy: only while nothing else is found
+    if LP.Character then values(LP.Character) end
+    pcall(function()
+        for _, f in ipairs(playerFolders()) do values(f) end
+    end)
+    stam.list = list
+    local first = list[1] or stam.gc[1]
+    local n = #list + #stam.gc
+    stam.found = first and (first.kind .. " " .. first.name .. (n > 1 and (" +" .. (n - 1)) or ""))
+        or (stam.deep and "searching" or "none")
+end
+
+-- A script's own table with a stamina field, found by walking the game's memory (getgc) a slice
+-- per frame so it doesn't hitch. Once at the start, then again every 20s while nothing is found.
+local function deepStep()
+    local d = stam.deep
+    if not d then
+        if type(getgc) ~= "function" or os.clock() < stam.nextDeep then return end
         local ok, objs = pcall(getgc, true)
-        if ok and type(objs) == "table" then
-            for _, o in ipairs(objs) do
-                if type(o) == "table" then
-                    for _, k in ipairs(STAM_KEYS) do
-                        local okv, v = pcall(rawget, o, k)
-                        if okv and type(v) == "number" then
-                            table.insert(list, { kind = "table", t = o, name = k,
-                                max = rawget(o, "Max" .. k) or rawget(o, "MaxStamina") or rawget(o, "maxStamina") })
-                        end
+        if not (ok and type(objs) == "table") then
+            stam.nextDeep = math.huge
+            return
+        end
+        d = { objs = objs, i = 1, found = {} }
+        stam.deep = d
+    end
+    local stop = math.min(d.i + 1500, #d.objs)
+    for i = d.i, stop do
+        local o = d.objs[i]
+        if type(o) == "table" then
+            pcall(function()
+                for k, v in next, o do
+                    if type(k) == "string" and type(v) == "number" and isStamina(k) and #d.found < 16 then
+                        table.insert(d.found, { kind = "table", t = o, name = k,
+                            max = maxNear(function(key) return rawget(o, key) end, k) })
                     end
                 end
-            end
+            end)
         end
     end
-    stam.list = list
-    local first = list[1]
-    stam.found = first and (first.kind .. " " .. first.name .. (#list > 1 and (" +" .. (#list - 1)) or "")) or "none"
+    d.i = stop + 1
+    if d.i > #d.objs then
+        stam.deep, stam.gc = nil, d.found
+        stam.nextDeep = (#d.found == 0 and #stam.list == 0) and os.clock() + 20 or math.huge
+    end
 end
 
 local function readStamina(e)
@@ -1386,13 +1463,16 @@ local function holdStamina()
         stam.nextScan = os.clock() + 3 -- new characters, new values
         pcall(scanStamina)
     end
-    for _, e in ipairs(stam.list) do
-        pcall(function()
-            local cur = readStamina(e)
-            if type(cur) ~= "number" then return end
-            e.top = math.max(e.top or cur, cur, type(e.max) == "number" and e.max or 0)
-            if cur < e.top then writeStamina(e, e.top) end
-        end)
+    pcall(deepStep)
+    for _, list in ipairs({ stam.list, stam.gc }) do
+        for _, e in ipairs(list) do
+            pcall(function()
+                local cur = readStamina(e)
+                if type(cur) ~= "number" then return end
+                e.top = math.max(e.top or cur, cur, type(e.max) == "number" and e.max or 0)
+                if cur < e.top then writeStamina(e, e.top) end
+            end)
+        end
     end
 end
 
@@ -1511,7 +1591,15 @@ bind(RunService.Heartbeat, function(dt)
         end
     elseif on.tackle and holder and isEnemy(holder) and ready("tackle") then
         local aim = tackleAim(root, holder, lead)
-        if aim then launch("tackle", root, hum, aim) end
+        if aim then
+            local off = flat(aim - root.Position)
+            if CFG.Blatant and off.Magnitude > 4 then
+                -- 3 studs short of where they'll be, facing them: the slide can't miss from there
+                local at = root.Position + off - off.Unit * 3
+                root.CFrame = CFrame.lookAt(at, Vector3.new(aim.X, at.Y, aim.Z))
+            end
+            launch("tackle", root, hum, aim)
+        end
     end
 end)
 

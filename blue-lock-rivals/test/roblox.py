@@ -1187,6 +1187,8 @@ class World:
         self.guisvc = GuiServiceC(self, "GuiService")
         self.http = HttpServiceC(self, "HttpService")
         self.vim = VIMC(self, "VirtualInputManager")
+        self.rs = Service(self, "ReplicatedStorage")
+        self.rs.CLASS = "ReplicatedStorage"
         self.coregui = Service(self, "CoreGui")
         self.coregui.CLASS = "CoreGui"
         self.hui = Folder(self, "HiddenUI")
@@ -1194,7 +1196,7 @@ class World:
         self.services = {"Workspace": self.workspace, "Players": self.players, "RunService": self.run,
                          "UserInputService": self.uis, "ContextActionService": self.cas,
                          "GuiService": self.guisvc, "HttpService": self.http,
-                         "VirtualInputManager": self.vim, "CoreGui": self.coregui}
+                         "VirtualInputManager": self.vim, "CoreGui": self.coregui, "ReplicatedStorage": self.rs}
         for s in self.services.values():
             if s.parent is None:
                 s.set_parent(self.game)

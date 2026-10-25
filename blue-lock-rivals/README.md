@@ -44,6 +44,19 @@ the other two.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
 
+## v10
+
+- **Blatant mode, on by default** (`Blatant = false` in CFG turns it off). The keeper teleports
+  onto a shot's path where it crosses your line, inside the posts and up to 30 studs, and dives
+  into it. Tackle teleports you 3 studs short of a carrier up to 30 studs away and slides. Both
+  still skip fake shots and never go into an open dribble window.
+- **Infinite stamina, always on (no button), with a much wider search:** names with stamina, energy
+  or endurance (not their max, regen, cost or drain), your attributes and values, your data
+  folder in ReplicatedStorage (`PlayerData.<you>` and the like), and the game's scripts' own
+  tables, walked a slice per frame with `getgc` so it doesn't hitch.
+- **No black box:** the readout is hidden (`Debug = true` brings it back).
+- **Dribble** reacts a bit earlier (0.3s ahead, tackles starting within 18 studs).
+
 ## v9
 
 - **No falling for fake shots.** The keeper reacts to the ball, never the wind-up, so a feint kick
@@ -98,7 +111,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 36 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 44 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

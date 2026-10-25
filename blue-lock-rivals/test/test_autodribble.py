@@ -60,7 +60,8 @@ class Bot:
 
 
 class Game:
-    def __init__(self, gk=False, hud=True, hide_functions=False, ping=0.05, cooldowns=None):
+    def __init__(self, gk=False, hud=True, hide_functions=False, ping=0.05, cooldowns=None, debug=True, blatant=False):
+        self.debug, self.blatant = debug, blatant
         self.I = Interp()
         self.W = W = World(self.I)
         W.ping = ping
@@ -182,6 +183,8 @@ class Game:
         self.update_hud()
         look = self.root.look.flat().unit()
         self.press_look[kind] = look
+        self.press_pos = getattr(self, "press_pos", {})
+        self.press_pos[kind] = self.root.props["Position"]
         if kind == "dribble":
             self.protect_until = self.now + self.protect
             self.anim.play("Dribble_Anim", "Action", 0.5)
@@ -199,6 +202,9 @@ class Game:
     # ---- the script
     def load(self):
         src = open(SCRIPT, encoding="utf-8").read()
+        # the tests read the readout, and most check the plain (non-teleporting) behaviour
+        src = src.replace("Debug        = false", "Debug        = " + ("true" if self.debug else "false"), 1)
+        src = src.replace("Blatant      = true", "Blatant      = " + ("true" if self.blatant else "false"), 1)
         f = self.I.load(src, "AutoDribble")
         if self.hide_functions:
             import roblox
@@ -621,8 +627,8 @@ def tackle_ignores_teammates():
     check(not g.presses("tackle"), f"no slide at a teammate ({g.events})")
 
 
-def keeper_game(at=Vector3(0, 3, 190), goal=False):
-    g = Game(gk=True)
+def keeper_game(at=Vector3(0, 3, 190), goal=False, blatant=False):
+    g = Game(gk=True, blatant=blatant)
     if goal:
         # the goal model: a net 44 studs wide just behind the line
         net = BasePart(g.W, "Net", Position=Vector3(0, 5, 197), Size=Vector3(44, 10, 4))
@@ -845,6 +851,113 @@ def keeper_doesnt_smother_a_standing_shooter():
     c.anim.play("ShootCharge", "Action", 1.0)
     g.run(1.0)
     check(not g.presses("dive"), f"no dive at someone faking a shot in front of you ({g.events})")
+
+
+@test
+def readout_hidden_by_default():
+    g = Game(debug=False).load()
+    g.run(0.3)
+    label = [c for c in g.bar().children if isinstance(c, TextLabel)][0]
+    check(label.props["Visible"] is False, "no black box")
+    check(g.bar().get_AbsoluteSize().y <= 30, f"just the pills ({g.bar().get_AbsoluteSize()})")
+
+
+@test
+def blatant_keeper_snaps_onto_a_corner_shot():
+    g = keeper_game(goal=True, blatant=True)
+    g.shoot(Vector3(-30, 2, 120), Vector3(19, 2, 193), 150)
+    g.run(0.2)
+    x = g.root.props["Position"].x
+    check(x > 12, f"teleported onto the shot's path (x {x:.1f})")
+    g.run(0.4)
+    check(g.presses("dive", "ok"), f"and dove into it ({g.events})")
+
+
+@test
+def blatant_keeper_still_ignores_a_push():
+    g = keeper_game(goal=True, blatant=True)
+    c = carrier_in_front(g, 168)
+    g.holder = None
+    g.friction = 450
+    g.ball.props["Position"] = c.pos + Vector3(0, -2, 1.5)
+    g.ball_vel = Vector3(4, 0, 100)
+    x0 = g.root.props["Position"].x
+    g.run(0.6)
+    check(not g.presses("dive"), f"no dive at the push ({g.events})")
+    check(abs(g.root.props["Position"].x - x0) < 3, "and no teleport for it")
+
+
+@test
+def blatant_tackle_teleports_and_slides():
+    g = Game(blatant=True).load()
+    carrier = g.bot("Kunigami", Vector3(16, 3, -18))
+    g.holder = carrier.player
+    carrier.brain = lambda bot, now: setattr(bot, "vel", Vector3(0, 0, -8))
+    g.tap("tackle")
+    g.run(0.5)
+    ok = g.presses("tackle", "ok")
+    check(ok, f"slid at a carrier 24 studs away ({g.events})")
+    gap = (g.press_pos["tackle"] - carrier.pos).flat().mag()
+    check(gap < 6, f"from right next to them ({gap:.1f} studs at the press)")
+
+
+@test
+def blatant_tackle_still_waits_out_a_dribble():
+    g = Game(blatant=True).load()
+    carrier = g.bot("Hiori", Vector3(0, 3, -20))
+    g.holder = None
+    g.tap("tackle")
+    g.run(0.2)
+    g.holder = carrier.player
+    carrier.anim.play("Dribble", "Action", 0.5)
+    t = g.now
+    p0 = g.root.props["Position"]
+    g.run(0.8)
+    early = [e for e in g.presses("tackle") if e[0] < t + 0.85]
+    check(not early, f"no teleport-slide into the dribble ({g.events})")
+    check((g.root.props["Position"] - p0).mag() < 1, "no teleport either")
+
+
+@test
+def stamina_named_energy():
+    g = Game()
+    g.lp.attrs["Energy"] = 10
+    g.lp.attrs["EnergyRegen"] = 5
+    g.load()
+    g.run(0.1)
+    g.lp.attrs["Energy"] = 3
+    g.lp.attrs["EnergyRegen"] = 2  # a slow debuff: not stamina, must be left alone
+    g.step()
+    check(g.lp.attrs["Energy"] == 10 and g.lp.attrs["EnergyRegen"] == 2, f"Energy held, regen untouched ({g.lp.attrs})")
+
+
+@test
+def stamina_in_a_player_data_folder():
+    g = Game()
+    data = Folder(g.W, "PlayerData")
+    data.set_parent(g.W.rs)
+    mine = Folder(g.W, "Me")
+    mine.set_parent(data)
+    v = NumberValue(g.W, "Stamina", Value=50)
+    v.set_parent(mine)
+    m = NumberValue(g.W, "MaxStamina", Value=120)
+    m.set_parent(mine)
+    g.load()
+    g.run(0.2)
+    check(v.props["Value"] == 120, f"ReplicatedStorage.PlayerData.Me.Stamina held at its max ({v.props['Value']})")
+
+
+@test
+def stamina_in_a_script_table_by_any_name():
+    g = Game()
+    t = LuaTable()
+    t.set("sprintStamina", 12)
+    t.set("maxSprintStamina", 60)
+    junk = [LuaTable() for _ in range(4000)]  # takes a few frames to walk
+    g.I.G.set("getgc", lambda include=None: LuaTable(junk + [t]))
+    g.load()
+    g.run(0.3)
+    check(t.get("sprintStamina") == 60, f"found and held ({t.get('sprintStamina')}, {g.readout()!r})")
 
 
 @test
