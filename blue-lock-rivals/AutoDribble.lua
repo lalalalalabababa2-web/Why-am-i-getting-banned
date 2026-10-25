@@ -1,5 +1,5 @@
 --[[
-    Auto Dribble + Auto Tackle + Auto GK v14 - Blue Lock: Rivals (mobile)
+    Auto Dribble + Auto Tackle + Auto GK v15 - Blue Lock: Rivals (mobile)
     Roblox Luau, run through an executor (Delta / Codex / Arceus X on Android).
 
     DRIBBLE  While you have the ball, dribbles the moment an enemy is about to reach you or starts a
@@ -790,405 +790,408 @@ pcall(function()
 end)
 
 ---------------------------------------------------------------- pressing
+local faceDir, faceUntil, fire, launch, listenerCount, probe -- set in the block below, used further down
+do
 
--- a field of a connection getconnections handed back; some executors' connections throw on
--- fields they don't have instead of returning nil
-local function field(k, name)
-    local ok, v = pcall(function() return k[name] end)
-    if ok then return v end
-    return nil
-end
-
--- What runs a game connection: its function, or its own Fire on executors that keep the function
--- hidden. Nothing for one that's switched off, lives in another Lua state, or is the engine's own.
-local function runner(k)
-    if field(k, "ForeignState") or field(k, "LuaConnection") == false or field(k, "Enabled") == false then
+    -- a field of a connection getconnections handed back; some executors' connections throw on
+    -- fields they don't have instead of returning nil
+    local function field(k, name)
+        local ok, v = pcall(function() return k[name] end)
+        if ok then return v end
         return nil
     end
-    local fn = field(k, "Function")
-    if type(fn) == "function" then return fn end
-    local fireFn = field(k, "Fire")
-    if type(fireFn) == "function" then
-        return function(...) return fireFn(k, ...) end
-    end
-    return nil
-end
 
--- Runs the game's own Lua functions connected to a signal, skipping ours.
--- Returns how many ran; nothing passes through Roblox's input system.
-local function fire(signal, ...)
-    local ok, list = pcall(getconnections, signal)
-    if not ok or type(list) ~= "table" then return 0 end
-    local n = 0
-    for _, c in ipairs(list) do
-        local fn = runner(c)
-        if fn and not mine[fn] then
-            task.spawn(pcall, fn, ...)
-            n += 1
+    -- What runs a game connection: its function, or its own Fire on executors that keep the function
+    -- hidden. Nothing for one that's switched off, lives in another Lua state, or is the engine's own.
+    local function runner(k)
+        if field(k, "ForeignState") or field(k, "LuaConnection") == false or field(k, "Enabled") == false then
+            return nil
         end
+        local fn = field(k, "Function")
+        if type(fn) == "function" then return fn end
+        local fireFn = field(k, "Fire")
+        if type(fireFn) == "function" then
+            return function(...) return fireFn(k, ...) end
+        end
+        return nil
     end
-    return n
-end
 
-local SIGNALS = { "InputBegan", "InputEnded", "MouseButton1Down", "MouseButton1Up",
-                  "MouseButton1Click", "Activated", "TouchTap" }
-
--- how many of the game's functions listen to this object; zero means there's nothing to run
-local function listenerCount(obj)
-    local n = 0
-    for _, name in ipairs(SIGNALS) do
-        local ok, list = pcall(function() return getconnections(obj[name]) end)
-        if ok and type(list) == "table" then
-            for _, c in ipairs(list) do
-                local fn = runner(c)
-                if fn and not mine[fn] then n += 1 end
+    -- Runs the game's own Lua functions connected to a signal, skipping ours.
+    -- Returns how many ran; nothing passes through Roblox's input system.
+    function fire(signal, ...)
+        local ok, list = pcall(getconnections, signal)
+        if not ok or type(list) ~= "table" then return 0 end
+        local n = 0
+        for _, c in ipairs(list) do
+            local fn = runner(c)
+            if fn and not mine[fn] then
+                task.spawn(pcall, fn, ...)
+                n += 1
             end
         end
+        return n
     end
-    return n
-end
 
-local TOUCH_ID = 271828
+    local SIGNALS = { "InputBegan", "InputEnded", "MouseButton1Down", "MouseButton1Up",
+                      "MouseButton1Click", "Activated", "TouchTap" }
 
--- What this executor actually allows, tried on things of our own so nothing in the game moves.
-local function probe()
-    caps.conn, caps.sig = false, false
-    local function test(start, set)
-        local ok, be = pcall(Instance.new, "BindableEvent")
-        if not (ok and be) then return end
-        local hit = false
-        local c = be.Event:Connect(function() hit = true end)
-        pcall(start, be.Event)
-        task.delay(0.2, function() -- some executors run it right away, some a frame later
-            set(hit)
-            c:Disconnect()
-            be:Destroy()
-        end)
-    end
-    -- getconnections: run what it hands back instead of comparing it to ours. Some executors hand
-    -- back a wrapped copy, which never equals the original but runs just the same.
-    test(function(signal)
-        for _, k in ipairs(getconnections(signal)) do
-            local fn = runner(k)
-            if fn then fn() end
-        end
-    end, function(v) caps.conn = v end)
-    if type(firesignal) == "function" then
-        test(firesignal, function(v) caps.sig = v end)
-    end
-    -- an "up" for a finger that never touched down does nothing, but shows the call is allowed
-    caps.touch = VIM ~= nil and pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, -1, -1) end)
-end
-
-local function fakeInput(inputType, keyCode, state, pos)
-    return {
-        UserInputType = inputType,
-        KeyCode = keyCode,
-        UserInputState = state,
-        Position = pos or Vector3.zero,
-        Delta = Vector3.zero,
-        IsModifierKeyDown = function() return false end,
-    }
-end
-
--- the signals a real tap on a button fires, in the same order, each handed to `send`
-local function tapSignals(b, send)
-    local T, none = Enum.UserInputType.Touch, Enum.KeyCode.Unknown
-    local c = b.AbsolutePosition + b.AbsoluteSize / 2
-    local pos = Vector3.new(c.X, c.Y, 0)
-    local isButton = b:IsA("GuiButton")
-    send(b.InputBegan, fakeInput(T, none, Enum.UserInputState.Begin, pos))
-    if isButton then send(b.MouseButton1Down, c.X, c.Y) end
-    -- the release in the same frame: most games act on it (Activated), and every frame counts
-    -- against a tackle from close up
-    local up = fakeInput(T, none, Enum.UserInputState.End, pos)
-    send(b.InputEnded, up)
-    if isButton then
-        send(b.MouseButton1Up, c.X, c.Y)
-        send(b.MouseButton1Click)
-        send(b.Activated, up, 1)
-        send(b.TouchTap, { c })
-    end
-end
-
--- where the button is on the actual screen, for the virtual finger and mouse
-local function screenCentre(b)
-    local sg = b:FindFirstAncestorWhichIsA("ScreenGui")
-    local inset = (sg and not sg.IgnoreGuiInset) and GuiService:GetGuiInset() or Vector2.zero
-    return b.AbsolutePosition + b.AbsoluteSize / 2 + inset
-end
-
--- BTN: run the button's own functions
-local function pressButton(b)
-    if not caps.conn or listenerCount(b) == 0 then return false end
-    tapSignals(b, fire)
-    return true
-end
-
--- TAP: a second finger on the button through Roblox's input system. It's still a touch,
--- so the joystick keeps its own finger and nothing flips into keyboard mode.
--- Tried on every press whatever the startup check said: a refused call costs nothing.
-local function tapButton(b)
-    if not VIM then return false end
-    local c = screenCentre(b)
-    caps.touch = pcall(function() VIM:SendTouchEvent(TOUCH_ID, 0, c.X, c.Y) end) -- Begin
-    if not caps.touch then return false end
-    task.delay(0.05, function()
-        pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, c.X, c.Y) end) -- End
-    end)
-    return true
-end
-
--- SIG: the executor fires the button's signals itself, for when it won't hand over the functions
-local function sigButton(b)
-    if not caps.sig then return false end
-    tapSignals(b, function(signal, ...) pcall(firesignal, signal, ...) end)
-    return true
-end
-
--- KEY: the move's key straight into the game's InputBegan listeners and its ContextActionService
--- binding. The binding needs no getconnections (CallFunction runs it), so it's tried even when
--- that's blocked. An action named after the move wins; otherwise every action bound to the key.
-local function casCall(kind, state)
-    local n = 0
-    pcall(function()
-        local all, picked = CAS:GetAllBoundActionInfo(), {}
-        for name in pairs(all) do
-            local lower = tostring(name):lower()
-            for _, w in ipairs(CFG.Labels[kind]) do
-                if lower:find(w, 1, true) then
-                    table.insert(picked, name)
-                    break
+    -- how many of the game's functions listen to this object; zero means there's nothing to run
+    function listenerCount(obj)
+        local n = 0
+        for _, name in ipairs(SIGNALS) do
+            local ok, list = pcall(function() return getconnections(obj[name]) end)
+            if ok and type(list) == "table" then
+                for _, c in ipairs(list) do
+                    local fn = runner(c)
+                    if fn and not mine[fn] then n += 1 end
                 end
             end
         end
-        if #picked == 0 then
-            for name, info_ in pairs(all) do
-                if type(info_.inputTypes) == "table" and table.find(info_.inputTypes, CFG.Keys[kind]) then
-                    table.insert(picked, name)
-                end
+        return n
+    end
+
+    local TOUCH_ID = 271828
+
+    -- What this executor actually allows, tried on things of our own so nothing in the game moves.
+    function probe()
+        caps.conn, caps.sig = false, false
+        local function test(start, set)
+            local ok, be = pcall(Instance.new, "BindableEvent")
+            if not (ok and be) then return end
+            local hit = false
+            local c = be.Event:Connect(function() hit = true end)
+            pcall(start, be.Event)
+            task.delay(0.2, function() -- some executors run it right away, some a frame later
+                set(hit)
+                c:Disconnect()
+                be:Destroy()
+            end)
+        end
+        -- getconnections: run what it hands back instead of comparing it to ours. Some executors hand
+        -- back a wrapped copy, which never equals the original but runs just the same.
+        test(function(signal)
+            for _, k in ipairs(getconnections(signal)) do
+                local fn = runner(k)
+                if fn then fn() end
             end
+        end, function(v) caps.conn = v end)
+        if type(firesignal) == "function" then
+            test(firesignal, function(v) caps.sig = v end)
         end
-        for _, name in ipairs(picked) do
-            CAS:CallFunction(name, state, lastInput)
-            n += 1
-        end
-    end)
-    return n
-end
-
-local function pressKey(kind)
-    local K, key = Enum.UserInputType.Keyboard, CFG.Keys[kind]
-    local n = caps.conn and fire(UIS.InputBegan, fakeInput(K, key, Enum.UserInputState.Begin), false) or 0
-    n += casCall(kind, Enum.UserInputState.Begin)
-    if n == 0 then return false end
-    task.delay(0.03, function()
-        if caps.conn then fire(UIS.InputEnded, fakeInput(K, key, Enum.UserInputState.End), false) end
-        casCall(kind, Enum.UserInputState.End)
-    end)
-    return true
-end
-
--- VKEY / CLICK: real virtual input. Last resorts: a keyboard or mouse event makes this game switch
--- to its PC layout (key hints) until your next touch.
-local function vkey(kind)
-    if not (VIM and CFG.EngineInput) then return false end
-    local key = CFG.Keys[kind]
-    caps.key = pcall(function() VIM:SendKeyEvent(true, key, false, game) end)
-    if not caps.key then return false end
-    task.delay(0.03, function()
-        pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
-    end)
-    return true
-end
-
-local function clickButton(b)
-    if not (VIM and CFG.EngineInput) then return false end
-    local c = screenCentre(b)
-    if not pcall(function() VIM:SendMouseButtonEvent(c.X, c.Y, 0, true, game, 0) end) then return false end
-    task.delay(0.03, function()
-        pcall(function() VIM:SendMouseButtonEvent(c.X, c.Y, 0, false, game, 0) end)
-    end)
-    return true
-end
-
-local function playingSet(hum)
-    local set, animator = {}, hum:FindFirstChildOfClass("Animator")
-    if animator then
-        for _, t in ipairs(animator:GetPlayingAnimationTracks()) do set[t] = true end
+        -- an "up" for a finger that never touched down does nothing, but shows the call is allowed
+        caps.touch = VIM ~= nil and pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, -1, -1) end)
     end
-    return set, animator
-end
 
--- Did the move really happen? A new move-priority animation, a lunge you can't walk, or the game's
--- button changing the way it does when the move goes on cooldown.
-local function verify(root, hum, before, speed0, b, look0)
-    local _, animator = playingSet(hum)
-    local limit = math.max(speed0 + 20, 30)
-    local t0 = os.clock()
-    local lastP, lastT = root.Position, t0
-    while os.clock() - t0 < 0.45 do
-        task.wait()
-        if animator then
-            for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
-                if not before[t] and ACTION[t.Priority] then return true end
-            end
-        end
-        -- a lunge the game moves by CFrame has no physics speed, so it's read from position too
-        local now, speed = os.clock(), flat(root.AssemblyLinearVelocity).Magnitude
-        if now - lastT >= 0.05 then
-            speed = math.max(speed, flat(root.Position - lastP).Magnitude / (now - lastT))
-            lastP, lastT = root.Position, now
-        end
-        if speed > limit then return true end
-        if look0 and b.Parent and shown(b) and look(b) ~= look0 then return true end
+    local function fakeInput(inputType, keyCode, state, pos)
+        return {
+            UserInputType = inputType,
+            KeyCode = keyCode,
+            UserInputState = state,
+            Position = pos or Vector3.zero,
+            Delta = Vector3.zero,
+            IsModifierKeyDown = function() return false end,
+        }
     end
-    return false
-end
 
--- The button goes back to how it looked before the press once the move is ready again, so the
--- time that takes is the cooldown. Only learned when it changed and came back while staying on
--- screen; after that, a button that still looks different means "cooling", whatever the timer says.
-local function learnCooldown(kind, b, t0)
-    local m = move[kind]
-    local changed = false
-    while os.clock() - t0 < 20 do
-        task.wait(0.1)
-        if not (b.Parent and shown(b)) then return end
-        if look(b) ~= m.ready then
-            changed = true
-        elseif changed then
-            m.cd = math.max(CFG.Retry, os.clock() - t0)
-            m.learned = true
-            return
+    -- the signals a real tap on a button fires, in the same order, each handed to `send`
+    local function tapSignals(b, send)
+        local T, none = Enum.UserInputType.Touch, Enum.KeyCode.Unknown
+        local c = b.AbsolutePosition + b.AbsoluteSize / 2
+        local pos = Vector3.new(c.X, c.Y, 0)
+        local isButton = b:IsA("GuiButton")
+        send(b.InputBegan, fakeInput(T, none, Enum.UserInputState.Begin, pos))
+        if isButton then send(b.MouseButton1Down, c.X, c.Y) end
+        -- the release in the same frame: most games act on it (Activated), and every frame counts
+        -- against a tackle from close up
+        local up = fakeInput(T, none, Enum.UserInputState.End, pos)
+        send(b.InputEnded, up)
+        if isButton then
+            send(b.MouseButton1Up, c.X, c.Y)
+            send(b.MouseButton1Click)
+            send(b.Activated, up, 1)
+            send(b.TouchTap, { c })
         end
     end
-end
 
--- Top-down through the methods, skipping one that has just missed twice in a row (four times if it
--- has worked before) until 20s have passed. So the gentlest method that works is always the one used.
-local METHODS = { "BTN", "TAP", "SIG", "KEY", "VKEY", "CLICK" }
-
-local function usable(m, i)
-    local bad = m.bad[i]
-    return not bad or bad.n < (m.good[i] and 4 or 2) or os.clock() - bad.at > 20
-end
-
-local function attempt(how, b, kind)
-    if how == "BTN" then return b ~= nil and pressButton(b) end
-    if how == "TAP" then return b ~= nil and tapButton(b) end
-    if how == "SIG" then return b ~= nil and sigButton(b) end
-    if how == "KEY" then return pressKey(kind) end
-    if how == "VKEY" then return vkey(kind) end
-    return b ~= nil and clickButton(b)
-end
-
-local function result(kind, i, ok, b, look0, pressedAt)
-    local m = move[kind]
-    dbg.last ..= ok and " OK" or " miss"
-    if ok then
-        m.at, m.bad[i], m.good[i] = os.clock(), nil, true
-        if look0 then
-            m.ready = look0
-            task.spawn(learnCooldown, kind, b, pressedAt)
-        end
-        notify(kind, DONE[kind], COLORS.on)
-    else
-        local bad = m.bad[i] or { n = 0 }
-        bad.n, bad.at = bad.n + 1, os.clock()
-        m.bad[i] = bad
-        notify(kind, "NO " .. MOVES[kind], COLORS.noBall)
+    -- where the button is on the actual screen, for the virtual finger and mouse
+    local function screenCentre(b)
+        local sg = b:FindFirstAncestorWhichIsA("ScreenGui")
+        local inset = (sg and not sg.IgnoreGuiInset) and GuiService:GetGuiInset() or Vector2.zero
+        return b.AbsolutePosition + b.AbsoluteSize / 2 + inset
     end
-end
 
--- Returns true when something was pressed.
-local function trigger(kind, root, hum)
-    local m = move[kind]
-    local b = getTarget(kind) or byLabel(kind)
-    if b then
-        m.seen = true
-    elseif m.seen or exists(kind) then
-        -- the game has this button, it just isn't on screen: a cutscene, or the move isn't
-        -- available right now. A key or click would only flip the game to its PC layout.
-        m.seen = true
-        dbg.last = MOVES[kind] .. " button off screen"
-        return false
-    end
-    local look0 = look(b)
-    if m.learned and b and look0 ~= m.ready then
-        -- The button still looks the way it does while cooling. Far longer than the cooldown it
-        -- learned means its look changed for some other reason (a tint, a new HUD): stop trusting it.
-        if os.clock() - m.at < m.cd * 2 + 3 then
-            dbg.last = MOVES[kind] .. " still cooling (button)"
-            m.hold = os.clock() + 0.2 -- look again shortly
-            return false
-        end
-        m.learned = false
-    end
-    local before, speed0 = playingSet(hum), flat(root.AssemblyLinearVelocity).Magnitude
-    local seen = b and (b:IsA("GuiButton") and "yes" or "label") or "NO"
-    local function try(i)
-        local how = METHODS[i]
-        local t0 = os.clock()
-        if not attempt(how, b, kind) then return false end
-        dbg.last = ("%s btn:%s via %s"):format(MOVES[kind], seen, how)
-        flash(kind, MOVES[kind] .. ": " .. how)
-        result(kind, i, verify(root, hum, before, speed0, b, look0), b, look0, t0)
+    -- BTN: run the button's own functions
+    local function pressButton(b)
+        if not caps.conn or listenerCount(b) == 0 then return false end
+        tapSignals(b, fire)
         return true
     end
-    for i = 1, #METHODS do
-        if usable(m, i) and try(i) then return true end
-    end
-    -- everything usable is skipped or refused: give the skipped ones another chance now
-    for i = 1, #METHODS do
-        if not usable(m, i) and try(i) then return true end
-    end
-    dbg.last = ("%s btn:%s nothing worked"):format(MOVES[kind], seen)
-    say(kind, "NO BUTTON", COLORS.off, WHITE, 1.5)
-    return false
-end
 
--- Turn toward `at` for a moment (dives and slides go the way you face). The game's auto-rotate
--- would turn you back toward your thumb, so it's off for the turn and comes back after.
-local autoSaved, autoGen = nil, 0
-local faceDir, faceUntil = nil, 0 -- a direction held every frame for a moment (see refaceNow)
-local function face(root, hum, at)
-    local look_ = Vector3.new(at.X, root.Position.Y, at.Z)
-    if (look_ - root.Position).Magnitude < 0.5 then return end
-    if autoSaved == nil then autoSaved = hum.AutoRotate end
-    autoGen += 1
-    local gen = autoGen
-    hum.AutoRotate = false
-    root.CFrame = CFrame.lookAt(root.Position, look_)
-    -- the direction, not the point: a dive or slide carries you past the point
-    faceDir, faceUntil = (look_ - root.Position).Unit, os.clock() + 0.35
-    hum:Move((look_ - root.Position).Unit)
-    task.delay(0.4, function()
-        if autoGen ~= gen then return end
-        if hum.Parent then hum.AutoRotate = autoSaved end
-        autoSaved = nil
-    end)
-end
+    -- TAP: a second finger on the button through Roblox's input system. It's still a touch,
+    -- so the joystick keeps its own finger and nothing flips into keyboard mode.
+    -- Tried on every press whatever the startup check said: a refused call costs nothing.
+    local function tapButton(b)
+        if not VIM then return false end
+        local c = screenCentre(b)
+        caps.touch = pcall(function() VIM:SendTouchEvent(TOUCH_ID, 0, c.X, c.Y) end) -- Begin
+        if not caps.touch then return false end
+        task.delay(0.05, function()
+            pcall(function() VIM:SendTouchEvent(TOUCH_ID, 2, c.X, c.Y) end) -- End
+        end)
+        return true
+    end
 
--- Press a move, turned toward `at` first when given. The press goes in the same frame as the
--- turn, before shift lock or the camera can turn you back.
-local function launch(kind, root, hum, at)
-    local m = move[kind]
-    m.busy, m.tried = true, os.clock()
-    task.spawn(function()
-        local from = root.Position
-        if at then face(root, hum, at) end
-        -- an error mid-press must not leave the move marked busy for good
-        local ok, pressed = pcall(trigger, kind, root, hum)
-        if not ok then dbg.last = MOVES[kind] .. " error: " .. tostring(pressed) end
-        -- a slide that went off: how far it really carried you is how far the next one is aimed
-        if ok and pressed and kind == "tackle" and os.clock() - m.at < 1 then
-            task.wait(math.max(0, 0.7 - (os.clock() - m.tried)))
-            local d = flat(root.Position - from).Magnitude
-            if d > 4 then slideReach = math.clamp(slideReach * 0.5 + d * 0.5, 6, 30) end
+    -- SIG: the executor fires the button's signals itself, for when it won't hand over the functions
+    local function sigButton(b)
+        if not caps.sig then return false end
+        tapSignals(b, function(signal, ...) pcall(firesignal, signal, ...) end)
+        return true
+    end
+
+    -- KEY: the move's key straight into the game's InputBegan listeners and its ContextActionService
+    -- binding. The binding needs no getconnections (CallFunction runs it), so it's tried even when
+    -- that's blocked. An action named after the move wins; otherwise every action bound to the key.
+    local function casCall(kind, state)
+        local n = 0
+        pcall(function()
+            local all, picked = CAS:GetAllBoundActionInfo(), {}
+            for name in pairs(all) do
+                local lower = tostring(name):lower()
+                for _, w in ipairs(CFG.Labels[kind]) do
+                    if lower:find(w, 1, true) then
+                        table.insert(picked, name)
+                        break
+                    end
+                end
+            end
+            if #picked == 0 then
+                for name, info_ in pairs(all) do
+                    if type(info_.inputTypes) == "table" and table.find(info_.inputTypes, CFG.Keys[kind]) then
+                        table.insert(picked, name)
+                    end
+                end
+            end
+            for _, name in ipairs(picked) do
+                CAS:CallFunction(name, state, lastInput)
+                n += 1
+            end
+        end)
+        return n
+    end
+
+    local function pressKey(kind)
+        local K, key = Enum.UserInputType.Keyboard, CFG.Keys[kind]
+        local n = caps.conn and fire(UIS.InputBegan, fakeInput(K, key, Enum.UserInputState.Begin), false) or 0
+        n += casCall(kind, Enum.UserInputState.Begin)
+        if n == 0 then return false end
+        task.delay(0.03, function()
+            if caps.conn then fire(UIS.InputEnded, fakeInput(K, key, Enum.UserInputState.End), false) end
+            casCall(kind, Enum.UserInputState.End)
+        end)
+        return true
+    end
+
+    -- VKEY / CLICK: real virtual input. Last resorts: a keyboard or mouse event makes this game switch
+    -- to its PC layout (key hints) until your next touch.
+    local function vkey(kind)
+        if not (VIM and CFG.EngineInput) then return false end
+        local key = CFG.Keys[kind]
+        caps.key = pcall(function() VIM:SendKeyEvent(true, key, false, game) end)
+        if not caps.key then return false end
+        task.delay(0.03, function()
+            pcall(function() VIM:SendKeyEvent(false, key, false, game) end)
+        end)
+        return true
+    end
+
+    local function clickButton(b)
+        if not (VIM and CFG.EngineInput) then return false end
+        local c = screenCentre(b)
+        if not pcall(function() VIM:SendMouseButtonEvent(c.X, c.Y, 0, true, game, 0) end) then return false end
+        task.delay(0.03, function()
+            pcall(function() VIM:SendMouseButtonEvent(c.X, c.Y, 0, false, game, 0) end)
+        end)
+        return true
+    end
+
+    local function playingSet(hum)
+        local set, animator = {}, hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, t in ipairs(animator:GetPlayingAnimationTracks()) do set[t] = true end
         end
-        m.busy = false
-    end)
+        return set, animator
+    end
+
+    -- Did the move really happen? A new move-priority animation, a lunge you can't walk, or the game's
+    -- button changing the way it does when the move goes on cooldown.
+    local function verify(root, hum, before, speed0, b, look0)
+        local _, animator = playingSet(hum)
+        local limit = math.max(speed0 + 20, 30)
+        local t0 = os.clock()
+        local lastP, lastT = root.Position, t0
+        while os.clock() - t0 < 0.45 do
+            task.wait()
+            if animator then
+                for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+                    if not before[t] and ACTION[t.Priority] then return true end
+                end
+            end
+            -- a lunge the game moves by CFrame has no physics speed, so it's read from position too
+            local now, speed = os.clock(), flat(root.AssemblyLinearVelocity).Magnitude
+            if now - lastT >= 0.05 then
+                speed = math.max(speed, flat(root.Position - lastP).Magnitude / (now - lastT))
+                lastP, lastT = root.Position, now
+            end
+            if speed > limit then return true end
+            if look0 and b.Parent and shown(b) and look(b) ~= look0 then return true end
+        end
+        return false
+    end
+
+    -- The button goes back to how it looked before the press once the move is ready again, so the
+    -- time that takes is the cooldown. Only learned when it changed and came back while staying on
+    -- screen; after that, a button that still looks different means "cooling", whatever the timer says.
+    local function learnCooldown(kind, b, t0)
+        local m = move[kind]
+        local changed = false
+        while os.clock() - t0 < 20 do
+            task.wait(0.1)
+            if not (b.Parent and shown(b)) then return end
+            if look(b) ~= m.ready then
+                changed = true
+            elseif changed then
+                m.cd = math.max(CFG.Retry, os.clock() - t0)
+                m.learned = true
+                return
+            end
+        end
+    end
+
+    -- Top-down through the methods, skipping one that has just missed twice in a row (four times if it
+    -- has worked before) until 20s have passed. So the gentlest method that works is always the one used.
+    local METHODS = { "BTN", "TAP", "SIG", "KEY", "VKEY", "CLICK" }
+
+    local function usable(m, i)
+        local bad = m.bad[i]
+        return not bad or bad.n < (m.good[i] and 4 or 2) or os.clock() - bad.at > 20
+    end
+
+    local function attempt(how, b, kind)
+        if how == "BTN" then return b ~= nil and pressButton(b) end
+        if how == "TAP" then return b ~= nil and tapButton(b) end
+        if how == "SIG" then return b ~= nil and sigButton(b) end
+        if how == "KEY" then return pressKey(kind) end
+        if how == "VKEY" then return vkey(kind) end
+        return b ~= nil and clickButton(b)
+    end
+
+    local function result(kind, i, ok, b, look0, pressedAt)
+        local m = move[kind]
+        dbg.last ..= ok and " OK" or " miss"
+        if ok then
+            m.at, m.bad[i], m.good[i] = os.clock(), nil, true
+            if look0 then
+                m.ready = look0
+                task.spawn(learnCooldown, kind, b, pressedAt)
+            end
+            notify(kind, DONE[kind], COLORS.on)
+        else
+            local bad = m.bad[i] or { n = 0 }
+            bad.n, bad.at = bad.n + 1, os.clock()
+            m.bad[i] = bad
+            notify(kind, "NO " .. MOVES[kind], COLORS.noBall)
+        end
+    end
+
+    -- Returns true when something was pressed.
+    local function trigger(kind, root, hum)
+        local m = move[kind]
+        local b = getTarget(kind) or byLabel(kind)
+        if b then
+            m.seen = true
+        elseif m.seen or exists(kind) then
+            -- the game has this button, it just isn't on screen: a cutscene, or the move isn't
+            -- available right now. A key or click would only flip the game to its PC layout.
+            m.seen = true
+            dbg.last = MOVES[kind] .. " button off screen"
+            return false
+        end
+        local look0 = look(b)
+        if m.learned and b and look0 ~= m.ready then
+            -- The button still looks the way it does while cooling. Far longer than the cooldown it
+            -- learned means its look changed for some other reason (a tint, a new HUD): stop trusting it.
+            if os.clock() - m.at < m.cd * 2 + 3 then
+                dbg.last = MOVES[kind] .. " still cooling (button)"
+                m.hold = os.clock() + 0.2 -- look again shortly
+                return false
+            end
+            m.learned = false
+        end
+        local before, speed0 = playingSet(hum), flat(root.AssemblyLinearVelocity).Magnitude
+        local seen = b and (b:IsA("GuiButton") and "yes" or "label") or "NO"
+        local function try(i)
+            local how = METHODS[i]
+            local t0 = os.clock()
+            if not attempt(how, b, kind) then return false end
+            dbg.last = ("%s btn:%s via %s"):format(MOVES[kind], seen, how)
+            flash(kind, MOVES[kind] .. ": " .. how)
+            result(kind, i, verify(root, hum, before, speed0, b, look0), b, look0, t0)
+            return true
+        end
+        for i = 1, #METHODS do
+            if usable(m, i) and try(i) then return true end
+        end
+        -- everything usable is skipped or refused: give the skipped ones another chance now
+        for i = 1, #METHODS do
+            if not usable(m, i) and try(i) then return true end
+        end
+        dbg.last = ("%s btn:%s nothing worked"):format(MOVES[kind], seen)
+        say(kind, "NO BUTTON", COLORS.off, WHITE, 1.5)
+        return false
+    end
+
+    -- Turn toward `at` for a moment (dives and slides go the way you face). The game's auto-rotate
+    -- would turn you back toward your thumb, so it's off for the turn and comes back after.
+    local autoSaved, autoGen = nil, 0
+    faceDir, faceUntil = nil, 0 -- a direction held every frame for a moment (see refaceNow)
+    local function face(root, hum, at)
+        local look_ = Vector3.new(at.X, root.Position.Y, at.Z)
+        if (look_ - root.Position).Magnitude < 0.5 then return end
+        if autoSaved == nil then autoSaved = hum.AutoRotate end
+        autoGen += 1
+        local gen = autoGen
+        hum.AutoRotate = false
+        root.CFrame = CFrame.lookAt(root.Position, look_)
+        -- the direction, not the point: a dive or slide carries you past the point
+        faceDir, faceUntil = (look_ - root.Position).Unit, os.clock() + 0.35
+        hum:Move((look_ - root.Position).Unit)
+        task.delay(0.4, function()
+            if autoGen ~= gen then return end
+            if hum.Parent then hum.AutoRotate = autoSaved end
+            autoSaved = nil
+        end)
+    end
+
+    -- Press a move, turned toward `at` first when given. The press goes in the same frame as the
+    -- turn, before shift lock or the camera can turn you back.
+    function launch(kind, root, hum, at)
+        local m = move[kind]
+        m.busy, m.tried = true, os.clock()
+        task.spawn(function()
+            local from = root.Position
+            if at then face(root, hum, at) end
+            -- an error mid-press must not leave the move marked busy for good
+            local ok, pressed = pcall(trigger, kind, root, hum)
+            if not ok then dbg.last = MOVES[kind] .. " error: " .. tostring(pressed) end
+            -- a slide that went off: how far it really carried you is how far the next one is aimed
+            if ok and pressed and kind == "tackle" and os.clock() - m.at < 1 then
+                task.wait(math.max(0, 0.7 - (os.clock() - m.tried)))
+                local d = flat(root.Position - from).Magnitude
+                if d > 4 then slideReach = math.clamp(slideReach * 0.5 + d * 0.5, 6, 30) end
+            end
+            m.busy = false
+        end)
+    end
 end
 
 ---------------------------------------------------------------- learning a button
@@ -1323,802 +1326,821 @@ local function moveToward(root, to, dt, faceAt, secs)
 end
 
 ---------------------------------------------------------------- keeper
+local findGoal, goalBase, keeper, pitchCentre -- set in the block below, used further down
+do
 
--- closest the ball's path gets to a point over the next second, with the ground as a floor
-local function closestApproach(s, target)
-    local floorY = target.Y - 2.2
-    local bestT, bestD, bestP = 0, math.huge, s.pos
-    for i = 0, 60 do
-        local t = i / 60
-        local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
-        if p.Y < floorY then p = Vector3.new(p.X, floorY, p.Z) end
-        local d = (p - target).Magnitude
-        if d < bestD then bestT, bestD, bestP = t, d, p end
+    -- closest the ball's path gets to a point over the next second, with the ground as a floor
+    local function closestApproach(s, target)
+        local floorY = target.Y - 2.2
+        local bestT, bestD, bestP = 0, math.huge, s.pos
+        for i = 0, 60 do
+            local t = i / 60
+            local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
+            if p.Y < floorY then p = Vector3.new(p.X, floorY, p.Z) end
+            local d = (p - target).Magnitude
+            if d < bestD then bestT, bestD, bestP = t, d, p end
+        end
+        return bestT, bestD, bestP
     end
-    return bestT, bestD, bestP
-end
 
--- time to the top of a jump, and how high that is
-local function jumpArc(hum)
-    local g = workspace.Gravity
-    local v = hum.UseJumpPower and hum.JumpPower or math.sqrt(2 * g * hum.JumpHeight)
-    return v / g, v * v / (2 * g)
-end
-
-local function dive(root, hum, at)
-    lastDive = os.clock()
-    diveUntil = lastDive + 1 -- let the dive play out before positioning again
-    launch("dive", root, hum, at)
-end
-
--- The pitch is usually one big part: its centre, straight below you, gives the exact direction
--- out of your goal.
-local function pitchCentre(root)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { LP.Character }
-    local ok, hit = pcall(function() return workspace:Raycast(root.Position, Vector3.new(0, -60, 0), params) end)
-    local part = ok and hit and hit.Instance
-    if part and part:IsA("BasePart") and math.max(part.Size.X, part.Size.Z) >= 120 then
-        return part.Position
+    -- time to the top of a jump, and how high that is
+    local function jumpArc(hum)
+        local g = workspace.Gravity
+        local v = hum.UseJumpPower and hum.JumpPower or math.sqrt(2 * g * hum.JumpHeight)
+        return v / g, v * v / (2 * g)
     end
-    return nil
-end
 
--- Your goal: the nearest part near your spot named like a goal or net (or inside a model named
--- that), at least as wide as a goal. Its long side is the goal's width, its centre the middle.
-local function findGoal(from)
-    local best, bestD
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("BasePart") then
-            local n = (d.Name .. " " .. (d.Parent and d.Parent.Name or "")):lower()
-            local w = math.max(d.Size.X, d.Size.Z)
-            local dist = flat(d.Position - from).Magnitude
-            if (n:find("goal", 1, true) or n:find("net", 1, true)) and w >= 12 and w <= 120 and dist < 60
-                and (not best or dist < bestD) then
-                best, bestD = d, dist
+    local function dive(root, hum, at)
+        lastDive = os.clock()
+        diveUntil = lastDive + 1 -- let the dive play out before positioning again
+        launch("dive", root, hum, at)
+    end
+
+    -- The pitch is usually one big part: its centre, straight below you, gives the exact direction
+    -- out of your goal.
+    function pitchCentre(root)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { LP.Character }
+        local ok, hit = pcall(function() return workspace:Raycast(root.Position, Vector3.new(0, -60, 0), params) end)
+        local part = ok and hit and hit.Instance
+        if part and part:IsA("BasePart") and math.max(part.Size.X, part.Size.Z) >= 120 then
+            return part.Position
+        end
+        return nil
+    end
+
+    -- Your goal: the nearest part near your spot named like a goal or net (or inside a model named
+    -- that), at least as wide as a goal. Its long side is the goal's width, its centre the middle.
+    function findGoal(from)
+        local best, bestD
+        for _, d in ipairs(workspace:GetDescendants()) do
+            if d:IsA("BasePart") then
+                local n = (d.Name .. " " .. (d.Parent and d.Parent.Name or "")):lower()
+                local w = math.max(d.Size.X, d.Size.Z)
+                local dist = flat(d.Position - from).Magnitude
+                if (n:find("goal", 1, true) or n:find("net", 1, true)) and w >= 12 and w <= 120 and dist < 60
+                    and (not best or dist < bestD) then
+                    best, bestD = d, dist
+                end
             end
         end
+        if not best then return nil, CFG.GoalWidth end
+        return Vector3.new(best.Position.X, from.Y, best.Position.Z), math.max(best.Size.X, best.Size.Z) / 2
     end
-    if not best then return nil, CFG.GoalWidth end
-    return Vector3.new(best.Position.X, from.Y, best.Position.Z), math.max(best.Size.X, best.Size.Z) / 2
-end
 
--- the middle of your goal on the line you stand on (your spot, until the goal is found)
-local function goalBase()
-    if goalCentre and fieldDir and home then
-        return goalCentre + fieldDir * flat(home - goalCentre):Dot(fieldDir)
-    end
-    return home
-end
-
--- A shot: crossing your goal line between the posts (a little to spare), from any angle. Angled
--- shots from the wing count too; a pass across the box never reaches the line. Until the pitch
--- direction is known, any fast ball coming at you counts.
--- Where the ball's path crosses the line through `base`, curve and dip included, within 1.5s:
--- a curler aimed outside the post that bends in (Kaiser's, Rin's) crosses inside it. A ball that
--- slows to a stop first (a push that dies) never gets there.
-local function crossing(s, base)
-    local prev, prevP = flat(s.pos - base):Dot(fieldDir), s.pos
-    if prev <= 0 then return nil end
-    for i = 1, 90 do
-        local t = i / 60
-        local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
-        local ahead = flat(p - base):Dot(fieldDir)
-        if ahead <= 0 then
-            -- between the last two steps, where it's exactly on the line (a dropping lob loses a
-            -- stud of height in a step)
-            local f = prev / (prev - ahead)
-            return prevP + (p - prevP) * f, t - (1 - f) / 60
+    -- the middle of your goal on the line you stand on (your spot, until the goal is found)
+    function goalBase()
+        if goalCentre and fieldDir and home then
+            return goalCentre + fieldDir * flat(home - goalCentre):Dot(fieldDir)
         end
-        if ahead >= prev then return nil end -- stopped, or turned away
-        prev, prevP = ahead, p
+        return home
     end
-    return nil
-end
 
--- sideways from the middle of the goal, along your line
-local function across(p, base)
-    local off = flat(p - base)
-    return off - fieldDir * off:Dot(fieldDir)
-end
-
-local function onTarget(s)
-    if not (home and fieldDir) then return true end
-    local cross = crossing(s, goalBase())
-    return cross ~= nil and across(cross, goalBase()).Magnitude <= goalHalf + 3
-end
-
-local function keeper(root, hum, ball, s, holder, lead, dt)
-    shotPlan = nil
-    if holder == LP then return end
-    local now, myPos = os.clock(), root.Position
-    if holder then
-        -- 1v1: an enemy carrying the ball right at you, close enough to smother. Standing still
-        -- in front of you (winding up a shot, faking one) only gets it right on top of you.
-        local r = isEnemy(holder) and holder.Character and holder.Character:FindFirstChild("HumanoidRootPart")
-        local gap = (ball.Position - myPos).Magnitude
-        if r and CFG.Smother > 0 and gap <= CFG.Smother and ready("dive") then
-            local toMe = flat(myPos - r.Position)
-            local coming = toMe.Magnitude > 0 and flat(velocityOf(r)):Dot(toMe.Unit) > 3
-            if coming or gap <= 4 then dive(root, hum, ball.Position) end
-        end
-        return
-    end
-    local speed = s.vel.Magnitude
-    if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 then return end
-    -- A fake: a touch or a push keeps the ball at the feet of whoever just had it, while a shot
-    -- leaves them. Anything shot-fast counts straight away.
-    local cr = lastCarrier and now - lastCarriedAt < 1 and lastCarrier.Character
-        and lastCarrier.Character:FindFirstChild("HumanoidRootPart")
-    if cr and speed < CFG.SureShot and (s.pos - cr.Position).Magnitude < CFG.ReleaseDist then
-        dbg.last = "fake? ball still at their feet"
-        return
-    end
-    -- right after the kick its slowing hasn't shown yet: a push that dies out looks like a shot for
-    -- a few frames. Shot-fast balls count straight away.
-    if speed < CFG.SureShot and now - s.kickAt < CFG.ShotConfirm then return end
-    if not onTarget(s) then return end
-    if fieldDir and now >= diveUntil then
-        -- Onto the ball's path where it crosses your line, facing it, so the shot meets you instead
-        -- of you chasing it. Kept inside the posts. A glide at a sprint, or with Blatant a snap.
-        local base = goalBase()
-        local cross = crossing(s, base) or s.pos
-        local lateral = across(cross, base)
-        if lateral.Magnitude > goalHalf then lateral = lateral.Unit * goalHalf end
-        local spot = Vector3.new(base.X + lateral.X, myPos.Y, base.Z + lateral.Z)
-        local jump = (spot - myPos).Magnitude
-        if CFG.Blatant and jump > 1 and jump <= CFG.SnapRange then
-            root.CFrame = CFrame.lookAt(spot, Vector3.new(s.pos.X, spot.Y, s.pos.Z))
-        elseif not CFG.Blatant and jump > 0.3 then
-            moveToward(root, spot, dt, s.pos, 0.1)
-        end
-        myPos = root.Position
-    end
-    local t, d, at = closestApproach(s, myPos)
-    shotPlan = { at = at, t = now + t } -- positioning walks you onto its path
-    local side, up = flat(at - myPos).Magnitude, at.Y - myPos.Y
-    -- High: how high it is where it crosses your line (curve and dip included), and when. The jump
-    -- goes so its top meets the ball; a high ball wider than you can reach standing gets a dive
-    -- from the jump, up into the top corner. Lobs coming down over you count too.
-    local hc, htc = nil, nil
-    if fieldDir then hc, htc = crossing(s, myPos) end
-    if CFG.JumpHigh and hc and hc.Y - myPos.Y > CFG.HighBall then
-        local apexT = jumpArc(hum)
-        local wide = across(hc, myPos).Magnitude
-        if htc <= apexT + lead and now - lastJump > 1 then
-            lastJump = now
-            hum.Jump = true
-            dbg.last = ("JUMP for a ball %.0f up"):format(hc.Y - myPos.Y)
-            if wide > CFG.JumpReach and wide <= CFG.DiveRange then
-                task.delay(CFG.JumpDiveDelay, function()
-                    if hum.Parent and ready("dive") then dive(root, hum, hc) end
-                end)
-                dbg.last ..= " + DIVE"
+    -- A shot: crossing your goal line between the posts (a little to spare), from any angle. Angled
+    -- shots from the wing count too; a pass across the box never reaches the line. Until the pitch
+    -- direction is known, any fast ball coming at you counts.
+    -- Where the ball's path crosses the line through `base`, curve and dip included, within 1.5s:
+    -- a curler aimed outside the post that bends in (Kaiser's, Rin's) crosses inside it. A ball that
+    -- slows to a stop first (a push that dies) never gets there.
+    local function crossing(s, base)
+        local prev, prevP = flat(s.pos - base):Dot(fieldDir), s.pos
+        if prev <= 0 then return nil end
+        for i = 1, 90 do
+            local t = i / 60
+            local p = s.pos + s.vel * t + s.acc * (0.5 * t * t)
+            local ahead = flat(p - base):Dot(fieldDir)
+            if ahead <= 0 then
+                -- between the last two steps, where it's exactly on the line (a dropping lob loses a
+                -- stud of height in a step)
+                local f = prev / (prev - ahead)
+                return prevP + (p - prevP) * f, t - (1 - f) / 60
             end
+            if ahead >= prev then return nil end -- stopped, or turned away
+            prev, prevP = ahead, p
         end
-        return
+        return nil
     end
-    -- (no pitch direction yet: the closest point of its path tells high from low)
-    if CFG.JumpHigh and not hc and up > CFG.HighBall and side <= CFG.JumpReach then
-        local apexT, apexH = jumpArc(hum)
-        if up <= CFG.HighBall + apexH + 2 and t <= apexT + lead and now - lastJump > 1 then
-            lastJump = now
-            hum.Jump = true
-            dbg.last = ("JUMP for a ball %.0f up"):format(up)
+
+    -- sideways from the middle of the goal, along your line
+    local function across(p, base)
+        local off = flat(p - base)
+        return off - fieldDir * off:Dot(fieldDir)
+    end
+
+    local function onTarget(s)
+        if not (home and fieldDir) then return true end
+        local cross = crossing(s, goalBase())
+        return cross ~= nil and across(cross, goalBase()).Magnitude <= goalHalf + 3
+    end
+
+    function keeper(root, hum, ball, s, holder, lead, dt)
+        shotPlan = nil
+        if holder == LP then return end
+        local now, myPos = os.clock(), root.Position
+        if holder then
+            -- 1v1: an enemy carrying the ball right at you, close enough to smother. Standing still
+            -- in front of you (winding up a shot, faking one) only gets it right on top of you.
+            local r = isEnemy(holder) and holder.Character and holder.Character:FindFirstChild("HumanoidRootPart")
+            local gap = (ball.Position - myPos).Magnitude
+            if r and CFG.Smother > 0 and gap <= CFG.Smother and ready("dive") then
+                local toMe = flat(myPos - r.Position)
+                local coming = toMe.Magnitude > 0 and flat(velocityOf(r)):Dot(toMe.Unit) > 3
+                if coming or gap <= 4 then dive(root, hum, ball.Position) end
+            end
+            return
         end
-        return
-    end
-    -- a slow ball you can walk onto before it arrives: no dive to waste on what may be a pass
-    if speed < CFG.ShotSpeed and side / math.max(hum.WalkSpeed, CFG.Blatant and 0 or CFG.GlideSpeed) <= t then
-        return
-    end
-    -- as late as the dive can still get there; a path wider than a dive reaches is walked toward
-    -- first (positioning), and dived at only in the last moment
-    if d <= CFG.DiveRange and t <= CFG.DiveLead + lead + math.min(d, CFG.DiveReach) / CFG.DiveSpeed
-        and ready("dive") then
-        -- coming straight at you: dive into it, not off to one side and out of its way
-        dive(root, hum, side < 3 and s.pos or at)
+        local speed = s.vel.Magnitude
+        if speed < CFG.SlowBall or s.vel:Dot(myPos - s.pos) <= 0 then return end
+        -- A fake: a touch or a push keeps the ball at the feet of whoever just had it, while a shot
+        -- leaves them. Anything shot-fast counts straight away.
+        local cr = lastCarrier and now - lastCarriedAt < 1 and lastCarrier.Character
+            and lastCarrier.Character:FindFirstChild("HumanoidRootPart")
+        if cr and speed < CFG.SureShot and (s.pos - cr.Position).Magnitude < CFG.ReleaseDist then
+            dbg.last = "fake? ball still at their feet"
+            return
+        end
+        -- right after the kick its slowing hasn't shown yet: a push that dies out looks like a shot for
+        -- a few frames. Shot-fast balls count straight away.
+        if speed < CFG.SureShot and now - s.kickAt < CFG.ShotConfirm then return end
+        if not onTarget(s) then return end
+        if fieldDir and now >= diveUntil then
+            -- Onto the ball's path where it crosses your line, facing it, so the shot meets you instead
+            -- of you chasing it. Kept inside the posts. A glide at a sprint, or with Blatant a snap.
+            local base = goalBase()
+            local cross = crossing(s, base) or s.pos
+            local lateral = across(cross, base)
+            if lateral.Magnitude > goalHalf then lateral = lateral.Unit * goalHalf end
+            local spot = Vector3.new(base.X + lateral.X, myPos.Y, base.Z + lateral.Z)
+            local jump = (spot - myPos).Magnitude
+            if CFG.Blatant and jump > 1 and jump <= CFG.SnapRange then
+                root.CFrame = CFrame.lookAt(spot, Vector3.new(s.pos.X, spot.Y, s.pos.Z))
+            elseif not CFG.Blatant and jump > 0.3 then
+                moveToward(root, spot, dt, s.pos, 0.1)
+            end
+            myPos = root.Position
+        end
+        local t, d, at = closestApproach(s, myPos)
+        shotPlan = { at = at, t = now + t } -- positioning walks you onto its path
+        local side, up = flat(at - myPos).Magnitude, at.Y - myPos.Y
+        -- High: how high it is where it crosses your line (curve and dip included), and when. The jump
+        -- goes so its top meets the ball; a high ball wider than you can reach standing gets a dive
+        -- from the jump, up into the top corner. Lobs coming down over you count too.
+        local hc, htc = nil, nil
+        if fieldDir then hc, htc = crossing(s, myPos) end
+        if CFG.JumpHigh and hc and hc.Y - myPos.Y > CFG.HighBall then
+            local apexT = jumpArc(hum)
+            local wide = across(hc, myPos).Magnitude
+            if htc <= apexT + lead and now - lastJump > 1 then
+                lastJump = now
+                hum.Jump = true
+                dbg.last = ("JUMP for a ball %.0f up"):format(hc.Y - myPos.Y)
+                if wide > CFG.JumpReach and wide <= CFG.DiveRange then
+                    task.delay(CFG.JumpDiveDelay, function()
+                        if hum.Parent and ready("dive") then dive(root, hum, hc) end
+                    end)
+                    dbg.last ..= " + DIVE"
+                end
+            end
+            return
+        end
+        -- (no pitch direction yet: the closest point of its path tells high from low)
+        if CFG.JumpHigh and not hc and up > CFG.HighBall and side <= CFG.JumpReach then
+            local apexT, apexH = jumpArc(hum)
+            if up <= CFG.HighBall + apexH + 2 and t <= apexT + lead and now - lastJump > 1 then
+                lastJump = now
+                hum.Jump = true
+                dbg.last = ("JUMP for a ball %.0f up"):format(up)
+            end
+            return
+        end
+        -- a slow ball you can walk onto before it arrives: no dive to waste on what may be a pass
+        if speed < CFG.ShotSpeed and side / math.max(hum.WalkSpeed, CFG.Blatant and 0 or CFG.GlideSpeed) <= t then
+            return
+        end
+        -- as late as the dive can still get there; a path wider than a dive reaches is walked toward
+        -- first (positioning), and dived at only in the last moment
+        if d <= CFG.DiveRange and t <= CFG.DiveLead + lead + math.min(d, CFG.DiveReach) / CFG.DiveSpeed
+            and ready("dive") then
+            -- coming straight at you: dive into it, not off to one side and out of its way
+            dive(root, hum, side < 3 and s.pos or at)
+        end
     end
 end
 
 ---------------------------------------------------------------- stamina
+local blocked, holdStamina, stam -- set in the block below, used further down
+do
 
--- Wherever the game keeps your stamina on your side: an attribute or a number value named like
--- "stamina" on you, your character or what they hold, or (with getgc) a script's table with a
--- Stamina field. Each is held at its max: a "Max..." next to it if there is one, else the highest
--- it has been. Stamina the server keeps to itself can't be reached from here.
-local stam = { found = "searching", list = {}, gc = {}, nextScan = 0, deep = nil, nextDeep = 0 }
-local STAM_WORDS = { "stamina", "energy", "endurance" }
-local NOT_STAM = { "max", "regen", "cost", "drain", "rate", "recover", "delay", "cooldown" }
+    -- Wherever the game keeps your stamina on your side: an attribute or a number value named like
+    -- "stamina" on you, your character or what they hold, or (with getgc) a script's table with a
+    -- Stamina field. Each is held at its max: a "Max..." next to it if there is one, else the highest
+    -- it has been. Stamina the server keeps to itself can't be reached from here.
+    stam = { found = "searching", list = {}, gc = {}, nextScan = 0, deep = nil, nextDeep = 0 }
+    local STAM_WORDS = { "stamina", "energy", "endurance" }
+    local NOT_STAM = { "max", "regen", "cost", "drain", "rate", "recover", "delay", "cooldown" }
 
-local function isStamina(name)
-    local n = tostring(name):lower()
-    for _, w in ipairs(NOT_STAM) do
-        if n:find(w, 1, true) then return false end
-    end
-    if n == "stam" then return true end
-    for _, w in ipairs(STAM_WORDS) do
-        if n:find(w, 1, true) then return true end
-    end
-    return false
-end
-
--- its max, from whatever sits next to it: MaxStamina, maxStamina, Max<name>, ...
-local function maxNear(get, name)
-    local cap = name:sub(1, 1):upper() .. name:sub(2)
-    for _, k in ipairs({ "Max" .. cap, "max" .. cap, "Max" .. name, "MaxStamina", "maxStamina", "MaxEnergy", "Max" }) do
-        local ok, v = pcall(get, k)
-        if ok and type(v) == "number" then return v end
-    end
-    return nil
-end
-
--- the game's per-player data folders: ReplicatedStorage.PlayerData.<you> and the like
-local function playerFolders()
-    local out, mineNames = {}, { [LP.Name] = true, [tostring(LP.UserId)] = true }
-    for _, svc in ipairs({ game:GetService("ReplicatedStorage"), workspace }) do
-        for _, c in ipairs(svc:GetChildren()) do
-            if mineNames[c.Name] and c ~= LP.Character then table.insert(out, c) end
-            if c:IsA("Folder") or c:IsA("Configuration") then
-                for _, cc in ipairs(c:GetChildren()) do
-                    if mineNames[cc.Name] then table.insert(out, cc) end
-                end
-            end
+    local function isStamina(name)
+        local n = tostring(name):lower()
+        for _, w in ipairs(NOT_STAM) do
+            if n:find(w, 1, true) then return false end
         end
+        if n == "stam" then return true end
+        for _, w in ipairs(STAM_WORDS) do
+            if n:find(w, 1, true) then return true end
+        end
+        return false
     end
-    return out
-end
 
-local function scanStamina()
-    local list = {}
-    local function attrs(inst)
-        local ok, all = pcall(function() return inst:GetAttributes() end)
-        if not (ok and type(all) == "table") then return end
-        for name, v in pairs(all) do
-            if type(v) == "number" and isStamina(name) then
-                table.insert(list, { kind = "attr", inst = inst, name = name,
-                    max = maxNear(function(k) return all[k] end, name) })
-            end
+    -- its max, from whatever sits next to it: MaxStamina, maxStamina, Max<name>, ...
+    local function maxNear(get, name)
+        local cap = name:sub(1, 1):upper() .. name:sub(2)
+        for _, k in ipairs({ "Max" .. cap, "max" .. cap, "Max" .. name, "MaxStamina", "maxStamina", "MaxEnergy", "Max" }) do
+            local ok, v = pcall(get, k)
+            if ok and type(v) == "number" then return v end
         end
+        return nil
     end
-    local function values(root)
-        attrs(root)
-        for _, d in ipairs(root:GetDescendants()) do
-            if (d:IsA("NumberValue") or d:IsA("IntValue")) and isStamina(d.Name) then
-                local parent = d.Parent
-                table.insert(list, { kind = "value", inst = d, name = d.Name,
-                    max = maxNear(function(k) return parent:FindFirstChild(k).Value end, d.Name) })
-            end
-            attrs(d)
-        end
-    end
-    attrs(LP)
-    for _, c in ipairs(LP:GetChildren()) do
-        if not (c:IsA("PlayerGui") or c.Name == "PlayerScripts") then values(c) end
-    end
-    if LP.Character then values(LP.Character) end
-    pcall(function()
-        for _, f in ipairs(playerFolders()) do values(f) end
-    end)
-    stam.list = list
-    local first = list[1] or stam.gc[1]
-    local n = #list + #stam.gc
-    stam.found = first and (first.kind .. " " .. first.name .. (n > 1 and (" +" .. (n - 1)) or ""))
-        or (stam.deep and "searching" or "none")
-end
 
--- A script's own table with a stamina field, found by walking the game's memory (getgc) a slice
--- per frame so it doesn't hitch. Once at the start, then again every 20s while nothing is found.
-local function deepStep()
-    local d = stam.deep
-    if not d then
-        if type(getgc) ~= "function" or os.clock() < stam.nextDeep then return end
-        local ok, objs = pcall(getgc, true)
-        if not (ok and type(objs) == "table") then
-            stam.nextDeep = math.huge
-            return
-        end
-        d = { objs = objs, i = 1, found = {} }
-        stam.deep = d
-    end
-    local stop = math.min(d.i + 1500, #d.objs)
-    for i = d.i, stop do
-        local o = d.objs[i]
-        if type(o) == "table" then
-            pcall(function()
-                for k, v in next, o do
-                    if type(k) == "string" and type(v) == "number" and isStamina(k) and #d.found < 16 then
-                        table.insert(d.found, { kind = "table", t = o, name = k,
-                            max = maxNear(function(key) return rawget(o, key) end, k) })
+    -- the game's per-player data folders: ReplicatedStorage.PlayerData.<you> and the like
+    local function playerFolders()
+        local out, mineNames = {}, { [LP.Name] = true, [tostring(LP.UserId)] = true }
+        for _, svc in ipairs({ game:GetService("ReplicatedStorage"), workspace }) do
+            for _, c in ipairs(svc:GetChildren()) do
+                if mineNames[c.Name] and c ~= LP.Character then table.insert(out, c) end
+                if c:IsA("Folder") or c:IsA("Configuration") then
+                    for _, cc in ipairs(c:GetChildren()) do
+                        if mineNames[cc.Name] then table.insert(out, cc) end
                     end
                 end
-            end)
-        end
-    end
-    d.i = stop + 1
-    if d.i > #d.objs then
-        stam.deep, stam.gc = nil, d.found
-        stam.nextDeep = (#d.found == 0 and #stam.list == 0) and os.clock() + 20 or math.huge
-    end
-end
-
--- Blue Lock: Rivals keeps stamina on its server: your client tells it how much to take through a
--- remote (Knit's StaminaService.RE.DecreaseStamina). Those calls are dropped before they leave
--- (hookmetamethod), so the server never takes any. Any remote named like a stamina decrease gets
--- the same. Without hookmetamethod, the remote gets 0/0 now and then instead, the trick public
--- scripts use: the server's stamina turns into NaN, which never runs out.
-local DECREASE_WORDS = { "decrease", "use", "consume", "drain", "reduce", "take", "remove", "lose", "spend",
-                         "deplete" }
-local blocked = env.AutoDribbleBlocked or setmetatable({}, { __mode = "k" }) -- shared with a re-run's hook
-env.AutoDribbleBlocked = blocked
-
-local function isStaminaRemote(inst)
-    if not (inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")) then return false end
-    local name = inst.Name:lower()
-    local around = name
-    local parent = inst.Parent
-    for _ = 1, 2 do
-        if parent then
-            around ..= " " .. parent.Name:lower()
-            parent = parent.Parent
-        end
-    end
-    if not around:find("stamina", 1, true) then return false end
-    for _, w in ipairs(DECREASE_WORDS) do
-        if name:find(w, 1, true) then return true end
-    end
-    return false
-end
-
-local function hookRemotes()
-    if env.AutoDribbleHooked then return true end
-    if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then return false end
-    local wrap = type(newcclosure) == "function" and newcclosure or function(f) return f end
-    local ok = pcall(function()
-        local old
-        old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
-            if blocked[self] and getnamecallmethod() == "FireServer"
-                and not (type(checkcaller) == "function" and checkcaller()) then
-                return nil
             end
-            return old(self, ...)
-        end))
-    end)
-    env.AutoDribbleHooked = ok
-    return ok
-end
+        end
+        return out
+    end
 
-local function staminaRemotes()
-    if not stam.remotes then
-        local found = {}
+    local function scanStamina()
+        local list = {}
+        local function attrs(inst)
+            local ok, all = pcall(function() return inst:GetAttributes() end)
+            if not (ok and type(all) == "table") then return end
+            for name, v in pairs(all) do
+                if type(v) == "number" and isStamina(name) then
+                    table.insert(list, { kind = "attr", inst = inst, name = name,
+                        max = maxNear(function(k) return all[k] end, name) })
+                end
+            end
+        end
+        local function values(root)
+            attrs(root)
+            for _, d in ipairs(root:GetDescendants()) do
+                if (d:IsA("NumberValue") or d:IsA("IntValue")) and isStamina(d.Name) then
+                    local parent = d.Parent
+                    table.insert(list, { kind = "value", inst = d, name = d.Name,
+                        max = maxNear(function(k) return parent:FindFirstChild(k).Value end, d.Name) })
+                end
+                attrs(d)
+            end
+        end
+        attrs(LP)
+        for _, c in ipairs(LP:GetChildren()) do
+            if not (c:IsA("PlayerGui") or c.Name == "PlayerScripts") then values(c) end
+        end
+        if LP.Character then values(LP.Character) end
         pcall(function()
-            for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-                if isStaminaRemote(d) then table.insert(found, d) end
-            end
+            for _, f in ipairs(playerFolders()) do values(f) end
         end)
-        if #found == 0 then return end
-        stam.remotes = found
-        stam.hooked = hookRemotes()
-        for _, r in ipairs(found) do
-            if stam.hooked then blocked[r] = true end
+        stam.list = list
+        local first = list[1] or stam.gc[1]
+        local n = #list + #stam.gc
+        stam.found = first and (first.kind .. " " .. first.name .. (n > 1 and (" +" .. (n - 1)) or ""))
+            or (stam.deep and "searching" or "none")
+    end
+
+    -- A script's own table with a stamina field, found by walking the game's memory (getgc) a slice
+    -- per frame so it doesn't hitch. Once at the start, then again every 20s while nothing is found.
+    local function deepStep()
+        local d = stam.deep
+        if not d then
+            if type(getgc) ~= "function" or os.clock() < stam.nextDeep then return end
+            local ok, objs = pcall(getgc, true)
+            if not (ok and type(objs) == "table") then
+                stam.nextDeep = math.huge
+                return
+            end
+            d = { objs = objs, i = 1, found = {} }
+            stam.deep = d
         end
-        stam.how = (stam.hooked and "blocked " or "NaN ") .. found[1].Name
+        local stop = math.min(d.i + 1500, #d.objs)
+        for i = d.i, stop do
+            local o = d.objs[i]
+            if type(o) == "table" then
+                pcall(function()
+                    for k, v in next, o do
+                        if type(k) == "string" and type(v) == "number" and isStamina(k) and #d.found < 16 then
+                            table.insert(d.found, { kind = "table", t = o, name = k,
+                                max = maxNear(function(key) return rawget(o, key) end, k) })
+                        end
+                    end
+                end)
+            end
+        end
+        d.i = stop + 1
+        if d.i > #d.objs then
+            stam.deep, stam.gc = nil, d.found
+            stam.nextDeep = (#d.found == 0 and #stam.list == 0) and os.clock() + 20 or math.huge
+        end
     end
-    if not stam.hooked and os.clock() >= (stam.nextNaN or 0) then
-        stam.nextNaN = os.clock() + 10 -- again after a respawn or a new match
-        for _, r in ipairs(stam.remotes) do pcall(function() r:FireServer(0 / 0) end) end
+
+    -- Blue Lock: Rivals keeps stamina on its server: your client tells it how much to take through a
+    -- remote (Knit's StaminaService.RE.DecreaseStamina). Those calls are dropped before they leave
+    -- (hookmetamethod), so the server never takes any. Any remote named like a stamina decrease gets
+    -- the same. Without hookmetamethod, the remote gets 0/0 now and then instead, the trick public
+    -- scripts use: the server's stamina turns into NaN, which never runs out.
+    local DECREASE_WORDS = { "decrease", "use", "consume", "drain", "reduce", "take", "remove", "lose", "spend",
+                             "deplete" }
+    blocked = env.AutoDribbleBlocked or setmetatable({}, { __mode = "k" }) -- shared with a re-run's hook
+    env.AutoDribbleBlocked = blocked
+
+    local function isStaminaRemote(inst)
+        if not (inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")) then return false end
+        local name = inst.Name:lower()
+        local around = name
+        local parent = inst.Parent
+        for _ = 1, 2 do
+            if parent then
+                around ..= " " .. parent.Name:lower()
+                parent = parent.Parent
+            end
+        end
+        if not around:find("stamina", 1, true) then return false end
+        for _, w in ipairs(DECREASE_WORDS) do
+            if name:find(w, 1, true) then return true end
+        end
+        return false
     end
-end
 
-local function readStamina(e)
-    if e.kind == "attr" then return e.inst:GetAttribute(e.name) end
-    if e.kind == "value" then return e.inst.Value end
-    return rawget(e.t, e.name)
-end
-
-local function writeStamina(e, v)
-    if e.kind == "attr" then e.inst:SetAttribute(e.name, v)
-    elseif e.kind == "value" then e.inst.Value = v
-    else rawset(e.t, e.name, v) end
-end
-
-local function holdStamina()
-    if os.clock() >= stam.nextScan then
-        stam.nextScan = os.clock() + 3 -- new characters, new values
-        pcall(scanStamina)
-        pcall(staminaRemotes)
-        if stam.how then stam.found = stam.how end
+    local function hookRemotes()
+        if env.AutoDribbleHooked then return true end
+        if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then return false end
+        local wrap = type(newcclosure) == "function" and newcclosure or function(f) return f end
+        local ok = pcall(function()
+            local old
+            old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                if blocked[self] and getnamecallmethod() == "FireServer"
+                    and not (type(checkcaller) == "function" and checkcaller()) then
+                    return nil
+                end
+                return old(self, ...)
+            end))
+        end)
+        env.AutoDribbleHooked = ok
+        return ok
     end
-    pcall(deepStep)
-    for _, list in ipairs({ stam.list, stam.gc }) do
-        for _, e in ipairs(list) do
+
+    local function staminaRemotes()
+        if not stam.remotes then
+            local found = {}
             pcall(function()
-                local cur = readStamina(e)
-                if type(cur) ~= "number" then return end
-                e.top = math.max(e.top or cur, cur, type(e.max) == "number" and e.max or 0)
-                if cur < e.top then writeStamina(e, e.top) end
+                for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+                    if isStaminaRemote(d) then table.insert(found, d) end
+                end
             end)
+            if #found == 0 then return end
+            stam.remotes = found
+            stam.hooked = hookRemotes()
+            for _, r in ipairs(found) do
+                if stam.hooked then blocked[r] = true end
+            end
+            stam.how = (stam.hooked and "blocked " or "NaN ") .. found[1].Name
+        end
+        if not stam.hooked and os.clock() >= (stam.nextNaN or 0) then
+            stam.nextNaN = os.clock() + 10 -- again after a respawn or a new match
+            for _, r in ipairs(stam.remotes) do pcall(function() r:FireServer(0 / 0) end) end
+        end
+    end
+
+    local function readStamina(e)
+        if e.kind == "attr" then return e.inst:GetAttribute(e.name) end
+        if e.kind == "value" then return e.inst.Value end
+        return rawget(e.t, e.name)
+    end
+
+    local function writeStamina(e, v)
+        if e.kind == "attr" then e.inst:SetAttribute(e.name, v)
+        elseif e.kind == "value" then e.inst.Value = v
+        else rawset(e.t, e.name, v) end
+    end
+
+    function holdStamina()
+        if os.clock() >= stam.nextScan then
+            stam.nextScan = os.clock() + 3 -- new characters, new values
+            pcall(scanStamina)
+            pcall(staminaRemotes)
+            if stam.how then stam.found = stam.how end
+        end
+        pcall(deepStep)
+        for _, list in ipairs({ stam.list, stam.gc }) do
+            for _, e in ipairs(list) do
+                pcall(function()
+                    local cur = readStamina(e)
+                    if type(cur) ~= "number" then return end
+                    e.top = math.max(e.top or cur, cur, type(e.max) == "number" and e.max or 0)
+                    if cur < e.top then writeStamina(e, e.top) end
+                end)
+            end
         end
     end
 end
 
 ---------------------------------------------------------------- reach
+local reachStep, shrinkHitboxes, sphere -- set in the block below, used further down
+do
 
--- The game's own touch between the ball and your feet, hands and middle, as if one of them had
--- reached it (firetouchinterest): whatever the game does with a touch, it does from further away.
-local LIMBS = { "RightFoot", "LeftFoot", "Right Leg", "Left Leg", "RightHand", "LeftHand", "HumanoidRootPart" }
-local lastTouch = 0
-local function touchBall(ball)
-    if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.1 then return end
-    lastTouch = os.clock()
-    local char = LP.Character
-    if not char then return end
-    for _, name in ipairs(LIMBS) do
-        local part = char:FindFirstChild(name)
-        if part and part:IsA("BasePart") then
-            pcall(firetouchinterest, part, ball, 0)
-            pcall(firetouchinterest, part, ball, 1)
-        end
-    end
-end
-
--- Enemies' hitboxes (their root parts, on your side only) grown so slides land: the game sees the
--- slide touching them from further. Each is put back the way it was when tackle goes off.
-local grown = setmetatable({}, { __mode = "k" }) -- part -> how it was
-local function growHitboxes(size)
-    local want = Vector3.new(size, size, size)
-    for _, p in ipairs(Players:GetPlayers()) do
-        local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-        if r and r.Size ~= want then
-            grown[r] = grown[r] or { Size = r.Size, Transparency = r.Transparency, Color = r.Color,
-                                     Material = r.Material, CanCollide = r.CanCollide }
-            r.Size, r.CanCollide = want, false
-            if CFG.ShowReach then
-                r.Transparency, r.Color, r.Material = 0.75, REACH_COLORS.tackle, Enum.Material.ForceField
+    -- The game's own touch between the ball and your feet, hands and middle, as if one of them had
+    -- reached it (firetouchinterest): whatever the game does with a touch, it does from further away.
+    local LIMBS = { "RightFoot", "LeftFoot", "Right Leg", "Left Leg", "RightHand", "LeftHand", "HumanoidRootPart" }
+    local lastTouch = 0
+    local function touchBall(ball)
+        if type(firetouchinterest) ~= "function" or os.clock() - lastTouch < 0.1 then return end
+        lastTouch = os.clock()
+        local char = LP.Character
+        if not char then return end
+        for _, name in ipairs(LIMBS) do
+            local part = char:FindFirstChild(name)
+            if part and part:IsA("BasePart") then
+                pcall(firetouchinterest, part, ball, 0)
+                pcall(firetouchinterest, part, ball, 1)
             end
         end
     end
-end
 
-local function shrinkHitboxes()
-    for part, was in pairs(grown) do
-        pcall(function()
-            for k, v in pairs(was) do part[k] = v end
-        end)
-        grown[part] = nil
+    -- Enemies' hitboxes (their root parts, on your side only) grown so slides land: the game sees the
+    -- slide touching them from further. Each is put back the way it was when tackle goes off.
+    local grown = setmetatable({}, { __mode = "k" }) -- part -> how it was
+    local function growHitboxes(size)
+        local want = Vector3.new(size, size, size)
+        for _, p in ipairs(Players:GetPlayers()) do
+            local r = isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            if r and r.Size ~= want then
+                grown[r] = grown[r] or { Size = r.Size, Transparency = r.Transparency, Color = r.Color,
+                                         Material = r.Material, CanCollide = r.CanCollide }
+                r.Size, r.CanCollide = want, false
+                if CFG.ShowReach then
+                    r.Transparency, r.Color, r.Material = 0.75, REACH_COLORS.tackle, Enum.Material.ForceField
+                end
+            end
+        end
     end
-end
 
--- your reach, drawn around you: a see-through sphere that only you see (it lives in your camera)
-local sphere = Instance.new("Part")
-sphere.Name = "AutoDribbleReach"
-sphere.Shape = Enum.PartType.Ball
-sphere.Anchored, sphere.CanCollide, sphere.CanTouch, sphere.CanQuery, sphere.CastShadow = true, false, false, false, false
-sphere.Material = Enum.Material.ForceField
-sphere.Transparency = 1
-pcall(function() sphere.Parent = workspace.CurrentCamera end)
-
-local function reachStep(root, ball, holder)
-    local kind = on.dive and "dive" or on.dribble and "dribble" or nil
-    local r = kind and CFG.Hitbox[kind] or 0
-    if CFG.ShowReach and r > 0 then
-        sphere.Size = Vector3.new(r * 2, r * 2, r * 2)
-        sphere.Color = REACH_COLORS[kind]
-        sphere.Transparency = 0.35
-        sphere.CFrame = CFrame.new(root.Position)
-    else
-        sphere.Transparency = 1
+    function shrinkHitboxes()
+        for part, was in pairs(grown) do
+            pcall(function()
+                for k, v in pairs(was) do part[k] = v end
+            end)
+            grown[part] = nil
+        end
     end
-    if tackleBox() > 0 then growHitboxes(tackleBox()) elseif next(grown) then shrinkHitboxes() end
-    if not ball then return end
-    -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
-    -- a couple of studs under your middle and still at your feet)
-    local off = ball.Position - root.Position
-    local dist = math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
-    local enemyHas = holder and holder ~= LP and isEnemy(holder)
-    -- a few studs from you counts as yours to this script, but the game may not think so yet; only
-    -- a ball already at your feet is left alone
-    local loose = not holder or (holder == LP and dist >= 3)
-    if on.dive and dist <= CFG.Hitbox.dive and (loose or enemyHas) then
-        touchBall(ball)
-    elseif on.dribble and not on.dive and loose and dist <= CFG.Hitbox.dribble then
-        touchBall(ball)
-    elseif on.tackle and not on.dive and enemyHas and dist <= CFG.Hitbox.tackle then
-        touchBall(ball)
+
+    -- your reach, drawn around you: a see-through sphere that only you see (it lives in your camera)
+    sphere = Instance.new("Part")
+    sphere.Name = "AutoDribbleReach"
+    sphere.Shape = Enum.PartType.Ball
+    sphere.Anchored, sphere.CanCollide, sphere.CanTouch, sphere.CanQuery, sphere.CastShadow = true, false, false, false, false
+    sphere.Material = Enum.Material.ForceField
+    sphere.Transparency = 1
+    pcall(function() sphere.Parent = workspace.CurrentCamera end)
+
+    function reachStep(root, ball, holder)
+        local kind = on.dive and "dive" or on.dribble and "dribble" or nil
+        local r = kind and CFG.Hitbox[kind] or 0
+        if CFG.ShowReach and r > 0 then
+            sphere.Size = Vector3.new(r * 2, r * 2, r * 2)
+            sphere.Color = REACH_COLORS[kind]
+            sphere.Transparency = 0.35
+            sphere.CFrame = CFrame.new(root.Position)
+        else
+            sphere.Transparency = 1
+        end
+        if tackleBox() > 0 then growHitboxes(tackleBox()) elseif next(grown) then shrinkHitboxes() end
+        if not ball then return end
+        -- across the ground, plus whatever's above or below your body's height (a ball on the grass is
+        -- a couple of studs under your middle and still at your feet)
+        local off = ball.Position - root.Position
+        local dist = math.max(flat(off).Magnitude, math.abs(off.Y) - 3)
+        local enemyHas = holder and holder ~= LP and isEnemy(holder)
+        -- a few studs from you counts as yours to this script, but the game may not think so yet; only
+        -- a ball already at your feet is left alone
+        local loose = not holder or (holder == LP and dist >= 3)
+        if on.dive and dist <= CFG.Hitbox.dive and (loose or enemyHas) then
+            touchBall(ball)
+        elseif on.dribble and not on.dive and loose and dist <= CFG.Hitbox.dribble then
+            touchBall(ball)
+        elseif on.tackle and not on.dive and enemyHas and dist <= CFG.Hitbox.tackle then
+            touchBall(ball)
+        end
     end
 end
 
 ---------------------------------------------------------------- main loop
+do
 
-bind(UIS.InputBegan, function(input)
-    if typeof(input) == "Instance" then lastInput = input end
-end)
-
-local function body()
-    local char = LP.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if root and hum then return root, hum end
-    return nil
-end
-
--- Shift lock (and some games' cameras) turn your character to face the camera every frame. While
--- a dive or slide goes off, this turns it back to the target after them, every frame.
-local function refaceNow()
-    local root = body()
-    if root and faceDir and os.clock() < faceUntil then
-        root.CFrame = CFrame.lookAt(root.Position, root.Position + faceDir)
-    end
-end
-pcall(function() RunService:BindToRenderStep("AutoDribbleFace", Enum.RenderPriority.Last.Value, refaceNow) end)
-
-local nextInfo = 0
-local function yn(v) return v == nil and "?" or (v and "Y" or "n") end
-local function left(kind)
-    local m = move[kind]
-    local s = m.cd - (os.clock() - m.at)
-    return s > 0 and ("%.1f"):format(s) or "ok"
-end
-local function showInfo(root, ball, holder, lead)
-    if not CFG.Debug or os.clock() < nextInfo then return end
-    nextInfo = os.clock() + 0.1
-    local line1 = ("conn %s sig %s tap %s key %s fti %s | %dms"):format(yn(caps.conn), yn(caps.sig),
-        yn(caps.touch), yn(caps.key), yn(type(firetouchinterest) == "function"), math.floor(lead * 1000 + 0.5))
-    local line2 = "no ball"
-    if ball then
-        local who = holder == LP and "YOU" or holder and (isEnemy(holder) and "FOE" or "TEAM") or "free"
-        line2 = ("ball %.0f %s"):format((ball.Position - root.Position).Magnitude, who)
-    end
-    local d, eta = nearestFoe(root)
-    if d then line2 ..= (" | foe %.0f"):format(d) .. (eta and (" %.2fs"):format(eta) or "") end
-    local line4 = ("cd drb %s tkl %s gk %s | slide %.0f"):format(left("dribble"), left("tackle"), left("dive"),
-        slideReach)
-    local line5 = ("goal %s | stamina %s"):format(goalCentre and ("%.0f wide"):format(goalHalf * 2) or "?", stam.found)
-    info.Text = line1 .. "\n" .. line2 .. "\n" .. dbg.last .. "\n" .. line4 .. "\n" .. line5
-end
-
-bind(RunService.Heartbeat, function(dt)
-    if CFG.InfStamina then holdStamina() end
-    local root, hum = body()
-    if not root then return end
-    trackPlayers()
-
-    -- keeper's spot: where you stood when you turned it on, re-set after any teleport (kickoff, reset)
-    if on.dive and (not home or (lastRoot and (root.Position - lastRoot).Magnitude > 25)) then
-        home = root.Position
-        local centre = pitchCentre(root)
-        local out = centre and flat(centre - home)
-        fieldDir = (out and out.Magnitude > 10) and out.Unit or nil
-        fieldExact = fieldDir ~= nil
-        fieldSum, fieldN = Vector3.zero, 0
-        goalCentre, goalHalf = findGoal(home)
-    end
-    lastRoot = root.Position
-
-    local lead = ping()
-    local ball = nearestBall(root.Position)
-    if (ball ~= nil) ~= ballFound then
-        ballFound = ball ~= nil
-        refresh()
-    end
-    local holder = ball and holderOf(ball)
-    if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
-    if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
-    showInfo(root, ball, holder, lead)
-    reachStep(root, ball, holder)
-    if not ball then return end
-    if on.dive and home and not fieldExact then
-        -- No pitch part to read: play happens out on the pitch, so the average direction of the
-        -- ball and every other player from your spot is the way out of your goal. Nothing in
-        -- front of you is ever behind the goal line, so anything back there is a ball that went
-        -- out, not the pitch. Plain average at first, settling into a long memory.
-        local function learnField(pos)
-            local out = flat(pos - home)
-            if out.Magnitude > 30 and not (fieldDir and out:Dot(fieldDir) < 0) then
-                fieldN = math.min(fieldN + 1, 20000)
-                fieldSum = fieldSum * (1 - 1 / fieldN) + out.Unit / fieldN
-            end
-        end
-        learnField(ball.Position)
-        for _, p in ipairs(Players:GetPlayers()) do
-            local r = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-            if r then learnField(r.Position) end
-        end
-        if fieldSum.Magnitude > 0.2 then fieldDir = fieldSum.Unit end
-    end
-    local s = updateTrack(ball, dt)
-    if learning or not (on.dribble or on.tackle or on.dive) or UIS:GetFocusedTextBox() then return end
-
-    if on.dive then
-        keeper(root, hum, ball, s, holder, lead, dt)
-    elseif holder == LP then
-        if on.dribble then
-            local foe, committed = threat(root, lead)
-            if foe and ready("dribble") then
-                launch("dribble", root, hum)
-                -- then out of the tackler's way, if your thumb isn't already taking you somewhere
-                local fr = foe.Character and foe.Character:FindFirstChild("HumanoidRootPart")
-                local away = fr and flat(root.Position - fr.Position)
-                if CFG.EscapeAfter > 0 and stickIdle and away and away.Magnitude > 0.1 then
-                    moveToward(root, root.Position + away.Unit * 8, dt, nil, CFG.EscapeAfter)
-                end
-            elseif foe and committed and CFG.Flick and cooling("dribble") and os.clock() - lastFlick > 1
-                and os.clock() - move.dribble.at > CFG.Protect then
-                -- (inside your own protection window the tackle gets ankle-broken anyway)
-                flick(hum)
-            end
-        end
-    elseif on.tackle and holder and isEnemy(holder) and ready("tackle") then
-        local aim, what = tackleAim(root, holder, lead)
-        if what == "go" then
-            local off = flat(aim - root.Position)
-            if CFG.Blatant and off.Magnitude > 4 then
-                -- 3 studs short of where they'll be, facing them: the slide can't miss from there
-                local at = root.Position + off - off.Unit * 3
-                root.CFrame = CFrame.lookAt(at, Vector3.new(aim.X, at.Y, aim.Z))
-            end
-            launch("tackle", root, hum, aim)
-        elseif what == "glide" then
-            moveToward(root, aim, dt, aim, 0.1)
-        elseif what == "bait" and CFG.Bait and os.clock() - baitAt > CFG.BaitEvery then
-            -- Fake a tackle: a quick step in, the way a slide starts. A carrier who dribbles at it
-            -- has it cooling for the next few seconds, and those are when the slide goes in.
-            baitAt, baitUntil, baitTo = os.clock(), os.clock() + 0.15, aim
-            dbg.last = "TACKLE fake to draw their dribble"
-        end
-    end
-    if os.clock() < baitUntil and baitTo then moveToward(root, baitTo, dt, baitTo, 0.05) end
-end)
-
--- Positioning runs before physics. Roblox's ControlModule has already applied your joystick
--- for this frame by then, so MoveDirection here is your thumb, never our own last move.
-bind(RunService.Stepped, function()
-    refaceNow()
-    local root, hum = body()
-    if not root then return end
-    stickIdle = hum.MoveDirection.Magnitude < 0.05
-    -- a run asked for by the keeper, the tackle or the dribble's escape beats the thumb for the
-    -- moment it lasts; the walk speed goes back after, unless the game changed it meanwhile
-    if os.clock() < runUntil and runTo then
-        if speedSaved == nil then speedSaved = hum.WalkSpeed end
-        hum.WalkSpeed = math.max(speedSaved, CFG.BurstSpeed)
-        speedSet = hum.WalkSpeed
-        local gap = flat(runTo - root.Position)
-        if gap.Magnitude > 0.5 then hum:Move(gap.Unit) end
-        return
-    elseif speedSaved ~= nil then
-        if hum.WalkSpeed == speedSet then hum.WalkSpeed = speedSaved end
-        speedSaved, speedSet = nil, nil
-    end
-    if not (on.dive and CFG.Positioning and stickIdle and home) or learning or os.clock() < diveUntil then
-        return
-    end
-    local ball = nearestBall(root.Position)
-    if not ball or holderOf(ball) == LP then return end
-    local base = goalBase()
-    local spot = base
-    if shotPlan and os.clock() < shotPlan.t and flat(shotPlan.at - base).Magnitude <= goalHalf + 6 then
-        -- a ball coming in: get onto its path before the dive, so the dive has less to cover
-        spot = shotPlan.at
-    else
-        local toBall = flat(ball.Position - base)
-        if toBall.Magnitude > 0.1 then
-            spot = base + toBall.Unit * math.min(CFG.Advance, toBall.Magnitude * 0.5)
-        end
-    end
-    local step = flat(spot - root.Position)
-    if step.Magnitude > 1 then hum:Move(step.Unit) end
-end)
-
----------------------------------------------------------------- pills: tap / hold / drag
-
-local dragInput, dragKind, dragStart, startAbs, moved, pressedAt
-
--- the bar's height and the readout's place follow what's open
-local function layout()
-    local y = 25 + (panel.Visible and 55 or 0)
-    info.Position = UDim2.fromOffset(0, y)
-    bar.Size = UDim2.fromOffset(217, CFG.Debug and y + 53 or (panel.Visible and 77 or 22))
-end
-layout()
-
-bind(reachBtn.InputBegan, function(input)
-    local t = input.UserInputType
-    if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
-        panel.Visible = not panel.Visible
-        layout()
-    end
-end)
-
--- a slider follows your finger from where it touches the track until you let go
-local slideInput, slideKind
-local function slideTo(kind, x)
-    local t = sliders[kind].track
-    setReach(kind, (x - t.AbsolutePosition.X) / math.max(1, t.AbsoluteSize.X) * CFG.HitboxMax)
-end
-for _, kind in ipairs(SLIDER_ORDER) do
-    bind(sliders[kind].track.InputBegan, function(input)
-        local t = input.UserInputType
-        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
-            slideInput, slideKind = input, kind
-            slideTo(kind, input.Position.X)
-        end
+    bind(UIS.InputBegan, function(input)
+        if typeof(input) == "Instance" then lastInput = input end
     end)
-end
-bind(UIS.InputChanged, function(input)
-    if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
-        slideTo(slideKind, input.Position.X)
-    end
-end)
-bind(UIS.InputEnded, function(input)
-    if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseButton1) then
-        slideInput = nil
-        save()
-    end
-end)
 
-for kind, pill in pairs(pills) do
-    bind(pill.InputBegan, function(input)
-        local t = input.UserInputType
-        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
-            dragInput, dragKind, dragStart, startAbs, moved = input, kind, input.Position, bar.AbsolutePosition, false
-            pressedAt = os.clock()
-        end
-    end)
-end
+    local function body()
+        local char = LP.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if root and hum then return root, hum end
+        return nil
+    end
 
-bind(UIS.InputChanged, function(input)
-    if not dragInput then return end
-    if input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - dragStart
-        if delta.Magnitude > 6 then moved = true end
-        if moved then
-            -- kept fully on screen, so a pill can't end up half hidden behind the edge
-            local area, size = screen.AbsoluteSize, bar.AbsoluteSize
-            local x = math.clamp(startAbs.X + delta.X, 0, math.max(0, area.X - size.X))
-            local y = math.clamp(startAbs.Y + delta.Y, 0, math.max(0, area.Y - size.Y))
-            bar.Position = UDim2.fromOffset(x, y)
+    -- Shift lock (and some games' cameras) turn your character to face the camera every frame. While
+    -- a dive or slide goes off, this turns it back to the target after them, every frame.
+    local function refaceNow()
+        local root = body()
+        if root and faceDir and os.clock() < faceUntil then
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + faceDir)
         end
     end
-end)
+    pcall(function() RunService:BindToRenderStep("AutoDribbleFace", Enum.RenderPriority.Last.Value, refaceNow) end)
 
-bind(UIS.InputEnded, function(input)
-    if not dragInput then return end
-    if input ~= dragInput and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-    dragInput = nil
-    if moved then return end
-    local kind = dragKind
-    hush(kind)
-    if learning then
-        local was = learning
-        stopLearning()
-        if was == kind then
-            clearTarget(kind)
-            notify(kind, "CLEARED", COLORS.paused)
-        else
+    local nextInfo = 0
+    local function yn(v) return v == nil and "?" or (v and "Y" or "n") end
+    local function left(kind)
+        local m = move[kind]
+        local s = m.cd - (os.clock() - m.at)
+        return s > 0 and ("%.1f"):format(s) or "ok"
+    end
+    local function showInfo(root, ball, holder, lead)
+        if not CFG.Debug or os.clock() < nextInfo then return end
+        nextInfo = os.clock() + 0.1
+        local line1 = ("conn %s sig %s tap %s key %s fti %s | %dms"):format(yn(caps.conn), yn(caps.sig),
+            yn(caps.touch), yn(caps.key), yn(type(firetouchinterest) == "function"), math.floor(lead * 1000 + 0.5))
+        local line2 = "no ball"
+        if ball then
+            local who = holder == LP and "YOU" or holder and (isEnemy(holder) and "FOE" or "TEAM") or "free"
+            line2 = ("ball %.0f %s"):format((ball.Position - root.Position).Magnitude, who)
+        end
+        local d, eta = nearestFoe(root)
+        if d then line2 ..= (" | foe %.0f"):format(d) .. (eta and (" %.2fs"):format(eta) or "") end
+        local line4 = ("cd drb %s tkl %s gk %s | slide %.0f"):format(left("dribble"), left("tackle"), left("dive"),
+            slideReach)
+        local line5 = ("goal %s | stamina %s"):format(goalCentre and ("%.0f wide"):format(goalHalf * 2) or "?", stam.found)
+        info.Text = line1 .. "\n" .. line2 .. "\n" .. dbg.last .. "\n" .. line4 .. "\n" .. line5
+    end
+
+    bind(RunService.Heartbeat, function(dt)
+        if CFG.InfStamina then holdStamina() end
+        local root, hum = body()
+        if not root then return end
+        trackPlayers()
+
+        -- keeper's spot: where you stood when you turned it on, re-set after any teleport (kickoff, reset)
+        if on.dive and (not home or (lastRoot and (root.Position - lastRoot).Magnitude > 25)) then
+            home = root.Position
+            local centre = pitchCentre(root)
+            local out = centre and flat(centre - home)
+            fieldDir = (out and out.Magnitude > 10) and out.Unit or nil
+            fieldExact = fieldDir ~= nil
+            fieldSum, fieldN = Vector3.zero, 0
+            goalCentre, goalHalf = findGoal(home)
+        end
+        lastRoot = root.Position
+
+        local lead = ping()
+        local ball = nearestBall(root.Position)
+        if (ball ~= nil) ~= ballFound then
+            ballFound = ball ~= nil
             refresh()
         end
-    elseif os.clock() - pressedAt >= CFG.LongPress then
-        startLearning(kind)
-    else
-        on[kind] = not on[kind]
-        if kind == "dive" then home = nil end -- re-anchor to where you're standing now
-        refresh()
-    end
-end)
+        local holder = ball and holderOf(ball)
+        if holder ~= curHolder then curHolder, heldSince = holder, os.clock() end
+        if holder and holder ~= LP and isEnemy(holder) then lastCarrier, lastCarriedAt = holder, os.clock() end
+        showInfo(root, ball, holder, lead)
+        reachStep(root, ball, holder)
+        if not ball then return end
+        if on.dive and home and not fieldExact then
+            -- No pitch part to read: play happens out on the pitch, so the average direction of the
+            -- ball and every other player from your spot is the way out of your goal. Nothing in
+            -- front of you is ever behind the goal line, so anything back there is a ball that went
+            -- out, not the pitch. Plain average at first, settling into a long memory.
+            local function learnField(pos)
+                local out = flat(pos - home)
+                if out.Magnitude > 30 and not (fieldDir and out:Dot(fieldDir) < 0) then
+                    fieldN = math.min(fieldN + 1, 20000)
+                    fieldSum = fieldSum * (1 - 1 / fieldN) + out.Unit / fieldN
+                end
+            end
+            learnField(ball.Position)
+            for _, p in ipairs(Players:GetPlayers()) do
+                local r = p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                if r then learnField(r.Position) end
+            end
+            if fieldSum.Magnitude > 0.2 then fieldDir = fieldSum.Unit end
+        end
+        local s = updateTrack(ball, dt)
+        if learning or not (on.dribble or on.tackle or on.dive) or UIS:GetFocusedTextBox() then return end
 
-env.AutoDribbleStop = function()
-    for _, kind in ipairs(KINDS) do on[kind] = false end
-    stopLearning()
-    shrinkHitboxes()
-    for r in pairs(blocked) do blocked[r] = nil end
-    sphere:Destroy()
-    pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
-    for _, c in ipairs(conns) do c:Disconnect() end
-    screen:Destroy()
-    env.AutoDribbleStop = nil
+        if on.dive then
+            keeper(root, hum, ball, s, holder, lead, dt)
+        elseif holder == LP then
+            if on.dribble then
+                local foe, committed = threat(root, lead)
+                if foe and ready("dribble") then
+                    launch("dribble", root, hum)
+                    -- then out of the tackler's way, if your thumb isn't already taking you somewhere
+                    local fr = foe.Character and foe.Character:FindFirstChild("HumanoidRootPart")
+                    local away = fr and flat(root.Position - fr.Position)
+                    if CFG.EscapeAfter > 0 and stickIdle and away and away.Magnitude > 0.1 then
+                        moveToward(root, root.Position + away.Unit * 8, dt, nil, CFG.EscapeAfter)
+                    end
+                elseif foe and committed and CFG.Flick and cooling("dribble") and os.clock() - lastFlick > 1
+                    and os.clock() - move.dribble.at > CFG.Protect then
+                    -- (inside your own protection window the tackle gets ankle-broken anyway)
+                    flick(hum)
+                end
+            end
+        elseif on.tackle and holder and isEnemy(holder) and ready("tackle") then
+            local aim, what = tackleAim(root, holder, lead)
+            if what == "go" then
+                local off = flat(aim - root.Position)
+                if CFG.Blatant and off.Magnitude > 4 then
+                    -- 3 studs short of where they'll be, facing them: the slide can't miss from there
+                    local at = root.Position + off - off.Unit * 3
+                    root.CFrame = CFrame.lookAt(at, Vector3.new(aim.X, at.Y, aim.Z))
+                end
+                launch("tackle", root, hum, aim)
+            elseif what == "glide" then
+                moveToward(root, aim, dt, aim, 0.1)
+            elseif what == "bait" and CFG.Bait and os.clock() - baitAt > CFG.BaitEvery then
+                -- Fake a tackle: a quick step in, the way a slide starts. A carrier who dribbles at it
+                -- has it cooling for the next few seconds, and those are when the slide goes in.
+                baitAt, baitUntil, baitTo = os.clock(), os.clock() + 0.15, aim
+                dbg.last = "TACKLE fake to draw their dribble"
+            end
+        end
+        if os.clock() < baitUntil and baitTo then moveToward(root, baitTo, dt, baitTo, 0.05) end
+    end)
+
+    -- Positioning runs before physics. Roblox's ControlModule has already applied your joystick
+    -- for this frame by then, so MoveDirection here is your thumb, never our own last move.
+    bind(RunService.Stepped, function()
+        refaceNow()
+        local root, hum = body()
+        if not root then return end
+        stickIdle = hum.MoveDirection.Magnitude < 0.05
+        -- a run asked for by the keeper, the tackle or the dribble's escape beats the thumb for the
+        -- moment it lasts; the walk speed goes back after, unless the game changed it meanwhile
+        if os.clock() < runUntil and runTo then
+            if speedSaved == nil then speedSaved = hum.WalkSpeed end
+            hum.WalkSpeed = math.max(speedSaved, CFG.BurstSpeed)
+            speedSet = hum.WalkSpeed
+            local gap = flat(runTo - root.Position)
+            if gap.Magnitude > 0.5 then hum:Move(gap.Unit) end
+            return
+        elseif speedSaved ~= nil then
+            if hum.WalkSpeed == speedSet then hum.WalkSpeed = speedSaved end
+            speedSaved, speedSet = nil, nil
+        end
+        if not (on.dive and CFG.Positioning and stickIdle and home) or learning or os.clock() < diveUntil then
+            return
+        end
+        local ball = nearestBall(root.Position)
+        if not ball or holderOf(ball) == LP then return end
+        local base = goalBase()
+        local spot = base
+        if shotPlan and os.clock() < shotPlan.t and flat(shotPlan.at - base).Magnitude <= goalHalf + 6 then
+            -- a ball coming in: get onto its path before the dive, so the dive has less to cover
+            spot = shotPlan.at
+        else
+            local toBall = flat(ball.Position - base)
+            if toBall.Magnitude > 0.1 then
+                spot = base + toBall.Unit * math.min(CFG.Advance, toBall.Magnitude * 0.5)
+            end
+        end
+        local step = flat(spot - root.Position)
+        if step.Magnitude > 1 then hum:Move(step.Unit) end
+    end)
 end
 
-probe()
-refresh()
+---------------------------------------------------------------- pills: tap / hold / drag
+do
+
+    local dragInput, dragKind, dragStart, startAbs, moved, pressedAt
+
+    -- the bar's height and the readout's place follow what's open
+    local function layout()
+        local y = 25 + (panel.Visible and 55 or 0)
+        info.Position = UDim2.fromOffset(0, y)
+        bar.Size = UDim2.fromOffset(217, CFG.Debug and y + 53 or (panel.Visible and 77 or 22))
+    end
+    layout()
+
+    bind(reachBtn.InputBegan, function(input)
+        local t = input.UserInputType
+        if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+            panel.Visible = not panel.Visible
+            layout()
+        end
+    end)
+
+    -- a slider follows your finger from where it touches the track until you let go
+    local slideInput, slideKind
+    local function slideTo(kind, x)
+        local t = sliders[kind].track
+        setReach(kind, (x - t.AbsolutePosition.X) / math.max(1, t.AbsoluteSize.X) * CFG.HitboxMax)
+    end
+    for _, kind in ipairs(SLIDER_ORDER) do
+        bind(sliders[kind].track.InputBegan, function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                slideInput, slideKind = input, kind
+                slideTo(kind, input.Position.X)
+            end
+        end)
+    end
+    bind(UIS.InputChanged, function(input)
+        if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            slideTo(slideKind, input.Position.X)
+        end
+    end)
+    bind(UIS.InputEnded, function(input)
+        if slideInput and (input == slideInput or input.UserInputType == Enum.UserInputType.MouseButton1) then
+            slideInput = nil
+            save()
+        end
+    end)
+
+    for kind, pill in pairs(pills) do
+        bind(pill.InputBegan, function(input)
+            local t = input.UserInputType
+            if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then
+                dragInput, dragKind, dragStart, startAbs, moved = input, kind, input.Position, bar.AbsolutePosition, false
+                pressedAt = os.clock()
+            end
+        end)
+    end
+
+    bind(UIS.InputChanged, function(input)
+        if not dragInput then return end
+        if input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 6 then moved = true end
+            if moved then
+                -- kept fully on screen, so a pill can't end up half hidden behind the edge
+                local area, size = screen.AbsoluteSize, bar.AbsoluteSize
+                local x = math.clamp(startAbs.X + delta.X, 0, math.max(0, area.X - size.X))
+                local y = math.clamp(startAbs.Y + delta.Y, 0, math.max(0, area.Y - size.Y))
+                bar.Position = UDim2.fromOffset(x, y)
+            end
+        end
+    end)
+
+    bind(UIS.InputEnded, function(input)
+        if not dragInput then return end
+        if input ~= dragInput and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        dragInput = nil
+        if moved then return end
+        local kind = dragKind
+        hush(kind)
+        if learning then
+            local was = learning
+            stopLearning()
+            if was == kind then
+                clearTarget(kind)
+                notify(kind, "CLEARED", COLORS.paused)
+            else
+                refresh()
+            end
+        elseif os.clock() - pressedAt >= CFG.LongPress then
+            startLearning(kind)
+        else
+            on[kind] = not on[kind]
+            if kind == "dive" then home = nil end -- re-anchor to where you're standing now
+            refresh()
+        end
+    end)
+
+    env.AutoDribbleStop = function()
+        for _, kind in ipairs(KINDS) do on[kind] = false end
+        stopLearning()
+        shrinkHitboxes()
+        for r in pairs(blocked) do blocked[r] = nil end
+        sphere:Destroy()
+        pcall(function() RunService:UnbindFromRenderStep("AutoDribbleFace") end)
+        for _, c in ipairs(conns) do c:Disconnect() end
+        screen:Destroy()
+        env.AutoDribbleStop = nil
+    end
+
+    probe()
+    refresh()
+    -- so you can tell it's running
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "AutoDribble v15", Text = "Loaded. Tap a pill to turn it on, R for reach.", Duration = 4,
+        })
+    end)
+end

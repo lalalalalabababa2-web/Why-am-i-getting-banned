@@ -11,8 +11,13 @@
 Paste `AutoDribble.lua` into the executor, or load it straight from this branch:
 
 ```lua
-loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua"))()
+local f, err = loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/why-am-i-getting-banned/ccr-c17f9351-tb2c46/blue-lock-rivals/AutoDribble.lua"))
+if not f then warn("AutoDribble didn't compile: " .. tostring(err)) return end
+f()
 ```
+
+If it doesn't compile, the executor's console says why instead of nothing happening. A corner
+notification says "AutoDribble v15 Loaded" when it starts.
 
 Running it again replaces the old copy. Three pills appear on the left: **DRIBBLE**, **TACKLE**,
 **AUTO GK**. Tap to toggle, drag to move. Hold about a second and let go, then tap the game's
@@ -43,6 +48,15 @@ the other two.
   `miss`. Also `button off screen` (cutscene), `still cooling (button)`, `FLICK`, `JUMP`.
 - **Line 4**: cooldown left per move (`ok` = ready) and how far your slide reaches.
 - **Line 5**: how wide your goal is (`?` = not found in the map) and where stamina was found.
+
+## v15
+
+- **Fixes v14 not starting at all.** v14 had 209 local variables alive at once in its main chunk,
+  and Luau refuses to compile past 200, so the executor gave up before anything appeared. The
+  pressing, keeper, stamina, reach, main-loop and pill sections now keep their own locals in
+  blocks (at most 154 alive now). `check.py` counts locals and upvalues per function against
+  Luau's limits, and the test suite runs that check, so a script that won't compile can't pass.
+- A notification when it starts, and a loader that prints the compile error if there is one.
 
 ## v14
 
@@ -172,7 +186,7 @@ python3 test/test_autodribble.py            # runs the script in a fake match
 signals, getconnections, VirtualInputManager). The fake match has the game's HUD as the
 recording shows it: Dribble and Pass only with the ball, Slide without it, Dive as keeper, a
 cooldown overlay on each button, and a HUD that disappears during cutscenes. Slides and dives
-move you by CFrame, the way the game seems to. The 64 scenarios include the 0:40 goal and the
+move you by CFrame, the way the game seems to. The 65 scenarios include the 0:40 goal and the
 cutscene. Breaking any one feature on purpose makes at least one of them fail.
 
 It still hasn't run in the real game, and these numbers in `CFG` are guesses:

@@ -10,6 +10,7 @@ string interpolation is rejected) and reports:
   - calls to local functions with a different number of arguments than they take
   - `...` outside a vararg function, `break`/`continue` outside a loop, code after `return`
   - the same key set twice in one table constructor (the later one silently wins)
+  - more than 200 locals alive in one function, or 200 upvalues: Luau refuses to compile it
 
 Usage: python3 check.py AutoDribble.lua [more.lua ...]   (exit status 1 on errors)
 """
@@ -141,10 +142,18 @@ class Local:
         self.sig = None  # (nparams, vararg) when it holds a function literal
 
 
+LOCAL_LIMIT = 200    # Luau: active locals in one function (each `local` statement takes a register)
+UPVALUE_LIMIT = 200  # Luau: outer locals one function can use
+
+
 class FuncState:
-    def __init__(self, parent, vararg):
-        self.parent, self.vararg = parent, vararg
+    def __init__(self, parent, vararg, line=0):
+        self.parent, self.vararg, self.line = parent, vararg, line
         self.scopes = [{}]
+        self.counts = [0]  # declarations per open scope, repeats included
+        self.most = 0      # most locals alive at once
+        self.most_line = line
+        self.upvalues = set()
         self.loops = 0
 
 
@@ -168,6 +177,7 @@ class Parser:
         self.fs = FuncState(None, True)  # the main chunk is vararg
         self.globals_read, self.globals_written = {}, {}
         self.unused, self.arity, self.duplicates = [], [], []
+        self.limit_errors, self.most_locals, self.most_upvalues = [], 0, 0
 
     # tokens
     def peek(self, k=0):
@@ -213,8 +223,10 @@ class Parser:
     # scopes
     def open_scope(self):
         self.fs.scopes.append({})
+        self.fs.counts.append(0)
 
     def close_scope(self):
+        self.fs.counts.pop()
         for loc in self.fs.scopes.pop().values():
             self.finish_local(loc)
 
@@ -228,14 +240,24 @@ class Parser:
             self.finish_local(scope[name])  # shadowed in the same scope
         loc = Local(name, line, kind)
         scope[name] = loc
+        fs = self.fs
+        fs.counts[-1] += 1
+        alive = sum(fs.counts)
+        if alive > fs.most:
+            fs.most, fs.most_line = alive, line
         return loc
 
     def resolve(self, name):
         fs = self.fs
+        crossed = []
         while fs:
             for scope in reversed(fs.scopes):
                 if name in scope:
+                    # every function between the use and the declaration carries it as an upvalue
+                    for f in crossed:
+                        f.upvalues.add(id(scope[name]))
                     return scope[name]
+            crossed.append(fs)
             fs = fs.parent
         return None
 
@@ -459,7 +481,7 @@ class Parser:
                     break
                 self.next()
         self.expect_op(")")
-        self.fs = FuncState(parent, vararg)
+        self.fs = FuncState(parent, vararg, line)
         if is_method:
             self.declare("self", line, "param")
         for p in params:
@@ -469,8 +491,19 @@ class Parser:
         for scope in self.fs.scopes:
             for loc in scope.values():
                 self.finish_local(loc)
+        self.limits(self.fs)
         self.fs = parent
         return (len(params), vararg)
+
+    def limits(self, fs):
+        if fs.most > LOCAL_LIMIT:
+            self.limit_errors.append((fs.most_line, f"{fs.most} locals alive at once in the function from line "
+                                      f"{fs.line} (Luau allows {LOCAL_LIMIT}): it won't compile"))
+        if len(fs.upvalues) > UPVALUE_LIMIT:
+            self.limit_errors.append((fs.line, f"the function here uses {len(fs.upvalues)} outer locals "
+                                      f"(Luau allows {UPVALUE_LIMIT}): it won't compile"))
+        self.most_locals = max(self.most_locals, fs.most)
+        self.most_upvalues = max(self.most_upvalues, len(fs.upvalues))
 
     # expressions; each returns a descriptor: ("name", n, line), a function signature tuple,
     # "call", "vararg" or None
@@ -633,6 +666,7 @@ class Parser:
         for scope in self.fs.scopes:
             for loc in scope.values():
                 self.finish_local(loc)
+        self.limits(self.fs)
 
 
 def check(path):
@@ -651,6 +685,9 @@ def check(path):
     for name, line in sorted(parser.globals_written.items(), key=lambda kv: kv[1]):
         print(f"{path}:{line}: ERROR assigns global '{name}'")
         ok = False
+    for line, msg in parser.limit_errors:
+        print(f"{path}:{line}: ERROR {msg}")
+        ok = False
     for line, name, first in parser.duplicates:
         print(f"{path}:{line}: ERROR '{name}' is set twice in one table (first at line {first}); the later one wins")
         ok = False
@@ -659,7 +696,8 @@ def check(path):
               + (" or more" if open_ended else ""))
     for loc in sorted(parser.unused, key=lambda l: l.line):
         print(f"{path}:{loc.line}: note: local '{loc.name}' is never read")
-    print(f"{path}: {'ok' if ok else 'FAILED'} ({src.count(chr(10)) + 1} lines)")
+    print(f"{path}: {'ok' if ok else 'FAILED'} ({src.count(chr(10)) + 1} lines, at most {parser.most_locals} "
+          f"locals and {parser.most_upvalues} upvalues in one function, Luau's limit is 200 each)")
     return ok
 
 

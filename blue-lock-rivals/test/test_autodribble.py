@@ -395,6 +395,21 @@ def runner_at(g, name, start, speed, slide_at=8):
 
 
 @test
+def script_compiles_within_luaus_limits():
+    # v14 had 209 locals alive in its main chunk: Luau refuses past 200, so nothing appeared
+    import io
+    import contextlib
+    sys.path.insert(0, os.path.join(HERE, ".."))
+    import check
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ok = check.check(SCRIPT)
+    check_ok = ok and "ERROR" not in out.getvalue()
+    if not check_ok:
+        raise AssertionError(out.getvalue())
+
+
+@test
 def loads_and_shows_three_pills():
     g = Game().load()
     g.run(0.5)
