@@ -1,5 +1,5 @@
 --[[
-    Turbo League - Ball Trajectory Predictor (mobile) v6
+    Turbo League - Ball Trajectory Predictor + AI bot (mobile) v7
     Roblox client Luau, for mobile executors (Delta, Codex, Arceus X, Fluxus...)
 
     loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/Why-am-i-getting-banned/ccr-c8ff314b-e969wb/roblox/turbo_league_trajectory.lua"))()
@@ -21,8 +21,20 @@
       white ring            : shadow under the ball while airborne
       top banner            : "GOAL in 1.3s" / "OWN GOAL in 1.3s"
 
+    AI BOT (blue ring + "BOT ATTACK 1.2s"):
+      drives your car through the game's own controls. The first time you switch it on
+      it test-drives for ~10s to learn which controls work (keys / seat, steer direction,
+      jump and boost buttons) and saves that. Then it plays:
+        KICKOFF  boosts straight at the ball
+        ATTACK   earliest ball it can reach, lined up behind it toward the enemy goal
+        CHASE    ball out of reach for now, heads to where it'll end up
+        CLEAR    ball heading into your goal or sitting near it: hits it away
+        DEFEND   ball going in and it can't get there: drops into the goal mouth
+      Unsticks itself off walls and flips back over when upside down.
+
     TRAJ  : tap = on/off, drag = move, hold 1s = info line
-    MENU  : toggle every feature, prediction length, line width, low-lag mode
+    MENU  : toggle every feature, prediction length, line width, low-lag mode, bot options
+    BOT   : tap = AI bot on/off
     Settings and learned physics are saved (writefile) and survive rejoining.
 ]]
 
@@ -60,6 +72,7 @@ local C = {
     Shadow    = Color3.fromRGB(255, 255, 255),
     Shot      = Color3.fromRGB(255, 255, 160),
     Esp       = Color3.fromRGB(255, 80, 200),
+    Bot       = Color3.fromRGB(80, 160, 255),
     Off       = Color3.fromRGB(150, 150, 150),
     Panel     = Color3.fromRGB(20, 20, 28),
 }
@@ -67,6 +80,7 @@ local C = {
 local DEFAULTS = {
     path = true, land = true, stop = true, arrow = true, reach = true, shot = true,
     goal = true, esp = true, xray = true, predict = 12, width = 2, lowLag = false,
+    botBoost = true, botJump = true, botDefend = true,
 }
 local WIDTHS      = { 0.35, 0.6, 1.0 }
 local WIDTH_NAMES = { "thin", "normal", "thick" }
@@ -77,6 +91,9 @@ local Players     = game:GetService("Players")
 local RunService  = game:GetService("RunService")
 local UIS         = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local GuiService  = game:GetService("GuiService")
+local VIM
+pcall(function() VIM = game:GetService("VirtualInputManager") end)
 local LP          = Players.LocalPlayer
 
 local env = getgenv and getgenv() or {}
@@ -253,6 +270,7 @@ local function buildVisuals()
     rings.reach  = newRing(C.Reach, true)
     rings.enemy  = newRing(C.Enemy, true)
     rings.shadow = newRing(C.Shadow, false)
+    rings.bot    = newRing(C.Bot, true)
     shotLabel    = newLabel(C.Shot)
     espLabel     = newLabel(C.Esp)
 
@@ -386,7 +404,7 @@ end
 local samples = {}
 local SAMPLE_KEEP = 0.4
 local VEL_WINDOW  = 0.12
-local hideUntil, trackedPart, kickoffAt, airSince = 0, nil, nil, nil
+local hideUntil, trackedPart, kickoffAt, airSince, resetCount = 0, nil, nil, nil, 0
 local smoothVel = Vector3.zero
 
 local function resetTracking()
@@ -442,6 +460,7 @@ local function trackBall(b, now, radius)
         resetTracking()            -- respawn / kickoff teleport
         hideUntil = now + 0.3
         kickoffAt = now
+        resetCount += 1
         last = nil
     end
     if not last or (pos - last.p).Magnitude > 1e-3 then
@@ -614,8 +633,10 @@ local function enemyCars()
     return list
 end
 
----------------------------------------------------------------- goals
-local ownGoalPos
+---------------------------------------------------------------- goals / field sides
+local ownGoalPos, enemyGoalPos, ownGoalEst, attackDir, kickoffBallPos
+
+local function flat(v) return Vector3.new(v.X, 0, v.Z) end
 
 local function goalAt(p)
     for g in pairs(goals) do
@@ -635,6 +656,15 @@ local function nearestGoal(pos)
     for g in pairs(goals) do
         local d = (g.Position - pos).Magnitude
         if d < bd then best, bd = g.Position, d end
+    end
+    return best
+end
+
+local function farthestGoal(pos)
+    local best, bd = nil, -1
+    for g in pairs(goals) do
+        local d = (g.Position - pos).Magnitude
+        if d > bd then best, bd = g.Position, d end
     end
     return best
 end
@@ -756,6 +786,17 @@ local function findReach(points, radius, cp)
     return nil
 end
 
+-- earliest reach for you and the fastest opponent
+local function raceInfo(pts, radius, myCar)
+    local r = { bestT = math.huge }
+    if myCar then r.mine = findReach(pts, radius, myCar.Position) end
+    for _, ec in ipairs(enemyCars()) do
+        local x = findReach(pts, radius, ec.Position)
+        if x and x.t < r.bestT then r.best, r.bestT = x, x.t end
+    end
+    return r
+end
+
 -- rough launch velocity if your car hits the ball right now
 local function shotVelocity(b, ballVel, radius, car)
     if not car then return nil end
@@ -783,7 +824,7 @@ if not okParent or not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui")
 local function corner(inst, r) Instance.new("UICorner", inst).CornerRadius = UDim.new(0, r) end
 
 local holder = Instance.new("Frame")
-holder.Size = UDim2.fromOffset(176, 38) -- just the buttons; panel/info hang below without blocking touches
+holder.Size = UDim2.fromOffset(302, 38) -- just the buttons; panel/info hang below without blocking touches
 holder.Position = UDim2.new(0.5, -90, 0, 70)
 holder.BackgroundTransparency = 1
 holder.Parent = gui
@@ -809,6 +850,8 @@ end
 
 local btn, btnStroke = topButton("TRAJ ON", 0, 100)
 local menuBtn = topButton("MENU", 106, 70)
+local botBtn, botStroke = topButton("BOT OFF", 182, 120)
+botBtn.TextColor3, botStroke.Color = C.Off, C.Off
 
 local info = Instance.new("TextLabel")
 info.Size = UDim2.fromOffset(300, 30)
@@ -1026,8 +1069,8 @@ local function goalText(prefix, t, g)
     return string.format("GOAL %s%.1fs", prefix, t), C.Late
 end
 
-local function drawPrediction(b, radius, vel, myCar)
-    local pts, bnc, land, stop, goalT, goalPart = simulate(b.Position, vel, radius, S.predict)
+local function drawPrediction(b, radius, sim, race)
+    local pts, bnc, land, stop, goalT, goalPart = sim.pts, sim.bnc, sim.land, sim.stop, sim.goalT, sim.goalPart
 
     if S.path then
         drawSegments(segs, pts, C.LineStart, C.LineEnd, 0.05)
@@ -1061,13 +1104,8 @@ local function drawPrediction(b, radius, vel, myCar)
     end
 
     targets.reach, targets.enemy = nil, nil
-    if S.reach and myCar then
-        local mine = findReach(pts, radius, myCar.Position)
-        local best, bestT = nil, math.huge
-        for _, ec in ipairs(enemyCars()) do
-            local r = findReach(pts, radius, ec.Position)
-            if r and r.t < bestT then best, bestT = r, r.t end
-        end
+    if S.reach then
+        local mine, best, bestT = race.mine, race.best, race.bestT
         if mine and mine.t > 0.15 then
             local win = mine.t <= bestT
             local p, n = groundUnder(mine.p, radius)
@@ -1115,6 +1153,680 @@ local function updateEsp(b, vel, radius)
     espHi.Enabled = true
     setLabel(espLabel, b.Position + Vector3.new(0, radius + 3, 0),
         string.format("%d sps", math.floor(vel.Magnitude)), C.Esp)
+end
+
+-- only these leave the bot block; everything else stays local to it (Luau caps a scope at 200 locals)
+local bot, refreshBotButton, releaseControls, applyControls, calibrateLoop, setBot, botTick, drawBotRing
+do
+    ---------------------------------------------------------------- AI bot: controls
+    -- The bot drives through the game's own controls. Which ones those are (WASD, arrow keys or
+    -- the VehicleSeat) and what jumps/boosts is found by a short self-test the first time it's
+    -- switched on: press something, watch what the car does, keep what works.
+    bot = {
+        on = false, calibrating = false, status = "BOT OFF", mode = "OFF",
+        cmd = { th = 0, st = 0, boost = false },
+        backend = nil, jumpAct = nil, boostAct = nil, boostHeld = false,
+        calCmd = nil, target = nil, plan = nil,
+        jumpCd = 0, stuckT = 0, reverseUntil = 0, flipT = 0, resolveT = 0,
+    }
+
+    function refreshBotButton()
+        botBtn.Text = bot.status
+        local c = bot.on and (bot.calibrating and C.Reach or C.Bot) or C.Off
+        botBtn.TextColor3, botStroke.Color = c, c
+    end
+
+    -- proportional control out of on/off keys: press on a fraction of frames
+    local function pwmOn(state, v)
+        if v >= 0.95 then state.acc = 0 return true end
+        if v <= 0.05 then state.acc = 0 return false end
+        state.acc = (state.acc or 0) + v
+        if state.acc >= 1 then state.acc -= 1 return true end
+        return false
+    end
+
+    local function makeKeyBackend(name, codes)
+        if not VIM then return nil end
+        local held, pw = {}, { f = {}, b = {}, l = {}, r = {} }
+        local function set(code, on)
+            if held[code] == on then return end
+            held[code] = on
+            pcall(function() VIM:SendKeyEvent(on, code, false, game) end)
+        end
+        local be = { name = name }
+        function be.apply(th, st)
+            set(codes.f, th > 0 and pwmOn(pw.f, th))
+            set(codes.b, th < 0 and pwmOn(pw.b, -th))
+            set(codes.r, st > 0 and pwmOn(pw.r, st))
+            set(codes.l, st < 0 and pwmOn(pw.l, -st))
+        end
+        function be.release()
+            for code, on in pairs(held) do if on then set(code, false) end end
+        end
+        return be
+    end
+
+    local function makeSeatBackend(seat)
+        local be = { name = "seat", seat = seat }
+        function be.apply(th, st)
+            pcall(function()
+                seat.ThrottleFloat, seat.SteerFloat = th, st
+                seat.Throttle = th > 0.1 and 1 or (th < -0.1 and -1 or 0)
+                seat.Steer = st > 0.1 and 1 or (st < -0.1 and -1 or 0)
+            end)
+        end
+        function be.release() be.apply(0, 0) end
+        return be
+    end
+
+    local function mySeat()
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local s = hum and hum.SeatPart
+        if s and s:IsA("VehicleSeat") then return s end
+        return nil
+    end
+
+    local function candidateBackends()
+        local list = {}
+        local seat = mySeat()
+        if seat then table.insert(list, makeSeatBackend(seat)) end
+        local wasd = makeKeyBackend("keys", { f = Enum.KeyCode.W, b = Enum.KeyCode.S, l = Enum.KeyCode.A, r = Enum.KeyCode.D })
+        if wasd then table.insert(list, wasd) end
+        local arrows = makeKeyBackend("arrows", { f = Enum.KeyCode.Up, b = Enum.KeyCode.Down, l = Enum.KeyCode.Left, r = Enum.KeyCode.Right })
+        if arrows then table.insert(list, arrows) end
+        return list
+    end
+
+    -- jump / boost "actions": a key, or the game's own on-screen button pressed three different ways
+    local function fireSig(sig, ...)
+        if firesignal then pcall(firesignal, sig, ...) return end
+        if getconnections then
+            local ok, conns = pcall(getconnections, sig)
+            if ok then
+                local args = table.pack(...)
+                for _, c in ipairs(conns) do pcall(function() c:Fire(table.unpack(args, 1, args.n)) end) end
+            end
+        end
+    end
+
+    local function btnCenter(btn)
+        local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+        return p.X + s.X / 2, p.Y + s.Y / 2
+    end
+
+    local function fakeTouch(btn, down)
+        local x, y = btnCenter(btn)
+        return {
+            UserInputType = Enum.UserInputType.Touch,
+            UserInputState = down and Enum.UserInputState.Begin or Enum.UserInputState.End,
+            KeyCode = Enum.KeyCode.Unknown,
+            Position = Vector3.new(x, y, 0),
+            Delta = Vector3.zero,
+        }
+    end
+
+    local function tapAt(btn, down)
+        local x, y = btnCenter(btn)
+        local inset = GuiService:GetGuiInset()
+        pcall(function() VIM:SendMouseButtonEvent(x + inset.X, y + inset.Y, 0, down, game, 0) end)
+    end
+
+    local function findGuiButton(word)
+        local pg = LP:FindFirstChildOfClass("PlayerGui")
+        if not pg then return nil end
+        for _, d in ipairs(pg:GetDescendants()) do
+            if d:IsA("GuiButton") and not d:IsDescendantOf(gui) then
+                local txt = d.Name:lower()
+                if d:IsA("TextButton") then txt ..= " " .. d.Text:lower() end
+                local lbl = d:FindFirstChildWhichIsA("TextLabel", true)
+                if lbl then txt ..= " " .. lbl.Text:lower() end
+                if txt:find(word, 1, true) then return d end
+            end
+        end
+        return nil
+    end
+
+    local function keyAction(label, code)
+        if not VIM then return nil end
+        return {
+            name = "key " .. label,
+            alive = function() return true end,
+            down = function() VIM:SendKeyEvent(true, code, false, game) end,
+            up = function() VIM:SendKeyEvent(false, code, false, game) end,
+        }
+    end
+
+    local function guiActions(word)
+        local btn = findGuiButton(word)
+        if not btn then return {} end
+        local alive = function() return btn.Parent ~= nil and btn:IsDescendantOf(LP) end
+        local list = {}
+        if firesignal or getconnections then
+            table.insert(list, { name = "gui-signal " .. word, alive = alive,
+                down = function() fireSig(btn.MouseButton1Down) end,
+                up = function() fireSig(btn.MouseButton1Up); fireSig(btn.Activated) end })
+            table.insert(list, { name = "gui-input " .. word, alive = alive,
+                down = function() fireSig(btn.InputBegan, fakeTouch(btn, true)) end,
+                up = function() fireSig(btn.InputEnded, fakeTouch(btn, false)) end })
+        end
+        if VIM then
+            table.insert(list, { name = "gui-tap " .. word, alive = alive,
+                down = function() tapAt(btn, true) end,
+                up = function() tapAt(btn, false) end })
+        end
+        return list
+    end
+
+    local function actionList(keys, word)
+        local list = {}
+        for _, k in ipairs(keys) do
+            local a = keyAction(k[1], k[2])
+            if a then table.insert(list, a) end
+        end
+        for _, a in ipairs(guiActions(word)) do table.insert(list, a) end
+        return list
+    end
+
+    local function jumpCandidates()
+        return actionList({ { "Space", Enum.KeyCode.Space } }, "jump")
+    end
+
+    local function boostCandidates()
+        return actionList({
+            { "LeftShift", Enum.KeyCode.LeftShift }, { "Q", Enum.KeyCode.Q },
+            { "E", Enum.KeyCode.E }, { "F", Enum.KeyCode.F },
+        }, "boost")
+    end
+
+    local function findAction(list, name)
+        for _, a in ipairs(list) do if a.name == name then return a end end
+        return nil
+    end
+
+    local function resolveActions()
+        local cal = learn.bot
+        if not cal then return end
+        if cal.jump and not (bot.jumpAct and bot.jumpAct.alive()) then
+            bot.jumpAct = findAction(jumpCandidates(), cal.jump)
+        end
+        if cal.boost and not (bot.boostAct and bot.boostAct.alive()) then
+            if bot.boostHeld and bot.boostAct then pcall(bot.boostAct.up) end
+            bot.boostHeld = false
+            bot.boostAct = findAction(boostCandidates(), cal.boost)
+        end
+    end
+
+    local function resolveBot()
+        local cal = learn.bot
+        if not cal or not cal.backend then return false end
+        if bot.backend then bot.backend.release() end
+        bot.backend = nil
+        for _, be in ipairs(candidateBackends()) do
+            if be.name == cal.backend then bot.backend = be break end
+        end
+        bot.jumpAct, bot.boostAct = nil, nil
+        resolveActions()
+        return bot.backend ~= nil
+    end
+
+    function releaseControls()
+        if bot.boostHeld and bot.boostAct then pcall(bot.boostAct.up) end
+        bot.boostHeld = false
+        if bot.backend then bot.backend.release() end
+    end
+
+    -- runs every physics step so the game's own input code can't overwrite us in between
+    function applyControls()
+        local be = bot.backend
+        if not be then return end
+        if bot.calCmd then be.apply(bot.calCmd.th, bot.calCmd.st) return end
+        if not bot.on or bot.calibrating then return end
+        be.apply(bot.cmd.th, bot.cmd.st)
+        local want = bot.cmd.boost and S.botBoost and bot.boostAct ~= nil
+        if want ~= bot.boostHeld then
+            bot.boostHeld = want
+            if want then pcall(bot.boostAct.down) else pcall(bot.boostAct.up) end
+        end
+    end
+
+    local function pressJump(now)
+        local act = bot.jumpAct
+        if not act or now < bot.jumpCd then return end
+        bot.jumpCd = now + 1.2
+        pcall(act.down)
+        task.delay(0.1, function() pcall(act.up) end)
+    end
+
+    ---------------------------------------------------------------- AI bot: calibration
+    local function snapAxis(v)
+        local ax, ay, az = math.abs(v.X), math.abs(v.Y), math.abs(v.Z)
+        if ax >= ay and ax >= az then return Vector3.new(v.X > 0 and 1 or -1, 0, 0) end
+        if az >= ay then return Vector3.new(0, 0, v.Z > 0 and 1 or -1) end
+        return Vector3.new(0, v.Y > 0 and 1 or -1, 0)
+    end
+
+    local function calHold(th, st, sec)
+        bot.calCmd = { th = th, st = st }
+        task.wait(sec)
+    end
+
+    -- Drive with (th, st) for sec seconds. Returns the start CFrame, or nil when the test was
+    -- spoiled by a teleport (goal reset, respawn, demo); then it has to be redone.
+    local function measure(car, th, st, sec)
+        local rc, cf0, last, ok = resetCount, car.CFrame, car.Position, true
+        bot.calCmd = { th = th, st = st }
+        local t0 = os.clock()
+        while os.clock() - t0 < sec do
+            task.wait()
+            local p = car.Position
+            if (p - last).Magnitude > 12 then ok = false end
+            last = p
+        end
+        if resetCount ~= rc or car.Parent == nil then ok = false end
+        return ok and cf0 or nil, car.CFrame
+    end
+
+    local function settle(car)
+        measure(car, -1, 0, 0.45)
+        measure(car, 0, 0, 0.3)
+    end
+
+    -- forward axis for this backend: needs two clean runs that agree. "none" = clean run, no movement
+    local function driveTest(car)
+        local got
+        for _ = 1, 4 do
+            local cf0, cf1 = measure(car, 1, 0, 0.7)
+            settle(car)
+            if cf0 then
+                local disp = flat(cf1.Position - cf0.Position)
+                if disp.Magnitude <= 3 then return "none" end
+                local axis = snapAxis(cf0:VectorToObjectSpace(disp.Unit))
+                if got and got == axis then return axis end
+                got = axis
+            end
+        end
+        return nil
+    end
+
+    -- does this action do its thing (twice, both clean)?
+    local function confirm(trial)
+        local passes = 0
+        for _ = 1, 5 do
+            local result = trial()
+            if result == false then return false end
+            if result == true then passes += 1 end
+            if passes >= 2 then return true end
+        end
+        return false
+    end
+
+    local function calibrate()
+        local car = carPartOf(LP)
+        if not car then return false, "no car" end
+        local cal = {}
+        local function alive() return bot.on and car.Parent ~= nil end
+        local function status(t) bot.status = t; refreshBotButton() end
+
+        -- 1) which control path moves the car, and which of the part's axes is "forward"
+        status("CAL: drive")
+        for _, be in ipairs(candidateBackends()) do
+            bot.backend = be
+            local axis = driveTest(car)
+            if not alive() then return false, "stopped" end
+            if typeof(axis) == "Vector3" then
+                cal.backend = be.name
+                cal.fwd = { x = axis.X, y = axis.Y, z = axis.Z }
+                break
+            end
+            bot.calCmd = nil
+            be.release()
+            bot.backend = nil
+            if axis == nil then return false, "interrupted" end
+        end
+        if not cal.backend then bot.calCmd = nil; return false, "car won't move" end
+        local lf = Vector3.new(cal.fwd.x, cal.fwd.y, cal.fwd.z)
+
+        -- 2) which way "right" actually turns (two clean runs that agree)
+        status("CAL: steer")
+        local signs = {}
+        for _ = 1, 4 do
+            local cf0, cf1 = measure(car, 1, 1, 0.8)
+            settle(car)
+            if cf0 then
+                local c = flat(cf0:VectorToWorldSpace(lf)).Unit:Cross(flat(cf1:VectorToWorldSpace(lf)).Unit).Y
+                if math.abs(c) > 0.05 then
+                    local sgn = c > 0 and 1 or -1
+                    if signs[1] == sgn then cal.turnY = sgn break end
+                    signs[1] = sgn
+                end
+            end
+            if not alive() then return false, "stopped" end
+        end
+        cal.turnY = cal.turnY or signs[1] or -1
+
+        -- 3) jump: the candidate that throws the car upward, twice
+        status("CAL: jump")
+        calHold(0, 0, 0.3)
+        for _, act in ipairs(jumpCandidates()) do
+            if not alive() then return false, "stopped" end
+            local works = confirm(function()
+                -- frozen for a countdown? then this press proves nothing; wait and redo
+                local cf0, cf1 = measure(car, 1, 0, 0.25)
+                settle(car)
+                if not cf0 or (cf1.Position - cf0.Position).Magnitude < 1 then task.wait(1) return nil end
+                local rc, maxVy, released, t0 = resetCount, -math.huge, false, os.clock()
+                pcall(act.down)
+                while os.clock() - t0 < 0.6 do
+                    task.wait()
+                    if not released and os.clock() - t0 > 0.12 then pcall(act.up); released = true end
+                    maxVy = math.max(maxVy, car.AssemblyLinearVelocity.Y)
+                end
+                if not released then pcall(act.up) end
+                task.wait(0.9)
+                if resetCount ~= rc then return nil end -- spoiled, try again
+                return maxVy > 8
+            end)
+            if works then cal.jump = act.name break end
+        end
+
+        -- 4) boost: cruise in a tight circle, keep the candidate that adds speed, twice
+        status("CAL: boost")
+        calHold(1, 0.8, 1.4)
+        for _, act in ipairs(boostCandidates()) do
+            if not alive() then return false, "stopped" end
+            local works = confirm(function()
+                local rc = resetCount
+                local v0 = flat(car.AssemblyLinearVelocity).Magnitude
+                pcall(act.down)
+                task.wait(0.7)
+                local v1 = flat(car.AssemblyLinearVelocity).Magnitude
+                pcall(act.up)
+                task.wait(0.7)
+                if resetCount ~= rc then return nil end
+                return v1 > v0 * 1.08 + 3
+            end)
+            if works then cal.boost = act.name break end
+        end
+        calHold(-1, 0, 0.5)
+        calHold(0, 0, 0.1)
+        bot.calCmd = nil
+
+        learn.bot = cal
+        saveAll()
+        return true
+    end
+
+    function calibrateLoop()
+        if bot.calibrating then return end
+        bot.calibrating = true
+        for attempt = 1, 5 do
+            if not bot.on then break end
+            local ok, why = calibrate()
+            bot.calCmd = nil
+            if ok then resolveBot() break end
+            if bot.backend then bot.backend.release() end
+            bot.backend = nil
+            if not bot.on then break end
+            bot.status = string.format("BOT: %s %d/5", why, attempt)
+            refreshBotButton()
+            task.wait(3)
+        end
+        bot.calibrating = false
+        if bot.on and not bot.backend then
+            bot.on = false
+            bot.status = "BOT: no controls"
+        elseif bot.on then
+            bot.status = "BOT ON"
+        end
+        refreshBotButton()
+    end
+
+    function setBot(on)
+        bot.on = on
+        if on then
+            if resolveBot() then
+                bot.status = "BOT ON"
+            else
+                task.spawn(calibrateLoop)
+            end
+        else
+            bot.calCmd = nil
+            releaseControls()
+            bot.status, bot.mode, bot.target, bot.cachedMode = "BOT OFF", "OFF", nil, nil
+        end
+        refreshBotButton()
+    end
+
+    ---------------------------------------------------------------- AI bot: brain
+    -- earliest predicted ball point the car can get behind (relative to dirAt) in time.
+    -- The line-up spot sits further back the more crooked the approach, and if a wall is in
+    -- the way of it, other shot angles are tried before falling back to "just hit it".
+    local ROTATIONS = { 0, 0.45, -0.45, 0.9, -0.9, 1.35, -1.35 }
+
+    local function rotateFlat(v, a)
+        local c, s_ = math.cos(a), math.sin(a)
+        return Vector3.new(v.X * c - v.Z * s_, 0, v.X * s_ + v.Z * c)
+    end
+
+    local function lineUp(cp, fwd, p, dir, radius, carSpeed, accel, jumpHit)
+        local toBall = flat(p - cp)
+        local align = toBall.Magnitude > 1 and math.clamp(dir:Dot(toBall.Unit), 0, 1) or 1
+        local back = radius + 6 + 14 * (1 - align)
+        local approach = p - dir * back
+        local to = flat(approach - cp)
+        local dist = to.Magnitude
+        local ang = dist > 1 and math.acos(math.clamp(fwd:Dot(to.Unit), -1, 1)) or 0
+        local need = dist / carSpeed + ang * 0.45 + accel + (jumpHit and 0.25 or 0)
+        return approach, need, back
+    end
+
+    local function planIntercept(cp, fwd, pts, radius, dirAt, carSpeed, curSpeed)
+        local jumpOk = bot.jumpAct ~= nil and S.botJump
+        local accel = math.clamp((carSpeed - curSpeed) / carSpeed, 0, 1) * 0.6
+        for _, pt in ipairs(pts) do
+            local bottom = pt.p.Y - radius
+            local ground = bottom <= cp.Y + 3
+            local jumpHit = not ground and jumpOk and bottom <= cp.Y + 11
+            if ground or jumpHit then
+                local base = dirAt(pt.p)
+                local _, need0 = lineUp(cp, fwd, pt.p, base, radius, carSpeed, accel, jumpHit)
+                if need0 <= pt.t + 0.3 then
+                    for _, rot in ipairs(ROTATIONS) do
+                        local dir = rot == 0 and base or rotateFlat(base, rot)
+                        local approach, need, back = lineUp(cp, fwd, pt.p, dir, radius, carSpeed, accel, jumpHit)
+                        local level = Vector3.new(pt.p.X, cp.Y + 2, pt.p.Z)
+                        local blocked = workspace:Raycast(level, -dir * back, rayParams)
+                        if need <= pt.t and not blocked then
+                            return { pt = pt, dir = dir, approach = approach, need = need, jump = jumpHit }
+                        end
+                    end
+                    -- boxed in by walls: just drive at it from where we are
+                    local direct = flat(pt.p - cp)
+                    if direct.Magnitude > 1 then
+                        local dir = direct.Unit
+                        local approach, need = lineUp(cp, fwd, pt.p, dir, radius, carSpeed, accel, jumpHit)
+                        if need <= pt.t then
+                            return { pt = pt, dir = dir, approach = approach, need = need, jump = jumpHit }
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    -- where to steer right now to execute the plan
+    local function botDriveTarget(cp, plan, ballPos, radius)
+        local rel = flat(cp - plan.pt.p)
+        local depth = rel:Dot(plan.dir)                       -- < 0: car is behind the ball (good side)
+        if depth < 0 then
+            local lateral = (rel - plan.dir * depth).Magnitude
+            if lateral < radius * 0.7 and depth < -radius * 0.5 then
+                return plan.pt.p + plan.dir * (radius + 10)   -- lined up: drive straight through it
+            end
+            return plan.approach
+        end
+        -- wrong side: if the straight line to the line-up spot clips the ball, go around it
+        local seg = flat(plan.approach - cp)
+        if seg.Magnitude > 1 then
+            local toBall = flat(ballPos - cp)
+            local along = toBall:Dot(seg.Unit)
+            if along > 0 and along < seg.Magnitude then
+                local off = toBall - seg.Unit * along
+                if off.Magnitude < radius + 8 then
+                    local side = Vector3.new(-seg.Unit.Z, 0, seg.Unit.X)
+                    if side:Dot(off) > 0 then side = -side end
+                    return ballPos + side * (radius + 16)
+                end
+            end
+        end
+        return plan.approach
+    end
+
+    -- keep targets on our side of any wall between us and them
+    local function clampToField(cp, target)
+        local level = Vector3.new(cp.X, cp.Y + 2, cp.Z)
+        local d = flat(target - cp)
+        if d.Magnitude < 1 then return target end
+        local hit = workspace:Raycast(level, d, rayParams)
+        if hit then return hit.Position - d.Unit * 6 end
+        return target
+    end
+
+    local function steerToward(fwd, cp, target)
+        local to = flat(target - cp)
+        local dist = to.Magnitude
+        if dist < 0.5 then return 0, 0, dist end
+        local dir = to.Unit
+        local ang = math.atan2(fwd:Cross(dir).Y, fwd:Dot(dir)) -- signed; negative = target on the right
+        local turnY = (learn.bot and learn.bot.turnY) or -1
+        return ang, math.clamp(ang * 2.5, -1, 1) * turnY, dist
+    end
+
+    function botTick(dt, now, b, radius, ballVel, car, sim, race)
+        local cmd = bot.cmd
+        cmd.th, cmd.st, cmd.boost = 0, 0, false
+        bot.target, bot.plan = nil, nil
+        if not bot.on or bot.calibrating or not bot.backend or not car or not sim then return end
+
+        -- the game rebuilds its GUI / seat on respawn: re-find buttons now and then
+        bot.resolveT -= dt
+        if bot.resolveT <= 0 then
+            bot.resolveT = 5
+            if learn.bot and learn.bot.backend == "seat" and bot.backend.seat ~= mySeat() then resolveBot() end
+            resolveActions()
+        end
+
+        local cp = car.Position
+        local lf = learn.bot and learn.bot.fwd
+        local fwd = flat(car.CFrame:VectorToWorldSpace(lf and Vector3.new(lf.x, lf.y, lf.z) or Vector3.new(0, 0, -1)))
+        fwd = fwd.Magnitude > 0.1 and fwd.Unit or Vector3.new(0, 0, -1)
+        local speed = flat(car.AssemblyLinearVelocity).Magnitude
+        local ballPos = b.Position
+
+        -- upside down for a second: jump to flip back over
+        if car.CFrame.UpVector.Y < 0.2 then bot.flipT += dt else bot.flipT = 0 end
+        if bot.flipT > 1 then pressJump(now); bot.flipT = 0 end
+
+        local ownRef, enemyRef = ownGoalPos or ownGoalEst, enemyGoalPos
+        local function attackAt(p)
+            if enemyRef then
+                local d = flat(enemyRef - p)
+                if d.Magnitude > 1 then return d.Unit end
+            end
+            if attackDir then return attackDir end
+            local d = flat(p - cp)
+            return d.Magnitude > 1 and d.Unit or fwd
+        end
+        -- clearing: away from our goal, bent toward their side so it doesn't just hit a side wall
+        local function clearAt(p)
+            if ownRef then
+                local d = flat(p - ownRef)
+                if d.Magnitude > 1 then
+                    local mix = d.Unit + attackAt(p)
+                    return mix.Magnitude > 0.1 and mix.Unit or d.Unit
+                end
+            end
+            return attackAt(p)
+        end
+
+        local carSpeed = math.max(learn.car, 40)
+        local kick = kickoffBallPos ~= nil and ballVel.Magnitude < 1 and (ballPos - kickoffBallPos).Magnitude < 3
+        local threat = sim.goalT ~= nil and isOwnGoal(sim.goalPart) == true
+        local mineT = race.mine and race.mine.t or math.huge
+        local enemyFirst = race.bestT < math.huge and race.bestT + 0.4 < mineT
+
+        local nearOwn = ownRef ~= nil and flat(ballPos - ownRef).Magnitude < 55
+
+        -- planning runs at sim rate; steering below runs every frame off the cached plan
+        local mode, plan, target
+        if sim ~= bot.simRef or not bot.cachedMode then
+            bot.simRef = sim
+            if kick then
+                mode = "KICKOFF"
+            elseif S.botDefend and ownRef and (threat or nearOwn) then
+                plan = planIntercept(cp, fwd, sim.pts, radius, clearAt, carSpeed, speed)
+                mode = plan and "CLEAR" or "DEFEND"
+            else
+                plan = planIntercept(cp, fwd, sim.pts, radius, attackAt, carSpeed, speed)
+                mode = plan and "ATTACK" or "CHASE"
+            end
+            bot.cachedMode, bot.cachedPlan = mode, plan
+        else
+            mode, plan = bot.cachedMode, bot.cachedPlan
+        end
+
+        if mode == "KICKOFF" then
+            target = ballPos
+        elseif mode == "DEFEND" then
+            -- can't reach a ball that's going in: get into the goal mouth between it and the net
+            local away = flat(ballPos - ownRef)
+            target = ownRef + (away.Magnitude > 1 and away.Unit or (attackDir or fwd)) * 12
+        else
+            if not plan then
+                local last = sim.pts[#sim.pts]
+                local dir = attackAt(last.p)
+                plan = { pt = last, dir = dir, approach = last.p - dir * (radius + 2), need = 0, jump = false }
+            end
+            target = botDriveTarget(cp, plan, ballPos, radius)
+        end
+        target = clampToField(cp, target)
+
+        local ang, st, dist = steerToward(fwd, cp, target)
+        local th = 1
+        if math.abs(ang) > 2.0 and dist < 35 then th, st = -1, -st end -- target behind and close: back into it
+        if mode == "DEFEND" and dist < 10 then th = 0 end
+        -- ball still up high with time to spare and nobody racing: ease off instead of overshooting
+        if mode == "ATTACK" and sim.moving and plan.pt.t - plan.need > 1 and race.bestT > plan.pt.t
+            and ballPos.Y - radius > cp.Y + 6 then
+            th = math.min(th, 0.45)
+        end
+
+        -- pinned against a wall or a car: back out
+        -- (a still ball + still car is a kickoff countdown, not being stuck)
+        if th > 0.5 and speed < 3 and not kick and ballVel.Magnitude > 1 then bot.stuckT += dt else bot.stuckT = 0 end
+        if bot.stuckT > 1 then bot.reverseUntil = now + 0.7; bot.stuckT = 0 end
+        if now < bot.reverseUntil then th, st = -1, -st end
+
+        cmd.th, cmd.st = th, st
+        cmd.boost = th > 0.9 and math.abs(ang) < 0.3 and (kick or dist > 35 or enemyFirst or mode == "DEFEND" or mode == "CLEAR")
+
+        if plan and plan.jump and S.botJump and plan.pt.t < 0.35 and flat(plan.pt.p - cp).Magnitude < radius + 18 then
+            pressJump(now)
+        end
+
+        bot.mode, bot.target, bot.plan = mode, target, plan
+    end
+
+    function drawBotRing(cp)
+        if not visualsAlive() then return end
+        if not (enabled and bot.on and bot.target) then hideRing(rings.bot) return end
+        local p, n = groundUnder(Vector3.new(bot.target.X, cp.Y + 4, bot.target.Z), 0)
+        local label = bot.mode
+        if bot.plan and bot.mode ~= "CHASE" then label = string.format("%s %.1fs", bot.mode, bot.plan.pt.t) end
+        placeRing(rings.bot, p, n, 3.5, C.Bot, "BOT " .. label)
+    end
 end
 
 ---------------------------------------------------------------- menu
@@ -1186,7 +1898,26 @@ do
     end)
 end
 
+addToggle("botBoost",  "Bot uses boost")
+addToggle("botJump",   "Bot jumps")
+addToggle("botDefend", "Bot defends")
+do
+    local b = row()
+    b.Text = "Recalibrate bot controls"
+    b.TextColor3 = C.Bot
+    bind(b.Activated, function()
+        learn.bot = nil
+        saveAll()
+        releaseControls()
+        bot.backend = nil
+        if bot.on then task.spawn(calibrateLoop) end
+        b.Text = bot.on and "Recalibrating..." or "Calibrates on next BOT ON"
+        task.delay(1.5, function() if b.Parent then b.Text = "Recalibrate bot controls" end end)
+    end)
+end
+
 bind(menuBtn.Activated, function() panel.Visible = not panel.Visible end)
+bind(botBtn.Activated, function() setBot(not bot.on) end)
 
 local function setEnabled(on)
     enabled = on
@@ -1236,15 +1967,23 @@ end
 panel.Position = UDim2.fromOffset(0, 42)
 
 ---------------------------------------------------------------- main loop
-local filterTimer, infoTimer, simTimer, saveTimer = 0, 0, 0, 15
+local filterTimer, infoTimer, simTimer, saveTimer, botUiTimer, stillT = 0, 0, 0, 15, 0, 0
+local lastSim, lastRace = nil, { bestT = math.huge }
+
+bind(RunService.Stepped, applyControls)
 
 bind(RunService.RenderStepped, function(dt)
     updateMotion()
     if not visualsAlive() then buildVisuals() end
-    if not enabled then hideAll(); return end
+    if not enabled and not bot.on then hideAll(); return end
 
     local b = pickBall(dt)
-    if not b then hideAll(); info.Text = "looking for the ball..."; return end
+    if not b then
+        hideAll()
+        bot.cmd.th, bot.cmd.st, bot.cmd.boost = 0, 0, false
+        info.Text = "looking for the ball..."
+        return
+    end
 
     local now = os.clock()
     local radius = math.min(b.Size.X, b.Size.Y, b.Size.Z) / 2
@@ -1258,27 +1997,39 @@ bind(RunService.RenderStepped, function(dt)
     learnFromMotion(b, vel, now, radius)
     learnHit(b, vel, now, radius, myCar)
 
-    -- shortly after a kickoff reset, the goal nearest your car is yours
-    if kickoffAt and now - kickoffAt > 1.5 then
+    -- kickoff: after a reset the ball sits on its spot and the cars are frozen for a moment.
+    -- That's when we learn which goal is ours and which way we attack.
+    local carSpeedNow = myCar and flat(myCar.AssemblyLinearVelocity).Magnitude or 0
+    if vel.Magnitude < 0.5 and carSpeedNow < 1 then stillT += dt else stillT = 0 end
+    if myCar and stillT > 1 and (kickoffAt or not attackDir) then
         kickoffAt = nil
-        if myCar and next(goals) then ownGoalPos = nearestGoal(myCar.Position) end
+        kickoffBallPos = b.Position
+        local d = flat(b.Position - myCar.Position)
+        if d.Magnitude > 1 then attackDir = d.Unit end
+        if next(goals) then
+            ownGoalPos = nearestGoal(myCar.Position)
+            enemyGoalPos = ownGoalPos and farthestGoal(ownGoalPos)
+        end
+        ownGoalEst = myCar.Position - (attackDir or Vector3.zero) * 60
     end
+    if kickoffAt and now - kickoffAt > 8 then kickoffAt = nil end
 
     saveTimer -= dt
     if saveTimer <= 0 then saveTimer = 15; saveAll() end
 
-    updateEsp(b, vel, radius)
+    if enabled then updateEsp(b, vel, radius) else hideEsp() end
 
     if showInfo then
         infoTimer -= dt
         if infoTimer <= 0 then
             infoTimer = 0.25
+            local cal = learn.bot
             info.Text = string.format(
-                "%s r%.0f %.0fsps | g%.0f e%.2f roll%.2f hit%.2f car%.0f\ngoals%d%s | car:%s | stop:%s land:%s",
+                "%s r%.0f %.0fsps | g%.0f e%.2f roll%.2f hit%.2f car%.0f\ngoals%d%s car:%s stop:%s | bot:%s %s %s",
                 b.Name, radius, vel.Magnitude, learn.g, learn.e, learn.roll, learn.hit, learn.car,
-                goalCount(), ownGoalPos and " (own known)" or "",
-                myCar and "yes" or "no",
-                markers.stop.show and "yes" or "no", markers.land.show and "yes" or "no")
+                goalCount(), ownGoalPos and "(own)" or "", myCar and "y" or "n",
+                markers.stop.show and "y" or "n",
+                cal and cal.backend or "-", cal and (cal.jump or "nojump") or "", cal and (cal.boost or "noboost") or "")
         end
     end
 
@@ -1286,20 +2037,45 @@ bind(RunService.RenderStepped, function(dt)
     local simNow = simTimer <= 0
     if simNow then simTimer = 1 / (S.lowLag and 10 or 20) end
 
-    -- shot preview runs even while the ball sits still (kickoffs, resting ball)
-    if simNow and not drawShot(b, radius, vel, myCar) then hideShot() end
-
-    if now < hideUntil or vel.Magnitude < CONFIG.MinSpeed then hideMain(); return end
-    if simNow or mainHidden then
-        drawPrediction(b, radius, vel, myCar)
-        mainHidden = false
+    -- one simulation feeds both the drawing and the bot
+    local moving = now >= hideUntil and vel.Magnitude >= CONFIG.MinSpeed
+    if simNow or not lastSim or moving ~= lastSim.moving or (enabled and moving and mainHidden) then
+        if moving then
+            local pts, bnc, land, stop, goalT, goalPart = simulate(b.Position, vel, radius, S.predict)
+            lastSim = { pts = pts, bnc = bnc, land = land, stop = stop, goalT = goalT, goalPart = goalPart, moving = true }
+        else
+            lastSim = { pts = { { p = b.Position, t = 0 }, { p = b.Position, t = S.predict } }, bnc = {}, moving = false }
+        end
+        lastRace = raceInfo(lastSim.pts, radius, myCar)
+        if enabled and moving then
+            drawPrediction(b, radius, lastSim, lastRace)
+            mainHidden = false
+        end
+        -- shot preview runs even while the ball sits still (kickoffs, resting ball)
+        if not (enabled and drawShot(b, radius, vel, myCar)) then hideShot() end
     end
-    drawMarkers(b, radius, dt)
+    if not enabled or not moving then hideMain() end
+
+    botTick(dt, now, b, radius, vel, myCar, lastSim, lastRace)
+    if myCar then drawBotRing(myCar.Position) elseif visualsAlive() then hideRing(rings.bot) end
+    if bot.on and not bot.calibrating then
+        botUiTimer -= dt
+        if botUiTimer <= 0 then
+            botUiTimer = 0.25
+            bot.status = "BOT " .. bot.mode
+            refreshBotButton()
+        end
+    end
+
+    if enabled and moving and not mainHidden then drawMarkers(b, radius, dt) end
 end)
 
 ---------------------------------------------------------------- cleanup hook
 env.__TL_TRAJ = function()
     for _, c in ipairs(connections) do c:Disconnect() end
+    bot.on = false
+    bot.calCmd = nil
+    releaseControls()
     saveAll()
     if folder then folder:Destroy() end
     gui:Destroy()
