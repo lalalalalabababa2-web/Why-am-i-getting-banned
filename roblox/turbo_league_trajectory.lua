@@ -1,34 +1,37 @@
 --[[
-    Turbo League - Ball Trajectory Predictor (mobile) v4, fully automatic
+    Turbo League - Ball Trajectory Predictor (mobile) v5, fully automatic
     Roblox client Luau, for mobile executors (Delta, Codex, Arceus X, Fluxus...)
 
-    Run once and forget it:
-      - finds the ball by itself and re-checks every half second
-      - predicts up to 6s ahead: flight, wall/ceiling bounces, rolling, and where it STOPS
-      - learns the ball's gravity, bounciness and rolling slowdown from how it actually moves
-      - rebuilds its visuals if the game wipes them between rounds
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/Why-am-i-getting-banned/ccr-c8ff314b-e969wb/roblox/turbo_league_trajectory.lua"))()
 
     On screen:
-      cyan -> purple line : the path, color shifts with time
-      orange dots         : bounces
-      red ring + timer    : where it next hits the ground and in how many seconds
-      green ring + timer  : where the ball comes to rest (white if it's still moving at 6s)
-      white ring          : shadow straight under the ball while it's in the air
+      cyan -> purple line   : the path, color shifts with time
+      orange dots           : bounces
+      red ring + timer      : where it next hits the ground
+      GREEN RING + BEAM     : where the ball comes to rest, with time and distance
+      green edge arrow      : points at the stop spot when it's off-screen
+      yellow ring "GO"      : earliest spot on the path your car can reach in time
+      white ring            : shadow under the ball while it's airborne
+      "GOAL in 1.3s" banner : the path goes into a goal
 
+    Learns gravity, bounciness, rolling slowdown and your car's top speed as you play.
     TRAJ button : tap = on/off, drag = move, hold 1s = show/hide the info line
 ]]
 
 ---------------------------------------------------------------- config
 local CONFIG = {
     BallNames       = { "ball", "soccerball", "gameball", "giantball", "football" },
-    PredictTime     = 6,      -- seconds ahead
-    StepTime        = 1/45,   -- sim step, coarser than a frame so long predictions stay cheap
-    StepsPerSegment = 2,
-    SimRate         = 30,     -- full re-sims per second
+    PredictTime     = 12,     -- seconds ahead (long, so it can actually find the stop point)
+    FineTime        = 3,      -- first seconds simulated with small steps
+    FineStep        = 1/45,
+    CoarseStep      = 1/25,
+    FineSegment     = 2,      -- sim steps per drawn segment, fine part
+    CoarseSegment   = 4,      -- sim steps per drawn segment, far part
+    SimRate         = 20,     -- full re-sims per second (lower = less phone load)
     MaxBounces      = 6,
-    RollSpeed       = 18,     -- contacts slower than this (into the surface) are rolling, not bounces
+    RollSpeed       = 18,     -- contacts slower than this into the surface are rolling, not bounces
     StopSpeed       = 2.5,    -- rolling slower than this = stopped
-    Friction        = 0.85,   -- tangential speed kept on a bounce
+    Friction        = 0.85,
     AirDrag         = 0.03,
     LineWidth       = 0.6,
     LineStart       = Color3.fromRGB(0, 220, 255),
@@ -36,10 +39,14 @@ local CONFIG = {
     BounceColor     = Color3.fromRGB(255, 170, 0),
     LandColor       = Color3.fromRGB(255, 60, 90),
     StopColor       = Color3.fromRGB(60, 255, 120),
+    ReachColor      = Color3.fromRGB(255, 230, 40),
     ShadowColor     = Color3.fromRGB(255, 255, 255),
     RingSegments    = 20,
+    BeamHeight      = 45,
     MinSpeed        = 3,
     IgnoreCars      = true,
+    ShowReach       = true,
+    GoalAlert       = true,
     ShowInfo        = false,
 }
 
@@ -58,14 +65,17 @@ local learn = env.__TL_LEARN
 learn.g    = learn.g or workspace.Gravity
 learn.e    = learn.e or 0.6
 learn.roll = learn.roll or 0.4   -- fraction of speed lost per second while rolling
+learn.car  = learn.car or 80     -- your car's top ground speed
 
 local connections = {}
 local function bind(sig, fn) local c = sig:Connect(fn); table.insert(connections, c); return c end
 
 ---------------------------------------------------------------- visuals (self-healing)
-local MAX_SEGMENTS = math.ceil(CONFIG.PredictTime / CONFIG.StepTime / CONFIG.StepsPerSegment) + CONFIG.MaxBounces * 2 + 4
-local folder, segments, bounceDots
-local landRing, stopRing, shadowRing   -- { parts = {...}, anchor = Part, label = TextLabel? }
+local MAX_SEGMENTS = math.ceil(CONFIG.FineTime / CONFIG.FineStep / CONFIG.FineSegment)
+    + math.ceil((CONFIG.PredictTime - CONFIG.FineTime) / CONFIG.CoarseStep / CONFIG.CoarseSegment)
+    + CONFIG.MaxBounces * 2 + 4
+local folder, segments, bounceDots, stopBeam
+local landRing, stopRing, reachRing, shadowRing
 
 local function makePart(shape, color)
     local p = Instance.new("Part")
@@ -79,7 +89,7 @@ local function makePart(shape, color)
     return p
 end
 
--- a ring is a loop of thin blocks plus an invisible anchor that carries the timer label
+-- a ring is a loop of thin blocks plus an invisible anchor carrying a label
 local function makeRing(color, withLabel)
     local ring = { parts = {} }
     for i = 1, CONFIG.RingSegments do
@@ -88,15 +98,15 @@ local function makeRing(color, withLabel)
     if withLabel then
         local anchor = makePart(Enum.PartType.Block, color)
         local bb = Instance.new("BillboardGui")
-        bb.Size = UDim2.fromOffset(70, 26)
-        bb.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+        bb.Size = UDim2.fromOffset(96, 26)
+        bb.StudsOffsetWorldSpace = Vector3.new(0, 5, 0)
         bb.AlwaysOnTop = true
         bb.Enabled = false
         bb.Parent = anchor
         local t = Instance.new("TextLabel")
         t.Size = UDim2.fromScale(1, 1)
         t.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-        t.BackgroundTransparency = 0.3
+        t.BackgroundTransparency = 0.25
         t.TextColor3 = color
         t.Font = Enum.Font.GothamBold
         t.TextScaled = true
@@ -124,7 +134,7 @@ local function placeRing(ring, center, normal, radius, transparency, text, color
         local th = (i - 1) / n * 2 * math.pi
         local pos = c + (u * math.cos(th) + v * math.sin(th)) * radius
         local tangent = -u * math.sin(th) + v * math.cos(th)
-        p.Size = Vector3.new(0.5, 0.25, segLen)
+        p.Size = Vector3.new(0.6, 0.25, segLen)
         p.CFrame = CFrame.lookAt(pos, pos + tangent, up)
         p.Transparency = transparency
         if color then p.Color = color end
@@ -153,8 +163,10 @@ local function buildVisuals()
         bounceDots[i] = makePart(Enum.PartType.Ball, CONFIG.BounceColor)
         bounceDots[i].Size = Vector3.new(1.5, 1.5, 1.5)
     end
+    stopBeam   = makePart(Enum.PartType.Cylinder, CONFIG.StopColor)
     landRing   = makeRing(CONFIG.LandColor, true)
     stopRing   = makeRing(CONFIG.StopColor, true)
+    reachRing  = makeRing(CONFIG.ReachColor, true)
     shadowRing = makeRing(CONFIG.ShadowColor, false)
 end
 
@@ -167,15 +179,6 @@ buildVisuals()
 
 local function hideFrom(list, startIdx)
     for i = startIdx, #list do list[i].Transparency = 1 end
-end
-
-local function hideAll()
-    if not visualsAlive() then return end
-    hideFrom(segments, 1)
-    hideFrom(bounceDots, 1)
-    hideRing(landRing)
-    hideRing(stopRing)
-    hideRing(shadowRing)
 end
 
 ---------------------------------------------------------------- ball picking
@@ -215,10 +218,21 @@ local function considerPart(inst)
     if (named or sphere) and not inCharacter(inst) then candidates[inst] = true end
 end
 
-for _, inst in ipairs(workspace:GetDescendants()) do considerPart(inst) end
-bind(workspace.DescendantAdded, considerPart)
+-- goal trigger volumes: non-colliding or invisible parts named "goal", big enough to be a goal mouth
+local goals = {}
+local function considerGoal(inst)
+    if not CONFIG.GoalAlert or not inst:IsA("BasePart") then return end
+    if not inst.Name:lower():find("goal", 1, true) then return end
+    if inst.CanCollide and inst.Transparency < 0.9 then return end
+    local s = inst.Size
+    local big = (s.X > 6 and 1 or 0) + (s.Y > 6 and 1 or 0) + (s.Z > 6 and 1 or 0)
+    if big >= 2 then goals[inst] = true end
+end
+
+for _, inst in ipairs(workspace:GetDescendants()) do considerPart(inst); considerGoal(inst) end
+bind(workspace.DescendantAdded, function(inst) considerPart(inst); considerGoal(inst) end)
 bind(workspace.DescendantRemoving, function(inst)
-    candidates[inst], motion[inst] = nil, nil
+    candidates[inst], motion[inst], goals[inst] = nil, nil, nil
     if inst == ball then ball = nil end
 end)
 
@@ -260,7 +274,6 @@ local function pickBall(dt)
         local s = score(p)
         if s > bestScore then best, bestScore = p, s end
     end
-    -- hysteresis so it doesn't flip between two close candidates
     if ball and ball.Parent and best ~= ball and bestScore < score(ball) + 25 then
         return ball
     end
@@ -269,8 +282,6 @@ local function pickBall(dt)
 end
 
 ---------------------------------------------------------------- velocity (least-squares fit)
--- Fitting a line through recent positions beats frame deltas: replication arrives
--- in bursts, and a fit doesn't care. Gravity comes from a parabola fit on Y.
 local samples = {}
 local SAMPLE_KEEP = 0.4
 local VEL_WINDOW  = 0.12
@@ -339,7 +350,6 @@ local function learnFromMotion(b, vel, now, radius)
     local ceiling = workspace:Raycast(b.Position, Vector3.new(0, radius + 3, 0), rayParams)
     local airborne = not ground and not ceiling
 
-    -- gravity: only from clean free-flight stretches
     if airborne and #samples >= 8 then
         local a = fitGravity()
         if a and a < 0 then
@@ -348,7 +358,6 @@ local function learnFromMotion(b, vel, now, radius)
         end
     end
 
-    -- bounciness: vy hard negative -> positive near the floor
     table.insert(vyLog, { t = now, vy = vel.Y })
     while #vyLog > 0 and now - vyLog[1].t > 0.3 do table.remove(vyLog, 1) end
 
@@ -374,7 +383,6 @@ local function learnFromMotion(b, vel, now, radius)
         local span = now - first.t
         if span > 0.35 then
             local ratio = h / first.h
-            -- only clean slowdowns; a speed-up means something hit it
             if ratio > 0.4 and ratio < 1.0 then
                 local k = math.clamp(-math.log(ratio) / span, 0.02, 3)
                 learn.roll += (k - learn.roll) * 0.1
@@ -414,6 +422,25 @@ local function trackBall(b, now, radius)
     return smoothVel
 end
 
+---------------------------------------------------------------- your car
+-- works whether the car is a seat-driven model or the character itself
+local function myCarPart()
+    local char = LP.Character
+    if not char then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.SeatPart then return hum.SeatPart end
+    return char.PrimaryPart or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function updateCarSpeed(car, dt)
+    local v = car.AssemblyLinearVelocity
+    local h = Vector3.new(v.X, 0, v.Z).Magnitude
+    if h < 400 then
+        -- remember the fastest it's gone, drift down slowly so one boost spike doesn't stick forever
+        learn.car = math.max(learn.car - 2 * dt, h, 40)
+    end
+end
+
 ---------------------------------------------------------------- collision filter
 local cars = {}
 if CONFIG.IgnoreCars then
@@ -447,29 +474,43 @@ local function cast(origin, radius, dir)
     return workspace:Raycast(origin, dir + dir.Unit * radius, rayParams)
 end
 
--- result: points {pos, t}, bounces, land {pos, normal, t}, stop {pos, normal, t, settled}
+local function inGoal(p)
+    for g in pairs(goals) do
+        if g.Parent then
+            local l = g.CFrame:PointToObjectSpace(p)
+            local h = g.Size / 2
+            if math.abs(l.X) <= h.X and math.abs(l.Y) <= h.Y and math.abs(l.Z) <= h.Z then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- points {p, t}; bounces; land {pos, normal, t}; stop {pos, normal, t, settled}; goalT
 local function simulate(pos, vel, radius)
     local g     = Vector3.new(0, -learn.g, 0)
-    local dt    = CONFIG.StepTime
-    local steps = math.floor(CONFIG.PredictTime / dt)
-    local drag  = math.clamp(1 - CONFIG.AirDrag * dt, 0, 1)
-    local roll  = math.exp(-learn.roll * dt)
     local castR = math.min(radius * 0.9, 250)
 
     local points  = { { p = pos, t = 0 } }
     local bounces = {}
-    local land, stop
+    local land, stop, goalT
     local rolling, rollNormal = false, Vector3.yAxis
-    local t = 0
+    local t, i = 0, 0
+    local startedInGoal = inGoal(pos)
 
-    for i = 1, steps do
-        t = i * dt
+    while t < CONFIG.PredictTime do
+        i += 1
+        local fine = t < CONFIG.FineTime
+        local dt = fine and CONFIG.FineStep or CONFIG.CoarseStep
+        t += dt
+
         if rolling then
-            -- stick to the surface: gravity only pulls along it
+            -- gravity only pulls along the surface while rolling
             local gAlong = g - rollNormal * g:Dot(rollNormal)
-            vel = (vel + gAlong * dt) * roll
+            vel = (vel + gAlong * dt) * math.exp(-learn.roll * dt)
         else
-            vel = (vel + g * dt) * drag
+            vel = (vel + g * dt) * (1 - CONFIG.AirDrag * dt)
         end
 
         local move = vel * dt
@@ -496,18 +537,17 @@ local function simulate(pos, vel, radius)
             end
         else
             pos += move
-            -- rolling off a ledge, or along the floor: check it's still supported
             if rolling then
                 local support = workspace:Raycast(pos, -rollNormal * (radius + 1), rayParams)
-                if support then
-                    rollNormal = support.Normal
-                else
-                    rolling = false
-                end
+                if support then rollNormal = support.Normal else rolling = false end
             end
         end
 
-        if i % CONFIG.StepsPerSegment == 0 then table.insert(points, { p = pos, t = t }) end
+        if not goalT and not startedInGoal and inGoal(pos) then goalT = t end
+
+        if i % (fine and CONFIG.FineSegment or CONFIG.CoarseSegment) == 0 then
+            table.insert(points, { p = pos, t = t })
+        end
 
         if rolling and vel.Magnitude < CONFIG.StopSpeed then
             stop = { pos = pos - rollNormal * radius, normal = rollNormal, t = t, settled = true }
@@ -524,69 +564,26 @@ local function simulate(pos, vel, radius)
             t = t, settled = false,
         }
     end
-    return points, bounces, land, stop
+    return points, bounces, land, stop, goalT
 end
 
----------------------------------------------------------------- drawing
-local pulse = 0
-
-local function draw(b, radius, points, bounces, land, stop)
-    local w, used = CONFIG.LineWidth, 0
-    local total = math.max(points[#points].t, 1e-3)
-    for i = 1, #points - 1 do
-        if used >= MAX_SEGMENTS then break end
-        local a, z = points[i].p, points[i + 1].p
-        local len = (z - a).Magnitude
-        if len > 0.01 then
-            used += 1
-            local seg = segments[used]
-            local frac = points[i].t / total
-            seg.Size   = Vector3.new(w, w, len)
-            seg.CFrame = CFrame.lookAt(a, z) * CFrame.new(0, 0, -len / 2)
-            seg.Color  = CONFIG.LineStart:Lerp(CONFIG.LineEnd, frac)
-            seg.Transparency = 0.1 + 0.5 * frac
+-- earliest path point your car can drive to before the ball gets there
+local function findReach(points, radius, car)
+    if not car then return nil end
+    local cp = car.Position
+    local speed = math.max(learn.car, 40)
+    for _, pt in ipairs(points) do
+        -- low enough to touch from the ground (car roof ~ 6 studs up)
+        if pt.p.Y - radius <= cp.Y + 6 then
+            local flat = Vector3.new(pt.p.X - cp.X, 0, pt.p.Z - cp.Z).Magnitude
+            local need = flat / speed + 0.25 -- small turn-in allowance
+            if need <= pt.t then return pt end
         end
     end
-    hideFrom(segments, used + 1)
-
-    for i, d in ipairs(bounceDots) do
-        local p = bounces[i]
-        if p then d.Position = p; d.Transparency = 0.2 else d.Transparency = 1 end
-    end
-
-    local wobble = 1 + 0.08 * math.sin(pulse * 6)
-    local ringR = math.max(3, radius * 1.1)
-
-    if land and land.t > 0.05 then
-        placeRing(landRing, land.pos, land.normal, ringR * wobble, 0.2,
-            string.format("%.1fs", land.t))
-    else
-        hideRing(landRing)
-    end
-
-    if stop then
-        local color = stop.settled and CONFIG.StopColor or CONFIG.ShadowColor
-        local label = stop.settled and string.format("stop %.1fs", stop.t) or "6s+"
-        -- skip the stop ring when it's basically where the ball already is
-        if (stop.pos - b.Position).Magnitude > radius * 2 then
-            placeRing(stopRing, stop.pos, stop.normal, ringR * (2 - wobble), 0.15, label, color)
-        else
-            hideRing(stopRing)
-        end
-    end
-
-    -- shadow under the ball while airborne: shows exactly where it is above the floor
-    local below = workspace:Raycast(b.Position, Vector3.new(0, -300, 0), rayParams)
-    if below and (b.Position.Y - below.Position.Y) > radius + 3 then
-        local height = b.Position.Y - below.Position.Y
-        placeRing(shadowRing, below.Position, below.Normal, radius,
-            math.clamp(0.3 + height / 150, 0.3, 0.8))
-    else
-        hideRing(shadowRing)
-    end
+    return nil
 end
 
----------------------------------------------------------------- mobile UI
+---------------------------------------------------------------- UI
 local enabled, showInfo = true, CONFIG.ShowInfo
 
 local gui = Instance.new("ScreenGui")
@@ -598,7 +595,7 @@ local okParent = pcall(function() gui.Parent = (gethui and gethui()) or game:Get
 if not okParent or not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
 
 local holder = Instance.new("Frame")
-holder.Size = UDim2.fromOffset(260, 70)
+holder.Size = UDim2.fromOffset(300, 70)
 holder.Position = UDim2.new(0.5, -55, 0, 70)
 holder.BackgroundTransparency = 1
 holder.Parent = gui
@@ -619,7 +616,7 @@ stroke.Color = CONFIG.LineStart
 stroke.Thickness = 1.5
 
 local info = Instance.new("TextLabel")
-info.Size = UDim2.fromOffset(260, 26)
+info.Size = UDim2.fromOffset(300, 26)
 info.Position = UDim2.fromOffset(0, 42)
 info.BackgroundTransparency = 0.35
 info.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
@@ -631,12 +628,50 @@ info.Visible = showInfo
 info.Parent = holder
 Instance.new("UICorner", info).CornerRadius = UDim.new(0, 6)
 
+-- goal banner, top center
+local banner = Instance.new("TextLabel")
+banner.AnchorPoint = Vector2.new(0.5, 0)
+banner.Position = UDim2.new(0.5, 0, 0, 120)
+banner.Size = UDim2.fromOffset(190, 34)
+banner.BackgroundColor3 = Color3.fromRGB(220, 30, 60)
+banner.BackgroundTransparency = 0.1
+banner.TextColor3 = Color3.new(1, 1, 1)
+banner.Font = Enum.Font.GothamBlack
+banner.TextSize = 18
+banner.Visible = false
+banner.Parent = gui
+Instance.new("UICorner", banner).CornerRadius = UDim.new(0, 10)
+
+-- off-screen pointer for the stop spot: a badge pinned to the screen edge + a tip aimed at it
+local edge = Instance.new("TextLabel")
+edge.AnchorPoint = Vector2.new(0.5, 0.5)
+edge.Size = UDim2.fromOffset(54, 54)
+edge.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+edge.BackgroundTransparency = 0.2
+edge.TextColor3 = CONFIG.StopColor
+edge.Font = Enum.Font.GothamBold
+edge.TextSize = 13
+edge.TextWrapped = true
+edge.Visible = false
+edge.Parent = gui
+Instance.new("UICorner", edge).CornerRadius = UDim.new(1, 0)
+local edgeStroke = Instance.new("UIStroke", edge)
+edgeStroke.Color = CONFIG.StopColor
+edgeStroke.Thickness = 2
+
+local tip = Instance.new("Frame")
+tip.AnchorPoint = Vector2.new(0.5, 0.5)
+tip.Size = UDim2.fromOffset(16, 16)
+tip.BackgroundColor3 = CONFIG.StopColor
+tip.BorderSizePixel = 0
+tip.Visible = false
+tip.Parent = gui
+
 local function setEnabled(on)
     enabled = on
     btn.Text = on and "TRAJ: ON" or "TRAJ: OFF"
     btn.TextColor3 = on and CONFIG.LineStart or Color3.fromRGB(150, 150, 150)
     stroke.Color = btn.TextColor3
-    if not on then hideAll() end
 end
 
 do
@@ -676,25 +711,196 @@ do
     end)
 end
 
+---------------------------------------------------------------- markers (smoothed every frame)
+-- The sim runs at SimRate; markers glide toward the newest result each frame so they don't jitter.
+local function newMarker() return { show = false, pos = nil, normal = Vector3.yAxis, text = nil, color = nil } end
+local mLand, mStop, mReach = newMarker(), newMarker(), newMarker()
+local targets = { land = nil, stop = nil, reach = nil }
+
+local function steer(m, target, dt)
+    if not target then m.show = false; return end
+    if not m.pos or (target.pos - m.pos).Magnitude > 40 or not m.show then
+        m.pos = target.pos
+    else
+        m.pos = m.pos:Lerp(target.pos, 1 - math.exp(-dt * 14))
+    end
+    m.normal, m.text, m.color, m.edgeText, m.show = target.normal, target.text, target.color, target.edgeText, true
+end
+
+local pulse = 0
+
+local function hideMarkers()
+    hideRing(landRing); hideRing(stopRing); hideRing(reachRing); hideRing(shadowRing)
+    stopBeam.Transparency = 1
+    edge.Visible, tip.Visible, banner.Visible = false, false, false
+    mLand.show, mStop.show, mReach.show = false, false, false
+end
+
+local allHidden = false
+local function hideAll()
+    if allHidden or not visualsAlive() then return end
+    allHidden = true
+    hideFrom(segments, 1)
+    hideFrom(bounceDots, 1)
+    hideMarkers()
+    targets.land, targets.stop, targets.reach = nil, nil, nil
+end
+
+local function updateEdgeArrow(worldPos, label)
+    local cam = workspace.CurrentCamera
+    local vp, onScreen = cam:WorldToViewportPoint(worldPos)
+    local size = cam.ViewportSize
+    if onScreen and vp.Z > 0 then
+        edge.Visible, tip.Visible = false, false
+        return
+    end
+    local center = size / 2
+    local dir = Vector2.new(vp.X, vp.Y) - center
+    if vp.Z < 0 then dir = -dir end                 -- behind the camera: projection is mirrored
+    if dir.Magnitude < 1e-3 then dir = Vector2.new(0, 1) end
+    dir = dir.Unit
+    local margin = 46
+    local sx = dir.X ~= 0 and (center.X - margin) / math.abs(dir.X) or math.huge
+    local sy = dir.Y ~= 0 and (center.Y - margin) / math.abs(dir.Y) or math.huge
+    local at = center + dir * math.min(sx, sy)
+    edge.Position = UDim2.fromOffset(at.X, at.Y)
+    edge.Text = label
+    edge.Visible = true
+    local tp = at + dir * 34
+    tip.Position = UDim2.fromOffset(tp.X, tp.Y)
+    tip.Rotation = math.deg(math.atan2(dir.Y, dir.X)) + 45
+    tip.Visible = true
+end
+
+local function drawMarkers(b, radius, dt)
+    pulse += dt
+    local wobble = 1 + 0.08 * math.sin(pulse * 6)
+    local ringR = math.max(3, radius * 1.1)
+
+    steer(mLand, targets.land, dt)
+    steer(mStop, targets.stop, dt)
+    steer(mReach, targets.reach, dt)
+
+    if mLand.show then
+        placeRing(landRing, mLand.pos, mLand.normal, ringR * wobble, 0.2, mLand.text)
+    else
+        hideRing(landRing)
+    end
+
+    if mStop.show then
+        placeRing(stopRing, mStop.pos, mStop.normal, ringR * 1.3 * (2 - wobble), 0.1, mStop.text, mStop.color)
+        -- light beam so the stop spot is visible from across the field
+        local up = mStop.normal
+        local ref = math.abs(up.Y) < 0.99 and Vector3.yAxis or Vector3.xAxis
+        stopBeam.Size = Vector3.new(CONFIG.BeamHeight, 1.2, 1.2)
+        stopBeam.CFrame = CFrame.fromMatrix(mStop.pos + up * (CONFIG.BeamHeight / 2), up, ref:Cross(up).Unit)
+        stopBeam.Color = mStop.color
+        stopBeam.Transparency = 0.55 + 0.1 * math.sin(pulse * 4)
+        edge.TextColor3, edgeStroke.Color, tip.BackgroundColor3 = mStop.color, mStop.color, mStop.color
+        updateEdgeArrow(mStop.pos, mStop.edgeText or "STOP")
+    else
+        hideRing(stopRing)
+        stopBeam.Transparency = 1
+        edge.Visible, tip.Visible = false, false
+    end
+
+    if mReach.show then
+        placeRing(reachRing, mReach.pos, mReach.normal, ringR * 0.8, 0.15, mReach.text)
+    else
+        hideRing(reachRing)
+    end
+
+    local below = workspace:Raycast(b.Position, Vector3.new(0, -300, 0), rayParams)
+    if below and (b.Position.Y - below.Position.Y) > radius + 3 then
+        local height = b.Position.Y - below.Position.Y
+        placeRing(shadowRing, below.Position, below.Normal, radius,
+            math.clamp(0.3 + height / 150, 0.3, 0.8))
+    else
+        hideRing(shadowRing)
+    end
+end
+
+---------------------------------------------------------------- path drawing (at SimRate)
+local function drawPath(b, radius, points, bounces, land, stop, goalT, car)
+    local w, used = CONFIG.LineWidth, 0
+    local total = math.max(points[#points].t, 1e-3)
+    for i = 1, #points - 1 do
+        if used >= MAX_SEGMENTS then break end
+        local a, z = points[i].p, points[i + 1].p
+        local len = (z - a).Magnitude
+        if len > 0.01 then
+            used += 1
+            local seg = segments[used]
+            local frac = points[i].t / total
+            seg.Size   = Vector3.new(w, w, len)
+            seg.CFrame = CFrame.lookAt(a, z) * CFrame.new(0, 0, -len / 2)
+            seg.Color  = CONFIG.LineStart:Lerp(CONFIG.LineEnd, frac)
+            seg.Transparency = 0.1 + 0.55 * frac
+        end
+    end
+    hideFrom(segments, used + 1)
+
+    for i, d in ipairs(bounceDots) do
+        local p = bounces[i]
+        if p then d.Position = p; d.Transparency = 0.2 else d.Transparency = 1 end
+    end
+
+    targets.land = (land and land.t > 0.05)
+        and { pos = land.pos, normal = land.normal, text = string.format("%.1fs", land.t) } or nil
+
+    -- stop marker, skipped when the ball is basically already there
+    if stop and (stop.pos - b.Position).Magnitude > radius * 2 then
+        local dist = (stop.pos - b.Position).Magnitude
+        targets.stop = {
+            pos = stop.pos, normal = stop.normal,
+            color = stop.settled and CONFIG.StopColor or CONFIG.ShadowColor,
+            text = stop.settled and string.format("STOP %.1fs · %d", stop.t, math.floor(dist))
+                or string.format("%ds+ · %d", math.floor(CONFIG.PredictTime), math.floor(dist)),
+        }
+        targets.stop.edgeText = stop.settled and string.format("STOP\n%.0fs", stop.t) or "BALL"
+    else
+        targets.stop = nil
+    end
+
+    local reach = CONFIG.ShowReach and findReach(points, radius, car)
+    if reach and reach.t > 0.15 then
+        local floor = workspace:Raycast(reach.p, Vector3.new(0, -(radius + 30), 0), rayParams)
+        targets.reach = {
+            pos = floor and floor.Position or (reach.p - Vector3.new(0, radius, 0)),
+            normal = floor and floor.Normal or Vector3.yAxis,
+            text = string.format("GO %.1fs", reach.t),
+        }
+    else
+        targets.reach = nil
+    end
+
+    if goalT then
+        banner.Text = string.format("GOAL in %.1fs", goalT)
+        banner.Visible = true
+    else
+        banner.Visible = false
+    end
+end
+
 ---------------------------------------------------------------- main loop
 local filterTimer, infoTimer, simTimer = 0, 0, 0
 
 bind(RunService.RenderStepped, function(dt)
     updateMotion()
-    if not enabled then return end
-    if not visualsAlive() then buildVisuals() end
+    if not enabled then hideAll(); return end
+    if not visualsAlive() then buildVisuals(); allHidden = false end
 
     local b = pickBall(dt)
     if not b then hideAll(); info.Text = "looking for the ball..."; return end
 
     local now = os.clock()
     local radius = math.min(b.Size.X, b.Size.Y, b.Size.Z) / 2
-    pulse += dt
+    local car = myCarPart()
+    if car then updateCarSpeed(car, dt) end
 
     filterTimer -= dt
     if filterTimer <= 0 then refreshFilter(b); filterTimer = 1 end
 
-    -- tracking and learning run every frame, the long sim runs at SimRate
     local vel = trackBall(b, now, radius)
     learnFromMotion(b, vel, now, radius)
 
@@ -702,19 +908,23 @@ bind(RunService.RenderStepped, function(dt)
         infoTimer -= dt
         if infoTimer <= 0 then
             infoTimer = 0.25
-            info.Text = string.format("%s | r%.0f | %.0f sps | g%.0f | e%.2f | roll%.2f",
-                b.Name, radius, vel.Magnitude, learn.g, learn.e, learn.roll)
+            info.Text = string.format("%s r%.0f | %.0f sps | g%.0f e%.2f roll%.2f | car%.0f | goals%d",
+                b.Name, radius, vel.Magnitude, learn.g, learn.e, learn.roll, learn.car,
+                (function() local n = 0 for _ in pairs(goals) do n += 1 end return n end)())
         end
     end
 
     if now < hideUntil or vel.Magnitude < CONFIG.MinSpeed then hideAll() return end
 
     simTimer -= dt
-    if simTimer > 0 then return end
-    simTimer = 1 / CONFIG.SimRate
-
-    local pts, bnc, land, stop = simulate(b.Position, vel, radius)
-    draw(b, radius, pts, bnc, land, stop)
+    if simTimer <= 0 then
+        simTimer = 1 / CONFIG.SimRate
+        local pts, bnc, land, stop, goalT = simulate(b.Position, vel, radius)
+        drawPath(b, radius, pts, bnc, land, stop, goalT, car)
+        allHidden = false
+    end
+    if allHidden then return end
+    drawMarkers(b, radius, dt)
 end)
 
 ---------------------------------------------------------------- cleanup hook
