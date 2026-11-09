@@ -1,5 +1,5 @@
 --[[
-    TurboAI Plus 1.0 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
+    TurboAI Plus 1.1 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
 
     loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/Why-am-i-getting-banned/ccr-c8ff314b-e969wb/roblox/turboai_plus.lua"))()
 
@@ -12,6 +12,8 @@
         all the way to the ball instead of stopping at 3/4 speed
       - retreat: when you're upfield of the ball in your own half and the opponent gets
         there first, it drives back goal-side instead of wandering off for boost
+      - guard: while the opponent has the ball near your half, no boost-pad runs away from
+        the play; it holds the spot between ball and goal (2.5s at most, then hands back)
       - demo hop: jumps over a supersonic car that's about to ram you
 
     The PLUS button (top right) toggles each change; settings also live in getgenv().TurboAIPlus.
@@ -26,14 +28,15 @@ local TACTICS_SOURCE = [==[
 -- Adaptation: CC BY-NC-SA 4.0 https://creativecommons.org/licenses/by-nc-sa/4.0/
 -- Nexto: Rolv, Soren, contributors; port/weights: azulacs/Catware. See packaged NOTICE.
 -- Modified for TurboAI Plus (same CC BY-NC-SA 4.0 license): no steering/yaw/roll during kickoff
--- dodges (it spun the car sideways), boost all the way to the ball on kickoffs; retreat goal-side when beaten; demo hop.
+-- dodges (it spun the car sideways), boost all the way to the ball on kickoffs; retreat goal-side when beaten;
+-- guard (no boost runs while the opponent has the ball); demo hop.
 local Tactics={}
-Tactics.PLUS_VERSION="1.0"
+Tactics.PLUS_VERSION="1.1"
 -- live settings, readable/changeable from the executor: getgenv().TurboAIPlus
 local function plus()
 local env=type(getgenv)=="function" and getgenv() or _G
 local cfg=type(env.TurboAIPlus)=="table" and env.TurboAIPlus or {}
-return cfg.retreat~=false,cfg.demoHop~=false,cfg.earlyFlip~=false,cfg.fullBoostKickoff~=false
+return cfg.retreat~=false,cfg.demoHop~=false,cfg.earlyFlip~=false,cfg.fullBoostKickoff~=false,cfg.guard~=false
 end
 Tactics.__index=Tactics
 local function finite(n) return type(n)=="number" and n==n and math.abs(n)<math.huge end
@@ -212,6 +215,39 @@ local a=drive(s,target,"retreat",true)
 if a then a.handbrake=false end
 return a
 end
+-- The opponent has the ball near or heading into our half, and we're goal-side but driving away
+-- from both the ball and our goal (a boost-pad run). Take the spot between ball and goal instead.
+-- Hands control back once there, when the play changes, or after 2.5s.
+local function guard(self,now,s,attack)
+local c,b=s.car,s.ball
+if not c.grounded or c.up.z<.7 or c.isFlipping then self.guarding=nil;return nil end
+local mine=len(b.pos.x-c.pos.x,b.pos.y-c.pos.y)
+local theirs=math.huge
+for _,o in ipairs(type(s.opponents)=="table" and s.opponents or {}) do
+if type(o)=="table" and vec(o.pos) then theirs=math.min(theirs,len(b.pos.x-o.pos.x,b.pos.y-o.pos.y)) end
+end
+local threatening=(b.pos.y-s.ownGoal.y)*attack<60 or b.vel.y*attack< -2
+local goalSide=(b.pos.y-c.pos.y)*attack> -1
+if theirs>mine-3 or not threatening or not goalSide or mine<6 then self.guarding=nil;return nil end
+local ix,iy=b.pos.x-s.ownGoal.x,b.pos.y-s.ownGoal.y
+local k=math.min(.4,30/math.max(len(ix,iy),1))
+local target={x=s.ownGoal.x+ix*k,y=s.ownGoal.y+iy*k,z=.17}
+if len(target.x-c.pos.x,target.y-c.pos.y)<4 then self.guarding=nil;return nil end
+if not self.guarding then
+local speed=len(c.vel.x,c.vel.y)
+if speed<5 then return nil end
+local vx,vy=c.vel.x/speed,c.vel.y/speed
+local gx,gy=s.ownGoal.x-c.pos.x,s.ownGoal.y-c.pos.y;local gd=math.max(len(gx,gy),.01)
+local away=(vx*(b.pos.x-c.pos.x)+vy*(b.pos.y-c.pos.y))/mine< -.2
+local homeward=(vx*gx+vy*gy)/gd>.6
+if not away or homeward then return nil end
+self.guarding=now
+elseif now-self.guarding>2.5 then
+if now-self.guarding>4 then self.guarding=nil end
+return nil
+end
+return drive(s,target,"guard",true)
+end
 -- A supersonic opponent about to ram us while we're not playing the ball: hop over it.
 local function demoHop(self,now,s)
 local c=s.car
@@ -236,8 +272,9 @@ end
 return nil
 end
 local function openPlay(self,now,s,attack)
-local useRetreat,useHop=plus()
-return useHop and demoHop(self,now,s) or powerShot(self,now,s,attack) or useRetreat and retreat(self,now,s,attack) or nil
+local useRetreat,useHop,_,_,useGuard=plus()
+return useHop and demoHop(self,now,s) or powerShot(self,now,s,attack) or useRetreat and retreat(self,now,s,attack)
+or useGuard and guard(self,now,s,attack) or nil
 end
 function Tactics:step(now,s)
 if not finite(now) or type(s)~="table" or type(s.car)~="table" or type(s.ball)~="table" then self:reset();return nil end
@@ -446,6 +483,7 @@ local options = {
     { key = "earlyFlip", label = "Kickoff speed flip" },
     { key = "fullBoostKickoff", label = "Full-boost kickoff" },
     { key = "retreat", label = "Retreat when beaten" },
+    { key = "guard", label = "Guard (no boost runs)" },
     { key = "demoHop", label = "Demo hop" },
 }
 
@@ -507,5 +545,5 @@ toggle.Activated:Connect(function() panel.Visible = not panel.Visible end)
 local message = patched > 0 and "Upgraded the running Turbo AI." or "Ready - start Turbo AI and it loads upgraded."
 print("[TurboAI Plus] " .. message .. " (live modules patched: " .. patched .. ")")
 pcall(function()
-    game:GetService("StarterGui"):SetCore("SendNotification", { Title = "TurboAI Plus 1.0", Text = message, Duration = 6 })
+    game:GetService("StarterGui"):SetCore("SendNotification", { Title = "TurboAI Plus 1.1", Text = message, Duration = 6 })
 end)
