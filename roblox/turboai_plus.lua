@@ -16,7 +16,10 @@
         the play; it holds the spot between ball and goal (2.5s at most, then hands back)
       - demo hop: jumps over a supersonic car that's about to ram you
 
-    The PLUS button (top right) toggles each change; settings also live in getgenv().TurboAIPlus.
+    No UI: nothing on screen changes. Everything is on by default; to switch a part off, run e.g.
+        getgenv().TurboAIPlus = { guard = false }
+    (keys: earlyFlip, fullBoostKickoff, retreat, guard, demoHop). The executor console shows
+    "[TurboAI Plus 1.1] ..." when it loads.
 
     License: the Tactics module below is a modified version of TurboSoccerAI's Tactics module,
     CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/).
@@ -478,72 +481,8 @@ if type(getgc) == "function" then
     end
 end
 
----------------------------------------------------------------- PLUS toggles
-local options = {
-    { key = "earlyFlip", label = "Kickoff speed flip" },
-    { key = "fullBoostKickoff", label = "Full-boost kickoff" },
-    { key = "retreat", label = "Retreat when beaten" },
-    { key = "guard", label = "Guard (no boost runs)" },
-    { key = "demoHop", label = "Demo hop" },
-}
+-- no UI of its own: remove the PLUS button an earlier version may have left on screen
+if env.__TurboAIPlusGui then pcall(function() env.__TurboAIPlusGui:Destroy() end); env.__TurboAIPlusGui = nil end
 
-local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-if env.__TurboAIPlusGui then pcall(function() env.__TurboAIPlusGui:Destroy() end) end
-local gui = Instance.new("ScreenGui")
-gui.Name = "TurboAIPlus"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 100003
-local okParent = pcall(function() gui.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
-if not okParent or not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
-env.__TurboAIPlusGui = gui
-
-local function corner(inst) Instance.new("UICorner", inst).CornerRadius = UDim.new(0, 8) end
-local toggle = Instance.new("TextButton")
-toggle.AnchorPoint = Vector2.new(1, 0)
-toggle.Position = UDim2.new(1, -12, 0, 150)
-toggle.Size = UDim2.fromOffset(64, 30)
-toggle.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
-toggle.TextColor3 = Color3.fromRGB(80, 200, 255)
-toggle.Font = Enum.Font.GothamBold
-toggle.TextSize = 13
-toggle.Text = "PLUS"
-toggle.Parent = gui
-corner(toggle)
-
-local panel = Instance.new("Frame")
-panel.AnchorPoint = Vector2.new(1, 0)
-panel.Position = UDim2.new(1, -12, 0, 186)
-panel.Size = UDim2.fromOffset(200, #options * 34 + 8)
-panel.BackgroundColor3 = Color3.fromRGB(22, 25, 34)
-panel.Visible = false
-panel.Parent = gui
-corner(panel)
-
-for i, option in ipairs(options) do
-    local row = Instance.new("TextButton")
-    row.Position = UDim2.fromOffset(6, 6 + (i - 1) * 34)
-    row.Size = UDim2.new(1, -12, 0, 30)
-    row.BackgroundColor3 = Color3.fromRGB(35, 38, 52)
-    row.Font = Enum.Font.GothamBold
-    row.TextSize = 12
-    row.Parent = panel
-    corner(row)
-    local function refresh()
-        local on = settings[option.key] ~= false
-        row.Text = option.label .. ": " .. (on and "ON" or "OFF")
-        row.TextColor3 = on and Color3.fromRGB(80, 220, 140) or Color3.fromRGB(150, 150, 150)
-    end
-    row.Activated:Connect(function()
-        settings[option.key] = settings[option.key] == false
-        refresh()
-    end)
-    refresh()
-end
-toggle.Activated:Connect(function() panel.Visible = not panel.Visible end)
-
-local message = patched > 0 and "Upgraded the running Turbo AI." or "Ready - start Turbo AI and it loads upgraded."
-print("[TurboAI Plus] " .. message .. " (live modules patched: " .. patched .. ")")
-pcall(function()
-    game:GetService("StarterGui"):SetCore("SendNotification", { Title = "TurboAI Plus 1.1", Text = message, Duration = 6 })
-end)
+print("[TurboAI Plus 1.1] " .. (patched > 0 and "upgraded the running Turbo AI" or "ready, start Turbo AI and it loads upgraded")
+    .. " (live modules patched: " .. patched .. ")")
