@@ -1,5 +1,5 @@
 --[[
-    TurboAI Plus 1.1 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
+    TurboAI Plus 1.2 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
 
     loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/Why-am-i-getting-banned/ccr-c8ff314b-e969wb/roblox/turboai_plus.lua"))()
 
@@ -15,11 +15,14 @@
       - guard: while the opponent has the ball near your half, no boost-pad runs away from
         the play; it holds the spot between ball and goal (2.5s at most, then hands back)
       - demo hop: jumps over a supersonic car that's about to ram you
+      - high saves: double-jumps to reach shots too high for a single jump
+      - power shots: flips into the ball on clean, on-target chances (Neural mode too)
+      - turtle: jumps to get back on its wheels when stuck on the roof
 
     No UI: nothing on screen changes. Everything is on by default; to switch a part off, run e.g.
         getgenv().TurboAIPlus = { guard = false }
-    (keys: earlyFlip, fullBoostKickoff, retreat, guard, demoHop). The executor console shows
-    "[TurboAI Plus 1.1] ..." when it loads.
+    (keys: earlyFlip, fullBoostKickoff, retreat, guard, demoHop, highSave, powerShot, turtle). The executor console shows
+    "[TurboAI Plus 1.2] ..." when it loads.
 
     License: the Tactics module below is a modified version of TurboSoccerAI's Tactics module,
     CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/).
@@ -32,14 +35,15 @@ local TACTICS_SOURCE = [==[
 -- Nexto: Rolv, Soren, contributors; port/weights: azulacs/Catware. See packaged NOTICE.
 -- Modified for TurboAI Plus (same CC BY-NC-SA 4.0 license): no steering/yaw/roll during kickoff
 -- dodges (it spun the car sideways), boost all the way to the ball on kickoffs; retreat goal-side when beaten;
--- guard (no boost runs while the opponent has the ball); demo hop.
+-- guard (no boost runs while the opponent has the ball); demo hop; double-jump saves for high shots;
+-- power-shot flips in neural mode (clean on-target chances only); jump off the roof when turtled.
 local Tactics={}
-Tactics.PLUS_VERSION="1.1"
+Tactics.PLUS_VERSION="1.2"
 -- live settings, readable/changeable from the executor: getgenv().TurboAIPlus
-local function plus()
+local function opt(key)
 local env=type(getgenv)=="function" and getgenv() or _G
-local cfg=type(env.TurboAIPlus)=="table" and env.TurboAIPlus or {}
-return cfg.retreat~=false,cfg.demoHop~=false,cfg.earlyFlip~=false,cfg.fullBoostKickoff~=false,cfg.guard~=false
+local cfg=type(env.TurboAIPlus)=="table" and env.TurboAIPlus or nil
+return not cfg or cfg[key]~=false
 end
 Tactics.__index=Tactics
 local function finite(n) return type(n)=="number" and n==n and math.abs(n)<math.huge end
@@ -98,6 +102,7 @@ self.didDodge=false;self.saveJumpUntil=0;self.contactUntil=nil
 self.shotDodge=nil;self.lastShot=-math.huge
 self.defense=nil;self.lastCar=nil;self.lastBall=nil;self.lastCentered=nil
 self.dodgeAir=false;self.dodgeSecond=false;self.didFinal=false;self.lastDodge=-math.huge;self.role=nil
+self.saveDouble=nil;self.turtleSince=nil;self.turtleUntil=nil
 end
 local function arrival(s,p)
 local c=s.car;local dx,dy=p.x-c.pos.x,p.y-c.pos.y;local distance=len(dx,dy)
@@ -124,6 +129,20 @@ if c.pos.z+1.2+2.92*t+14*(hold*t-.5*hold*hold)-.5*g*t*t>=p.z then jump=t;break e
 end
 end
 return turn+math.max(move,jump),jump
+end
+-- time for a double jump (hold, release, second press with a neutral stick) to lift the car's
+-- reach to height `target`; same jump numbers as arrival() above
+local function doubleJumpTime(z0,target,g)
+local z,vz=z0,2.92
+for i=1,56 do
+local t=i*.025
+if t<=.16 then vz=vz+14*.025 end
+if i==9 then vz=vz+2.92 end
+vz=vz-g*.025;z=z+vz*.025
+if z+1.2>=target then return t end
+if vz<0 then return math.huge end
+end
+return math.huge
 end
 local function clearDirection(s,attack)
 local b=s.ball.pos;local side=b.x>=s.ownGoal.x and 1 or -1
@@ -162,7 +181,7 @@ if math.abs(final.x-s.ownGoal.x)>width+.9 or final.z>6.6 then return nil end
 return samples,final,crossing,width
 end
 local function powerShot(self,now,s,attack)
-if s.neuralPrimary then self.shotDodge=nil;return nil end
+if s.neuralPrimary and not opt("powerShot") then self.shotDodge=nil;return nil end
 local c,b=s.car,s.ball
 if s.allowJump==false then self.shotDodge=nil end
 if self.shotDodge then
@@ -170,7 +189,7 @@ local age=now-self.shotDodge
 if age>.3 or (b.pos.y-c.pos.y)*attack<.2 or c.fwd.y*attack<.45
 or b.pos.z>2.5 then self.shotDodge=nil;return nil end
 local a=contact(s,"power_shot_dodge",attack) or output("power_shot_dodge")
-a.boost=false
+a.boost=false;a.steer=0;a.yaw=0;a.roll=0;a.handbrake=false -- steering mid-flip spins the car
 if age<.06 then a.jump=s.allowJump~=false
 elseif age<.095 then a.jump=false
 elseif age<.18 and not c.grounded and not c.hasDoubleJumped then a.jump=true;a.pitch=-1 end
@@ -190,7 +209,9 @@ if not a then return nil end
 if s.allowJump~=false and not c.hasDoubleJumped and now-self.lastShot>.9
 and distance<math.clamp(2+closing*.12,2.3,4.5) and len(c.vel.x,c.vel.y)>5 then
 self.shotDodge=now;self.lastShot=now;a.jump=true;a.phase="power_shot_dodge";a.boost=false
+return a
 end
+if s.neuralPrimary then return nil end -- the neural net keeps the approach; we only add the flip
 return a
 end
 -- Beaten: we're upfield of the ball in our own half and the opponent gets there first (or it's
@@ -274,10 +295,21 @@ end
 end
 return nil
 end
+-- Stuck on the roof and not going anywhere: jump to get the wheels back down.
+local function turtle(self,now,s)
+local c=s.car
+if c.up.z< -.6 and c.pos.z<1.3 and len(c.vel.x,c.vel.y)<6 and math.abs(c.vel.z)<2 then
+self.turtleSince=self.turtleSince or now
+if now-self.turtleSince>.6 and now-(self.lastTurtleJump or -math.huge)>1 and s.allowJump~=false then
+self.lastTurtleJump=now;self.turtleUntil=now+.12
+end
+else self.turtleSince=nil end
+if self.turtleUntil and now<self.turtleUntil then local a=output("turtle_recover");a.jump=true;return a end
+return nil
+end
 local function openPlay(self,now,s,attack)
-local useRetreat,useHop,_,_,useGuard=plus()
-return useHop and demoHop(self,now,s) or powerShot(self,now,s,attack) or useRetreat and retreat(self,now,s,attack)
-or useGuard and guard(self,now,s,attack) or nil
+return opt("turtle") and turtle(self,now,s) or opt("demoHop") and demoHop(self,now,s) or powerShot(self,now,s,attack)
+or opt("retreat") and retreat(self,now,s,attack) or opt("guard") and guard(self,now,s,attack) or nil
 end
 function Tactics:step(now,s)
 if not finite(now) or type(s)~="table" or type(s.car)~="table" or type(s.ball)~="table" then self:reset();return nil end
@@ -303,6 +335,16 @@ self.lastCar={x=c.pos.x,y=c.pos.y};self.lastBall={x=b.pos.x,y=b.pos.y};self.last
 if not c.grounded and now<self.saveJumpUntil and s.allowJump~=false then
 local a=output("goalkeeper_jump");a.jump=true;a.throttle=.5;return a
 end
+if self.saveDouble then
+-- second press of a double-jump save: release briefly, then jump again with a neutral stick
+local age=now-self.saveDouble
+if age>1.2 or c.grounded and age>.3 then self.saveDouble=nil
+elseif not c.grounded and age<.3 and s.allowJump~=false then
+local a=output("goalkeeper_double_jump");a.throttle=.5
+a.jump=age>=.2 and not c.hasDoubleJumped and not c.isFlipping
+return a
+end
+end
 local samples,crossingBall,crossing,width=threat(s,attack)
 if samples and c.grounded and c.up.z>.7 then
 local chosen,eta,jump
@@ -310,6 +352,19 @@ for _,p in ipairs(samples) do
 if p.z<=3.05 and p.t>.06 then
 local arrivalTime,jumpTime=arrival(s,p)
 if arrivalTime<=p.t+.02 then chosen,eta,jump=p,arrivalTime,jumpTime;break end
+end
+end
+local high=false
+if not chosen and opt("highSave") and s.allowJump~=false and not c.hasDoubleJumped then
+-- nothing reachable low: a double jump gets to shots up to ~5.3 high
+local g=finite(s.gravity) and math.clamp(s.gravity,3,15) or 6.5
+for _,p in ipairs(samples) do
+if p.z>3.05 and p.z<=5.3 and p.t>.3 then
+local rise=doubleJumpTime(c.pos.z,p.z,g)
+local ground=arrival(s,{x=p.x,y=p.y,z=1})
+local total=math.max(ground,rise)
+if total<=p.t+.02 then chosen,eta,jump,high=p,total,rise,true;break end
+end
 end
 end
 if chosen then
@@ -332,7 +387,11 @@ a.arrivalTime=eta;a.interceptTime=chosen.t;a.threatTime=crossing
 local distance=len(chosen.x-c.pos.x,chosen.y-c.pos.y)
 a.jump=s.allowJump~=false and not c.hasDoubleJumped and not c.isFlipping and chosen.z>1.45
 and chosen.t<=jump+.09 and distance<math.max(2.5,len(c.vel.x,c.vel.y)*(jump+.08)+1.5)
-if a.jump then self.saveJumpUntil=now+math.min(.16,math.max(.08,jump)) end
+if a.jump then
+self.saveJumpUntil=now+(high and .16 or math.min(.16,math.max(.08,jump)))
+self.saveDouble=high and now or nil
+end
+if high then a.phase="goalkeeper_high_save" end
 return a
 end
 end
@@ -398,8 +457,7 @@ local front=((b.pos.x-c.pos.x)*c.fwd.x+(b.pos.y-c.pos.y)*c.fwd.y)/math.max(.01,d
 local speed=len(c.vel.x,c.vel.y)
 local closing=distance>.1 and ((c.vel.x-b.vel.x)*(b.pos.x-c.pos.x)+(c.vel.y-b.vel.y)*(b.pos.y-c.pos.y))/distance or 0
 local final=not self.didFinal and distance>2.1 and distance<math.clamp(2+closing*.11,2.3,4.5) and closing>4
-local _,_,earlyFlip=plus()
-local early=earlyFlip and not self.didDodge and speed>10 and distance>18 and distance<34
+local early=opt("earlyFlip") and not self.didDodge and speed>10 and distance>18 and distance<34
 if not self.dodge and (early or final) and c.grounded and not c.isFlipping and not c.hasDoubleJumped
 and s.allowJump~=false and front>.99 and now-self.lastDodge>.65 then
 self.dodge=now;self.dodgeAir=false;self.dodgeSecond=false
@@ -418,8 +476,7 @@ a.phase="kickoff_dodge";a.steer=0;a.yaw=0;a.roll=0;a.handbrake=false
 if age>.19 then a.pitch=0 end
 if age>.8 or age>.28 and c.grounded and self.dodgeAir then self.dodge=nil;self.lastDodge=now end
 end
-local _,_,_,fullBoost=plus()
-if fullBoost then
+if opt("fullBoostKickoff") then
 a.boost=s.allowBoost~=false and (s.boost or 0)>0 and math.abs(c.fwd.z)<.25 and front>.95 and speed<22.6
 else
 a.boost=a.boost and math.abs(c.fwd.z)<.25 and front>.97 and
@@ -484,5 +541,5 @@ end
 -- no UI of its own: remove the PLUS button an earlier version may have left on screen
 if env.__TurboAIPlusGui then pcall(function() env.__TurboAIPlusGui:Destroy() end); env.__TurboAIPlusGui = nil end
 
-print("[TurboAI Plus 1.1] " .. (patched > 0 and "upgraded the running Turbo AI" or "ready, start Turbo AI and it loads upgraded")
+print("[TurboAI Plus 1.2] " .. (patched > 0 and "upgraded the running Turbo AI" or "ready, start Turbo AI and it loads upgraded")
     .. " (live modules patched: " .. patched .. ")")
