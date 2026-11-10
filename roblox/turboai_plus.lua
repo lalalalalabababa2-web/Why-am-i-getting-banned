@@ -1,5 +1,5 @@
 --[[
-    TurboAI Plus 1.2 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
+    TurboAI Plus 1.3 - upgrade for TurboSoccerAI 0.8.0 (Turbo Soccer [BETA])
 
     loadstring(game:HttpGet("https://raw.githubusercontent.com/lalalalalabababa2-web/Why-am-i-getting-banned/ccr-c8ff314b-e969wb/roblox/turboai_plus.lua"))()
 
@@ -18,11 +18,13 @@
       - high saves: double-jumps to reach shots too high for a single jump
       - power shots: flips into the ball on clean, on-target chances (Neural mode too)
       - turtle: jumps to get back on its wheels when stuck on the roof
+      - rush home: when a shot is on target and out of reach it races back at once
+        (it used to stand still for ~1.5s after losing a kickoff)
 
     No UI: nothing on screen changes. Everything is on by default; to switch a part off, run e.g.
         getgenv().TurboAIPlus = { guard = false }
-    (keys: earlyFlip, fullBoostKickoff, retreat, guard, demoHop, highSave, powerShot, turtle). The executor console shows
-    "[TurboAI Plus 1.2] ..." when it loads.
+    (keys: earlyFlip, fullBoostKickoff, retreat, guard, demoHop, highSave, powerShot, turtle, rushHome). The executor console shows
+    "[TurboAI Plus 1.3] ..." when it loads.
 
     License: the Tactics module below is a modified version of TurboSoccerAI's Tactics module,
     CC BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/).
@@ -36,9 +38,10 @@ local TACTICS_SOURCE = [==[
 -- Modified for TurboAI Plus (same CC BY-NC-SA 4.0 license): no steering/yaw/roll during kickoff
 -- dodges (it spun the car sideways), boost all the way to the ball on kickoffs; retreat goal-side when beaten;
 -- guard (no boost runs while the opponent has the ball); demo hop; double-jump saves for high shots;
--- power-shot flips in neural mode (clean on-target chances only); jump off the roof when turtled.
+-- power-shot flips in neural mode (clean on-target chances only); jump off the roof when turtled;
+-- rush home at once when a shot is on target and out of reach (it used to idle for ~1.5s).
 local Tactics={}
-Tactics.PLUS_VERSION="1.2"
+Tactics.PLUS_VERSION="1.3"
 -- live settings, readable/changeable from the executor: getgenv().TurboAIPlus
 local function opt(key)
 local env=type(getgenv)=="function" and getgenv() or _G
@@ -82,6 +85,14 @@ a.boost=urgent and s.allowBoost~=false and (s.boost or 0)>1 and front>.97 and a.
 and distance>5 and along<22.5
 a.handbrake=math.abs(angle)>1.2 and along>7 and not urgent
 return a
+end
+local function sharpTurn(s,target)
+local c=s.car;local f=len(c.fwd.x,c.fwd.y)
+local dx,dy=target.x-c.pos.x,target.y-c.pos.y;local d=len(dx,dy)
+if f<.2 or d<.5 then return false end
+local front=(dx*c.fwd.x+dy*c.fwd.y)/(d*f)
+local along=(c.vel.x*c.fwd.x+c.vel.y*c.fwd.y)/f
+return front<.07 and along>8
 end
 local function contact(s,phase,attack)
 local c,b=s.car,s.ball
@@ -227,7 +238,7 @@ for _,o in ipairs(type(s.opponents)=="table" and s.opponents or {}) do
 if type(o)=="table" and vec(o.pos) then theirs=math.min(theirs,len(b.pos.x-o.pos.x,b.pos.y-o.pos.y)) end
 end
 local coming=b.vel.y*attack< -6
-if upfield<=(self.retreating and 1 or 5) or depth>60 or not (theirs<mine-2 or coming) then
+if upfield<=(self.retreating and 1 or coming and 2 or 5) or depth>60 or not (theirs<mine-2 or coming) then
 self.retreating=nil;return nil
 end
 self.retreating=self.retreating or now
@@ -236,7 +247,7 @@ local target={x=s.ownGoal.x+side*5.5,y=s.ownGoal.y+attack*5,z=.17}
 -- level with the ball and right in front of it: step around it first so we don't knock it home
 if math.abs(c.pos.x-b.pos.x)<2.5 and upfield<8 then target={x=b.pos.x+side*3.5,y=b.pos.y,z=.17} end
 local a=drive(s,target,"retreat",true)
-if a then a.handbrake=false end
+if a then a.handbrake=sharpTurn(s,target) end
 return a
 end
 -- The opponent has the ball near or heading into our half, and we're goal-side but driving away
@@ -396,9 +407,14 @@ return a
 end
 end
 self.defense=nil
-if crossingBall.z>3.05 then return nil end
 local margin=math.min(7.2,width-1.5)
 local cover={x=s.ownGoal.x+math.clamp(crossingBall.x-s.ownGoal.x,-margin,margin),y=s.ownGoal.y+attack*.55,z=.17}
+if opt("rushHome") and len(cover.x-c.pos.x,cover.y-c.pos.y)>15 then
+-- too far to save it ourselves: don't stand and watch, get back for the rebound / second touch
+local a=drive(s,cover,"goalkeeper_rush",true)
+if a then a.handbrake=sharpTurn(s,cover);return a end
+end
+if crossingBall.z>3.05 then return nil end
 if s.neuralPrimary and not s.goalkeeper and arrival(s,cover)>crossing+.2 then return nil end
 return drive(s,cover,"goalkeeper_cover",true)
 end
@@ -541,5 +557,5 @@ end
 -- no UI of its own: remove the PLUS button an earlier version may have left on screen
 if env.__TurboAIPlusGui then pcall(function() env.__TurboAIPlusGui:Destroy() end); env.__TurboAIPlusGui = nil end
 
-print("[TurboAI Plus 1.2] " .. (patched > 0 and "upgraded the running Turbo AI" or "ready, start Turbo AI and it loads upgraded")
+print("[TurboAI Plus 1.3] " .. (patched > 0 and "upgraded the running Turbo AI" or "ready, start Turbo AI and it loads upgraded")
     .. " (live modules patched: " .. patched .. ")")
