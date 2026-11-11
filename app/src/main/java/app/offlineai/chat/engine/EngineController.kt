@@ -6,6 +6,7 @@ import android.os.SystemClock
 import org.json.JSONObject
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** What the native engine reports about the loaded model. */
 data class ModelInfo(
@@ -184,6 +185,8 @@ class EngineController {
     private val queue = LinkedBlockingQueue<() -> Unit>()
     private val listeners = mutableListOf<StateListener>()
     private val cancelLoad = AtomicBoolean(false)
+    /** The conversation to read ahead next, until the engine thread picks it up. */
+    private val aheadRequest = AtomicReference<ByteArray?>(null)
 
     @Volatile var phase: Phase = Phase.IDLE
         private set
@@ -231,8 +234,33 @@ class EngineController {
     val isBusy: Boolean get() = phase == Phase.BUSY || phase == Phase.LOADING || phase == Phase.WARMING
     val isLoading: Boolean get() = phase == Phase.LOADING || phase == Phase.WARMING
 
+    /**
+     * Reads the conversation ahead of the next message while the engine has nothing else to do, so
+     * the next reply starts sooner (see NativeEngine.nativeReadAhead). [request] is the request the
+     * next reply would get, with a stand-in for the message. Nothing shows it: the engine still
+     * counts as ready, and anything else asked of it ends the read-ahead first.
+     */
+    fun readAhead(request: JSONObject) {
+        if (loaded == null || phase != Phase.READY) return
+        runCatching { NativeEngine.nativeAllowReadAhead(true) }
+        val bytes = request.toString().toByteArray(Charsets.UTF_8)
+        // one waiting at a time: a newer conversation replaces one that has not started
+        if (aheadRequest.getAndSet(bytes) != null) return
+        queue.put {
+            val b = aheadRequest.getAndSet(null) ?: return@put
+            if (loaded != null) NativeEngine.nativeReadAhead(b)
+        }
+    }
+
+    /** What is asked next goes first: ends a read-ahead after the step it is on, drops one that waits. */
+    private fun endReadAhead() {
+        aheadRequest.set(null)
+        runCatching { NativeEngine.nativeAllowReadAhead(false) }
+    }
+
     /** Loads a model, replacing the current one. [onDone] gets null on success or the reason it failed. */
     fun load(key: String, displayName: String, path: String, config: LoadConfig, onDone: ((String?) -> Unit)? = null) {
+        endReadAhead()
         if (phase == Phase.BUSY) NativeEngine.nativeStop()
         cancelLoad.set(false)
         loadingName = displayName
@@ -290,6 +318,7 @@ class EngineController {
     }
 
     fun unload() {
+        endReadAhead()
         if (phase == Phase.BUSY) NativeEngine.nativeStop()
         queue.put {
             NativeEngine.nativeUnload()
@@ -302,11 +331,13 @@ class EngineController {
 
     /** Forgets the conversation held in the model's memory. */
     fun resetCache() {
+        endReadAhead()
         queue.put { if (loaded != null) NativeEngine.nativeResetCache() }
     }
 
     /** Frees the picture part of the model (it loads again with the next picture). */
     fun releaseMedia() {
+        endReadAhead()
         queue.put { if (loaded != null) NativeEngine.nativeReleaseMedia() }
     }
 
@@ -333,6 +364,7 @@ class EngineController {
             main.post { onDone(emptyList(), "No model is loaded.") }
             return
         }
+        endReadAhead()
         phase = Phase.BUSY
         announce()
         queue.put {
@@ -363,6 +395,9 @@ class EngineController {
             main.post { listener.onDone(ChatOutcome.failure("No model is loaded.")) }
             return
         }
+        // a read-ahead in progress finishes the step it is on (about a second, and what it read is
+        // what this reply needs first), then the reply takes over
+        endReadAhead()
         phase = Phase.BUSY
         announce()
         val bytes = request.toString().toByteArray(Charsets.UTF_8)

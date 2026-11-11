@@ -70,7 +70,7 @@ struct Ref {
     }
 };
 
-static void compare(const char * what, oa::Engine & e, Ref & ref, const std::vector<token> & prompt) {
+static void compare(const char * what, oa::Engine & e, Ref & ref, const std::vector<token> & prompt, double tol = 1e-4) {
     auto got = e.last_logits();
     auto want = ref.logits_for(prompt);
     CHECK(got.size() == want.size() && !got.empty(), "%s: logits size", what);
@@ -83,8 +83,9 @@ static void compare(const char * what, oa::Engine & e, Ref & ref, const std::vec
     }
     std::printf("    %-34s nmse=%.2e argmax %d/%d cached=%zu snapshots=%zu\n", what, err, am_got, am_want,
                 e.cached().size(), e.n_snapshots());
-    CHECK(err < 1e-4, "%s: logits differ from a fresh evaluation (nmse %.3e)", what, err);
-    CHECK(am_got == am_want, "%s: greedy pick differs", what);
+    CHECK(err < tol, "%s: logits differ from a fresh evaluation (nmse %.3e)", what, err);
+    // (with a looser tolerance, for real quantized models, a near tie may go the other way)
+    if (tol <= 1e-4) CHECK(am_got == am_want, "%s: greedy pick differs", what);
 }
 
 static void generate(oa::Engine & e, int n) {
@@ -420,6 +421,192 @@ static void test_chat_smoke(const std::string & path) {
     CHECK(!r.ok && !r.error.empty(), "a huge message should fail with a message");
 }
 
+
+// Reading ahead: after a reply, the engine reads what the next prompt will start with (the reply
+// as the template will show it next time, without its thinking), so the next reply only reads the
+// new message. The next reply must then be exactly what it would have been without reading
+// ahead: checked against an engine that never reads ahead, and against a fresh evaluation of the
+// whole conversation. Also: reading ahead twice reads nothing new, it can be interrupted at any
+// point and everything still works, and writing the last reply again afterwards still works.
+static const char * kProbe = "<<the next message>>";
+// A reply cut short while still thinking has no answer to keep; this one stands in for it, so
+// that the next prompt has a real answer to read (what reading ahead is for).
+static const char * kStandInAnswer =
+    "Lighthouse keepers lived at the edge of the sea, often on rocks miles from the nearest town. They trimmed the "
+    "wicks and wound the clockwork that turned the lens every few hours through the night, cleaned the soot from the "
+    "glass each morning, painted the tower, kept a log of passing ships and the weather, and rowed out to help when a "
+    "boat ran aground. Families sometimes lived with them, and children learned to read by lamplight in rooms with "
+    "walls a metre thick. Supplies came by boat when the sea allowed, which in winter could mean weeks of salted food. "
+    "Electric lights and automatic lamps replaced most keepers during the twentieth century, and the last ones left "
+    "their towers in the nineteen nineties.";
+
+static oa::ChatRequest with_probe(const oa::ChatRequest & history) {
+    oa::ChatRequest r = history;
+    r.messages.push_back({"user", kProbe, ""});
+    return r;
+}
+
+static void test_read_ahead(const std::string & path, const char * label, bool real, bool thinking) {
+    if (!std::ifstream(path).good()) {
+        std::printf("== read ahead %s: %s not there, skipped\n", label, path.c_str());
+        return;
+    }
+    std::printf("== read ahead: %s (thinking %s)\n", label, thinking ? "on" : "off");
+    oa::LoadParams lp;
+    lp.n_ctx = real ? 4096 : 1024;
+    lp.n_threads = real ? std::max(1, (int) std::thread::hardware_concurrency()) : 2;
+    lp.n_batch = real ? 512 : 64;
+    lp.n_ubatch = real ? 256 : 32;
+    lp.spec_n_max = 0;
+    lp.spec_ngram = false;
+    oa::Engine e, plain;
+    Ref ref;
+    std::string err;
+    if (!e.load(path, lp, err) || !plain.load(path, lp, err) || !ref.e.load(path, lp, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = thinking;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = real ? 300 : 40;
+    // A real quantized model read in steps of different sizes takes different kernels and comes
+    // out a little different (see test_speed); a mistake in the memory would be off by far more.
+    const double tol = real ? 2e-2 : 1e-4;
+    req.messages.push_back({"system", "You are a helpful assistant.", ""});
+    req.messages.push_back({"user", "Tell me about lighthouses and the people who kept them, in a few sentences.", ""});
+    oa::ChatCallbacks cb;
+
+    const char * follow[] = {"And what happened to them later?", "Which one is the most famous?", "Thank you. One more detail, please."};
+    for (int turn = 0; turn < 3; turn++) {
+        auto r = e.chat(req, cb);
+        auto p = plain.chat(req, cb);
+        CHECK(r.ok && p.ok, "%s turn %d failed: %s %s", label, turn, r.error.c_str(), p.error.c_str());
+        // the same prompt read two ways (all at once here, in pieces across turns there) can differ
+        // in the last bits, and a real model's near ties then flip; random models have none
+        if (!real) CHECK(r.content == p.content && r.reasoning == p.reasoning, "%s turn %d: reading ahead changed the reply", label, turn);
+        if (turn > 0) {
+            std::printf("    turn %d: read %d positions before the first word (%.0f ms); without reading ahead %d (%.0f ms)\n",
+                        turn, r.stats.n_evaluated, r.stats.t_prompt_ms, p.stats.n_evaluated, p.stats.t_prompt_ms);
+            CHECK(r.stats.n_evaluated <= p.stats.n_evaluated, "%s turn %d: reading ahead made the reply read more (%d > %d)",
+                  label, turn, r.stats.n_evaluated, p.stats.n_evaluated);
+            if (real) {
+                std::printf("SPEED: %s%s, follow-up %d: %.2f s before the reply starts, %.2f s without reading ahead (%d against %d positions)\n",
+                            label, thinking ? " (thinking)" : "", turn, r.stats.t_prompt_ms / 1000.0, p.stats.t_prompt_ms / 1000.0,
+                            r.stats.n_evaluated, p.stats.n_evaluated);
+            }
+        }
+        compare("after a reply", e, ref, e.cached(), tol);
+
+        req.messages.push_back({"assistant", r.content.empty() ? std::string(kStandInAnswer) : r.content, r.reasoning});
+        const auto probe = with_probe(req);
+        auto a = e.read_ahead(probe, kProbe);
+        std::printf("    read ahead: ok=%d read %d, %d positions ready, %.0f ms %s\n", a.ok, a.n_evaluated, a.n_ready, a.t_ms,
+                    a.error.c_str());
+        CHECK(a.ok && !a.stopped, "%s: read ahead failed: %s", label, a.error.c_str());
+        CHECK(a.n_ready > 0, "%s: read ahead found nothing to get ready", label);
+        CHECK((int) e.cached().size() >= a.n_ready, "%s: memory holds %zu, less than the %d read ahead", label, e.cached().size(), a.n_ready);
+        // again: all of it is there already
+        auto a2 = e.read_ahead(probe, kProbe);
+        CHECK(a2.ok && a2.n_evaluated == 0, "%s: reading ahead twice read %d more", label, a2.n_evaluated);
+
+        if (turn == 1) {
+            // writing the last reply again after reading ahead: the same words as the first time
+            oa::ChatRequest again = req;
+            again.messages.pop_back();
+            auto g = e.chat(again, cb);
+            CHECK(g.ok, "%s: write again after reading ahead failed: %s", label, g.error.c_str());
+            if (!real) CHECK(g.content == r.content, "%s: write again after reading ahead gave other words", label);
+            compare("write again after reading ahead", e, ref, e.cached(), tol);
+            auto a3 = e.read_ahead(probe, kProbe);
+            CHECK(a3.ok, "%s: read ahead after write again failed: %s", label, a3.error.c_str());
+        }
+        req.messages.push_back({"user", follow[turn], ""});
+    }
+
+    // interrupted part way, and turned off: the next reply is still right
+    {
+        auto r = e.chat(req, cb);
+        CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
+        req.messages.push_back({"assistant", r.content.empty() ? std::string(kStandInAnswer) : r.content, r.reasoning});
+        const auto probe = with_probe(req);
+        std::thread stopper([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(real ? 40 : 2));
+            e.set_read_ahead_allowed(false);
+        });
+        auto a = e.read_ahead(probe, kProbe);
+        stopper.join();
+        std::printf("    interrupted: ok=%d stopped=%d read %d, %d ready\n", a.ok, a.stopped, a.n_evaluated, a.n_ready);
+        CHECK(a.ok, "%s: an interrupted read ahead should be ok: %s", label, a.error.c_str());
+        auto off = e.read_ahead(probe, kProbe);
+        CHECK(off.ok && off.stopped && off.n_evaluated == 0, "%s: reading ahead while turned off should do nothing", label);
+        req.messages.push_back({"user", "Go on.", ""});
+        auto n = e.chat(req, cb);
+        CHECK(n.ok, "%s: reply after an interrupted read ahead failed: %s", label, n.error.c_str());
+        compare("reply after an interrupted read ahead", e, ref, e.cached(), tol);
+        e.set_read_ahead_allowed(true);
+        // a stop meant for a reply does not linger and block reading ahead
+        req.messages.push_back({"assistant", n.content.empty() ? std::string(kStandInAnswer) : n.content, n.reasoning});
+        auto on = e.read_ahead(with_probe(req), kProbe);
+        CHECK(on.ok && !on.stopped, "%s: read ahead after turning it back on: %s", label, on.error.c_str());
+    }
+}
+
+// Writing speed with more and more of a conversation in memory. Models that attend to the whole
+// conversation in every layer slow down as it grows; how much is what Offline AI's attention
+// kernel (third_party/patches/fattn-fast.inc) changes. real.sh runs this twice, the second time
+// with OA_FATTN_OFF=1 for ggml's own attention.
+static void test_context_speed(const std::string & path, const char * label) {
+    if (!std::ifstream(path).good()) {
+        std::printf("== context speed %s: %s not there, skipped\n", label, path.c_str());
+        return;
+    }
+    std::printf("== context speed: %s\n", label);
+    oa::LoadParams lp;
+    lp.n_ctx = 8192 + 256;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 0;
+    lp.spec_ngram = false;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(path, lp, err)) {
+        std::fprintf(stderr, "  FAIL %s: load: %s\n", label, err.c_str());
+        g_failures++;
+        return;
+    }
+    std::mt19937 rng(11);
+    std::vector<token> prompt;
+    std::string line;
+    for (int fill : {64, 2048, 4096, 8192}) {
+        // what was written last time stays, so each size only reads the part that is new
+        prompt = e.cached();
+        auto more = random_tokens(rng, std::max(1, fill - (int) prompt.size()), 30000);
+        prompt.insert(prompt.end(), more.begin(), more.end());
+        if (!e.sync_prompt(prompt, 0, err, nullptr, nullptr)) {
+            std::fprintf(stderr, "  FAIL %s: reading %d tokens: %s\n", label, fill, err.c_str());
+            g_failures++;
+            return;
+        }
+        const int n = 12;
+        for (int i = 0; i < 2; i++) e.push_token(e.argmax(), err);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < n; i++) {
+            if (!e.push_token(e.argmax(), err)) {
+                std::fprintf(stderr, "  FAIL %s: writing at %d tokens: %s\n", label, fill, err.c_str());
+                g_failures++;
+                return;
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / n;
+        char b[64];
+        std::snprintf(b, sizeof b, "%s%.1f at %d", line.empty() ? "" : ", ", 1000.0 / ms, fill);
+        line += b;
+    }
+    std::printf("SPEED: %s, tokens/s while writing, by tokens of conversation in memory: %s\n", label, line.c_str());
+}
 
 // ---------------------------------------------------------------- speculative decoding
 
@@ -1031,6 +1218,17 @@ int main(int argc, char ** argv) {
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }
+    if (argc >= 6 && std::string(argv[3]) == "--context") {
+        // test_engine <tiny models dir> <llama.cpp dir> --context <model.gguf> <label>
+        test_context_speed(argv[4], argv[5]);
+        return g_failures ? 1 : 0;
+    }
+    if (argc >= 7 && std::string(argv[3]) == "--read-ahead") {
+        // test_engine <tiny models dir> <llama.cpp dir> --read-ahead <model.gguf> <label> <thinking 0|1>
+        test_read_ahead(argv[4], argv[5], true, std::atoi(argv[6]) != 0);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     const bool real_only = argc >= 5 && std::string(argv[4]) == "--real-only";
     if (real_only) {
         const std::string rd = argv[3];
@@ -1042,6 +1240,11 @@ int main(int argc, char ** argv) {
         // copying from the conversation (attention-only models; hybrids cannot wind back that far)
         test_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
         test_speed(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M, copying", "", {0, -1}, true, kCopyPrompt);
+        // long conversations, and getting ready for the next message
+        test_context_speed(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M");
+        test_context_speed(rd + "/gemma-4-E2B-it-Q4_K_M.gguf", "Gemma 4 E2B Q4_K_M");
+        test_read_ahead(rd + "/Qwen3.5-0.8B-Q4_K_M.gguf", "Qwen3.5 0.8B Q4_K_M", true, true);
+        test_read_ahead(rd + "/Llama-3.2-1B-Instruct-Q4_K_M.gguf", "Llama 3.2 1B Q4_K_M", true, false);
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", 2048);
         test_bonsai(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0, low memory", 2048, true);
@@ -1068,6 +1271,9 @@ int main(int argc, char ** argv) {
     test_background(dir + "/llama-dense.gguf");
     test_background(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/gemma3-dense.gguf");
+    for (const char * m : {"qwen35-dense.gguf", "llama-dense.gguf", "gemma3-dense.gguf"}) {
+        test_read_ahead(dir + "/" + m, m, false, true);
+    }
 
     const std::string qwen_reply = "I should plan a short greeting.\n</think>\n\nHello! \xF0\x9F\x98\x80 How can I help?";
     test_template(src + "/models/ggml-vocab-qwen35.gguf", src + "/models/templates/Qwen3.5-4B.jinja", qwen_reply, true);

@@ -17,6 +17,9 @@ import java.util.Locale
 /** Pages read back from storage in one turn above which the model plainly does not fit in free memory. */
 private const val SLOW_MEMORY_FAULTS = 2000L
 
+/** Stands for the next message when the engine reads the conversation ahead of it (Engine::read_ahead). */
+private const val NEXT_MESSAGE = "<<the next message>>"
+
 /**
  * The open conversation and the reply being written. Lives in the application, not in a
  * screen, so a reply keeps going (and is saved) when the screen goes away.
@@ -223,6 +226,21 @@ class ChatController(private val app: App) {
         if (generating) app.engine.stop()
     }
 
+    /**
+     * Has the model read, ahead of your next message, what that reply's prompt will start with:
+     * mostly the last reply as the model will see it from now on (without its thinking, which
+     * the templates of thinking models leave out of the history, so it cannot simply be kept).
+     * Called when a reply finishes and when you start typing; costs nothing when it is all in the
+     * model's memory already, and sending a message takes over from wherever it has got to.
+     */
+    fun readAhead() {
+        if (!app.settings.readAhead || generating) return
+        val model = app.engine.loaded ?: return
+        // an empty chat without a system prompt has nothing to get ready
+        if (conversation.messages.none { !it.error } && app.settings.systemPrompt.isBlank()) return
+        app.engine.readAhead(buildRequest(model, NEXT_MESSAGE).put("probe", NEXT_MESSAGE))
+    }
+
     private fun startReply(model: LoadedModel) {
         val reply = ChatMessage(role = "assistant", content = "", model = model.displayName, partial = true)
         val request = buildRequest(model)
@@ -303,6 +321,8 @@ class ChatController(private val app: App) {
         save()
         changed()
         status()
+        // while you read the reply, the model gets ready for your next message
+        if (!reply.error && app.inFront) readAhead()
         if (!app.inFront && app.settings.replyNotifications && o.stopReason != "stopped") {
             val text = (if (reply.content.isNotBlank()) reply.content else reply.reasoning).take(300)
             GenerationService.replyReady(app, if (reply.error) "The reply failed" else "Reply ready", text.ifBlank { "Open the chat to see it." })
@@ -342,7 +362,11 @@ class ChatController(private val app: App) {
 
     private fun familyOf(model: LoadedModel): Family = app.models.find(model.key)?.family ?: Family.OTHER
 
-    private fun buildRequest(model: LoadedModel): JSONObject {
+    /**
+     * The request for a reply to the conversation as it stands, or (with [nextMessage]) for the
+     * reply to a message of yours that is not written yet, for reading ahead.
+     */
+    private fun buildRequest(model: LoadedModel, nextMessage: String? = null): JSONObject {
         val s = app.settings
         val messages = JSONArray()
         val system = s.systemPrompt.trim()
@@ -351,7 +375,9 @@ class ChatController(private val app: App) {
         // Templates expect turns to alternate; a failed reply leaves two of yours in a row, so
         // those are joined. Failed replies themselves are never sent back to the model.
         var last: JSONObject? = null
-        for (m in conversation.messages) {
+        val turns = if (nextMessage == null) conversation.messages
+        else conversation.messages + ChatMessage(role = "user", content = nextMessage)
+        for (m in turns) {
             if (m.error) continue
             if (m.role == "assistant" && m.content.isBlank()) continue
             val media = if (m.role == "user") mediaJson(m.attachments) else null

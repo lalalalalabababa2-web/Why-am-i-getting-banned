@@ -27,4 +27,16 @@ g++ -std=c++17 -O2 -DNDEBUG \
   -L "$OUT/llama/bin" -lllama-common -lmtmd -lllama -lggml -lggml-base -lpthread \
   -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/test_engine_real"
 
+# Offline AI's attention kernel on this CPU: right, and how fast against ggml's reference path
+g++ -std=c++17 -O2 -I "$SRC/ggml/include" "$ROOT/tools/host-test/test_fattn.cpp" \
+  -L "$OUT/llama/bin" -lggml -lggml-cpu -lggml-base -lpthread \
+  -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/test_fattn"
+"$OUT/test_fattn"
+
 "$OUT/test_engine_real" "$OUT/models" "$SRC" "$REAL_MODELS" --real-only
+
+# the same long conversation with ggml's own attention, to set beside the numbers above
+if [ -f "$REAL_MODELS/Llama-3.2-1B-Instruct-Q4_K_M.gguf" ]; then
+  OA_FATTN_OFF=1 "$OUT/test_engine_real" "$OUT/models" "$SRC" --context \
+    "$REAL_MODELS/Llama-3.2-1B-Instruct-Q4_K_M.gguf" "Llama 3.2 1B Q4_K_M" | sed 's/^SPEED: /SPEED: [ggml attention] /'
+fi

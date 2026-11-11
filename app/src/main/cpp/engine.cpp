@@ -72,8 +72,11 @@ static size_t common_prefix(const std::vector<token> & a, const std::vector<toke
     return i;
 }
 
+// Only a real stop ends a step half way. Turning read-ahead off waits for the step in progress
+// (about a second): a step cut short would throw away a hybrid model's whole memory, and what
+// the step reads is what the reply that interrupts it needs next anyway.
 static bool abort_cb(void * data) {
-    return static_cast<std::atomic<bool> *>(data)->load();
+    return static_cast<const Engine *>(data)->stop_requested();
 }
 
 // Pages this process had to read back from storage so far. A model that fits in memory reads its
@@ -332,7 +335,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // conversation never has to be read again from the start. Costs memory only for those models.
     cp.swa_full = params.swa_full;
     cp.abort_callback = abort_cb;
-    cp.abort_callback_data = &stop_;
+    cp.abort_callback_data = this;
     cp.no_perf = true;
     if (params.kv_q8) {
         // A quantized V cache needs flash attention, which the CPU backend has.
@@ -410,7 +413,7 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
             }
         }
         if (ctx_dft_) {
-            llama_set_abort_callback(ctx_dft_, abort_cb, &stop_);
+            llama_set_abort_callback(ctx_dft_, abort_cb, this);
             if (pool_cur_) llama_attach_threadpool(ctx_dft_, pool_cur_, pool_cur_);
         }
 
@@ -715,7 +718,7 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
             } else {
                 clear_memory();
             }
-            if (ret == 2 || stop_.load()) err = "stopped";
+            if (ret == 2 || stopping()) err = "stopped";
             else if (ret == 1) err = "The conversation no longer fits in the context. Start a new chat or raise the context size.";
             else err = "The model failed while reading the conversation (error " + std::to_string(ret) + ").";
             return false;
@@ -726,7 +729,7 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
         }
         cache_.insert(cache_.end(), tokens.begin() + i, tokens.begin() + i + n);
         if (progress) progress((int) (cache_.size() - reused), total);
-        if (stop_.load() && cache_.size() < to) {
+        if (stopping() && cache_.size() < to) {
             err = "stopped";
             return false;
         }
@@ -940,7 +943,7 @@ bool Engine::decode_media(const Prompt & prompt, const Segment & seg, mtmd_input
         err = "A picture or sound could not be read by this model.";
         return false;
     }
-    if (stop_.load()) {
+    if (stopping()) {
         err = "stopped";
         return false;
     }
@@ -952,7 +955,7 @@ bool Engine::decode_media(const Prompt & prompt, const Segment & seg, mtmd_input
                                                      spec_ ? media_post_decode : nullptr, spec_ ? &cbd : nullptr);
     if (r != 0) {
         clear_memory();  // a picture read part way leaves no clean point to continue from
-        if (stop_.load()) err = "stopped";
+        if (stopping()) err = "stopped";
         else err = "The model failed while reading a picture or sound (error " + std::to_string(r) + ").";
         return false;
     }
@@ -970,12 +973,12 @@ bool Engine::sync_prompt(const std::vector<token> & prompt, size_t snapshot_at, 
     s.len = prompt.size();
     s.n_tokens = (int) s.len;
     p.segs.push_back(s);
-    return sync(p, snapshot_at, err, progress, nullptr, stats);
+    return sync(p, snapshot_at, err, progress, nullptr, stats, true);
 }
 
 bool Engine::sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
                   const std::function<void(int, int)> & progress, const std::function<void(int, int)> & on_media,
-                  ChatStats * stats) {
+                  ChatStats * stats, bool need_logits) {
     if (!ctx_) {
         err = "No model is loaded.";
         return false;
@@ -1003,8 +1006,18 @@ bool Engine::sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
     };
 
     size_t keep = common_prefix(cache_, units);
-    // The last token is always evaluated again, so its logits are fresh for sampling.
-    if (keep >= units.size()) keep = units.size() - 1;
+    // The last token is always evaluated again, so its logits are fresh for sampling (reading
+    // ahead samples nothing, and leaves memory alone when it already holds all of the prompt).
+    if (keep >= units.size()) {
+        if (!need_logits) {
+            if (stats) {
+                stats->n_prompt = (int) units.size();
+                stats->n_reused = (int) units.size();
+            }
+            return true;
+        }
+        keep = units.size() - 1;
+    }
     keep = floor_boundary(keep);
 
     bool kept = true;
@@ -1020,7 +1033,7 @@ bool Engine::sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
     const size_t usable = kept ? keep : 0;
 
     bool used_snapshot = false;
-    const Snapshot * snap = best_snapshot(units, units.size() - 1);
+    const Snapshot * snap = best_snapshot(units, units.size() - (need_logits ? 1 : 0));
     if (snap && snap->tokens.size() > usable) {
         used_snapshot = restore_snapshot(*snap);
         if (!used_snapshot) clear_memory();
@@ -1056,6 +1069,7 @@ bool Engine::sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
         const size_t end = s.start + s.len;
         if (end <= cache_.size()) continue;
         const bool last = si + 1 == prompt.segs.size();
+        const bool logits = last && need_logits;
         if (s.media) {
             if (cache_.size() != s.start) {
                 err = "Internal error: memory out of step with the conversation.";
@@ -1086,9 +1100,9 @@ bool Engine::sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
             if (want_snapshot && snapshot_at > from && snapshot_at < end) {
                 if (!decode_text(units, from, snapshot_at, false, err, report, total, reused)) return false;
                 save_snapshot();
-                if (!decode_text(units, snapshot_at, end, last, err, report, total, reused)) return false;
+                if (!decode_text(units, snapshot_at, end, logits, err, report, total, reused)) return false;
             } else {
-                if (!decode_text(units, from, end, last, err, report, total, reused)) return false;
+                if (!decode_text(units, from, end, logits, err, report, total, reused)) return false;
             }
         }
         if (want_snapshot && cache_.size() == snapshot_at && !last) save_snapshot();
@@ -1118,7 +1132,7 @@ bool Engine::push_token(token t, std::string & err) {
             if (pos_max >= 0 && (size_t) pos_max == cache_.size()) cache_.push_back(t);
             trim_draft(cache_.size());
         }
-        if (ret == 2 || stop_.load()) err = "stopped";
+        if (ret == 2 || stopping()) err = "stopped";
         else if (ret == 1) err = "The conversation no longer fits in the context.";
         else err = "The model failed while writing (error " + std::to_string(ret) + ").";
         return false;
@@ -1163,7 +1177,7 @@ std::vector<BenchResult> Engine::bench(const std::vector<int> & threads, int n_p
     const int restore = want_threads_.load();
     bool first = true;
     for (int t : threads) {
-        if (stop_.load()) break;
+        if (stopping()) break;
         if (t < 1) continue;
         llama_set_n_threads(ctx_, t, t);
         if (ctx_dft_) llama_set_n_threads(ctx_dft_, t, t);
@@ -1188,7 +1202,7 @@ std::vector<BenchResult> Engine::bench(const std::vector<int> & threads, int n_p
         r.pp_tps = n_prompt * 1000.0 / std::max(1.0, ms_since(t0));
         t0 = std::chrono::steady_clock::now();
         int done = 0;
-        for (; done < n_gen && !stop_.load(); done++) {
+        for (; done < n_gen && !stopping(); done++) {
             if (!push_token(prompt[done % n_prompt], e)) break;
         }
         r.tg_tps = done * 1000.0 / std::max(1.0, ms_since(t0));
@@ -1210,26 +1224,53 @@ static void text_only(const std::vector<token> & units, std::vector<token> & out
     }
 }
 
-ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
-    const long faults0 = major_faults();
-    ChatResult res;
-    stop_.store(false);
-    const auto t_start = std::chrono::steady_clock::now();
-    if (!ctx_ || !tmpls_) {
-        res.error = "No model is loaded.";
-        res.stats.stop_reason = "error";
-        return with_faults(res, faults0);
-    }
+// A request on its way to becoming a prompt.
+struct Engine::Rendered {
+    std::vector<common_chat_msg>         all;        // the messages as the template sees them
+    std::vector<std::vector<Media>>      all_media;  // each message's attachments, in order
+    size_t                               first = 0;  // 1 when the conversation opens with a system message
+    size_t                               drop  = 0;  // oldest messages left out to fit the context
+    std::unique_ptr<common_chat_session> session;
+    Prompt                               prompt;
 
+    bool any_media() const {
+        for (const auto & v : all_media) {
+            if (!v.empty()) return true;
+        }
+        return false;
+    }
+};
+
+static common_chat_templates_inputs inputs_for(const std::vector<common_chat_msg> & all, size_t first, size_t drop,
+                                               bool add_gen, const ChatRequest & req) {
+    common_chat_templates_inputs in;
+    if (first) in.messages.push_back(all[0]);
+    for (size_t i = first + drop; i < all.size(); i++) in.messages.push_back(all[i]);
+    in.add_generation_prompt = add_gen;
+    in.use_jinja = true;
+    in.enable_thinking = req.enable_thinking;
+    in.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+    if (req.now_ms > 0) {
+        in.now = std::chrono::system_clock::time_point(std::chrono::milliseconds(req.now_ms));
+    }
+    return in;
+}
+
+static std::vector<Media> media_for(const std::vector<std::vector<Media>> & all_media, size_t first, size_t drop) {
+    std::vector<Media> out;
+    if (first) out.insert(out.end(), all_media[0].begin(), all_media[0].end());
+    for (size_t i = first + drop; i < all_media.size(); i++) out.insert(out.end(), all_media[i].begin(), all_media[i].end());
+    return out;
+}
+
+// Messages as the template sees them, with a marker where each attachment goes, and the
+// attachments of each message in order.
+bool Engine::collect(const ChatRequest & req, Rendered & r, std::string & err) const {
     const bool can_see = !params_.mmproj_path.empty() && mm_vision_;
     const bool can_hear = !params_.mmproj_path.empty() && mm_audio_;
     const std::string marker = mtmd_default_marker();
 
-    // Messages as the template sees them, with a marker where each attachment goes, and the
-    // attachments of each message in order.
-    std::vector<common_chat_msg> all;
-    std::vector<std::vector<Media>> all_media;
-    all.reserve(req.messages.size());
+    r.all.reserve(req.messages.size());
     for (const auto & m : req.messages) {
         common_chat_msg cm;
         cm.role = m.role;
@@ -1260,46 +1301,177 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             body.replace(at, marker.size(), "<media>");
         }
         cm.content = prefix + body;
-        all.push_back(std::move(cm));
-        all_media.push_back(std::move(kept));
+        r.all.push_back(std::move(cm));
+        r.all_media.push_back(std::move(kept));
     }
-    if (all.empty() || all.back().role != "user") {
-        res.error = "The last message has to be yours.";
+    if (r.all.empty() || r.all.back().role != "user") {
+        err = "The last message has to be yours.";
+        return false;
+    }
+    r.first = r.all[0].role == "system" ? 1 : 0;
+    return true;
+}
+
+// Renders the conversation through the model's template and tokenizes it, leaving out the
+// oldest exchanges until it fits the context with room to reply.
+bool Engine::fit(const ChatRequest & req, Rendered & r, std::string & err) {
+    const int n_ctx = (int) llama_n_ctx(ctx_);
+    const int reserve = std::min(1024, n_ctx / 4);
+    const auto & all = r.all;
+    size_t drop = 0;
+    while (true) {
+        try {
+            r.session = std::make_unique<common_chat_session>(tmpls_, vocab_, inputs_for(all, r.first, drop, true, req));
+        } catch (const std::exception & e) {
+            err = std::string("The model's chat template failed: ") + e.what();
+            return false;
+        }
+        if (!build_prompt(r.session->prompt().str(), media_for(r.all_media, r.first, drop), r.prompt, err)) return false;
+        const size_t remaining = all.size() - r.first - drop;
+        const int cells = (int) r.prompt.units.size() + r.prompt.extra_cells;
+        if (cells + reserve <= n_ctx || remaining <= 1) break;
+        // Leave out the oldest exchange: everything up to the next message of yours.
+        size_t next = r.first + drop + 1;
+        while (next < all.size() && all[next].role != "user") next++;
+        if (next >= all.size()) break;
+        drop = next - r.first;
+    }
+    r.drop = drop;
+    return true;
+}
+
+// Cuts a prompt down to its first `n` units, never inside a picture and never ending on one.
+void Engine::cut_prompt(Prompt & p, size_t n) {
+    std::vector<Segment> segs;
+    for (const auto & s : p.segs) {
+        if (s.start >= n) break;
+        Segment t = s;
+        if (s.start + s.len > n) {
+            if (s.media) break;
+            t.len = n - s.start;
+            t.n_tokens = (int) t.len;
+        }
+        segs.push_back(t);
+    }
+    while (!segs.empty() && segs.back().media) segs.pop_back();
+    int extra = 0;
+    for (const auto & s : segs) {
+        if (s.media) extra += s.n_tokens - (int) s.len;
+    }
+    p.units.resize(segs.empty() ? 0 : segs.back().start + segs.back().len);
+    p.segs = std::move(segs);
+    p.extra_cells = extra;
+}
+
+ReadAheadResult Engine::read_ahead(const ChatRequest & req, const std::string & probe) {
+    ReadAheadResult res;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!ctx_ || !tmpls_) {
+        res.error = "No model is loaded.";
+        return res;
+    }
+    if (ahead_off_.load()) {
+        res.ok = true;
+        res.stopped = true;
+        return res;
+    }
+    if (req.messages.empty() || probe.empty()) {
+        res.error = "Nothing to read ahead.";
+        return res;
+    }
+    // The conversation twice, with two different texts where the next message will be. What the
+    // two prompts share is what the next reply's prompt starts with, whatever the message says.
+    ChatRequest other = req;
+    {
+        std::string & c = other.messages.back().content;
+        const size_t at = c.rfind(probe);
+        if (at == std::string::npos) {
+            res.error = "Nothing to read ahead.";
+            return res;
+        }
+        c.replace(at, probe.size(), "0 9 Z");
+    }
+    Rendered a, b;
+    std::string err;
+    if (!collect(req, a, err) || !collect(other, b, err)) {
+        res.error = err;
+        return res;
+    }
+    if (a.any_media() && !mtmd_) {
+        // pictures in the conversation but their part of the model is not loaded: not worth
+        // loading on a guess, the next message does it if it needs to
+        res.ok = true;
+        return res;
+    }
+    if (!fit(req, a, err) || !fit(other, b, err)) {
+        res.error = err;
+        return res;
+    }
+    Prompt & prompt = a.prompt;
+    size_t n = common_prefix(prompt.units, b.prompt.units);
+    // Back to the last control token: the text after one is tokenized on its own, so everything
+    // up to it comes out the same however the next message begins.
+    // A template without control tokens near there (plain-text formats): two tokens short of the
+    // difference instead, which is nearly always the same too; when it is not, the next reply
+    // falls back to what it would have done without reading ahead.
+    {
+        size_t at = n;
+        while (at > 0 && n - at < 24) {
+            const token t = prompt.units[at - 1];
+            if (t >= 0 && (llama_vocab_get_attr(vocab_, t) & (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED))) break;
+            at--;
+        }
+        const bool found = at > 0 && n - at < 24;
+        n = found ? at : (n > 2 ? n - 2 : 0);
+    }
+    cut_prompt(prompt, n);
+    res.n_ready = (int) prompt.units.size();
+    if (prompt.units.empty() || common_prefix(cache_, prompt.units) == prompt.units.size()) {
+        res.ok = true;  // nothing to read, or all of it is in memory already
+        return res;
+    }
+    ChatStats stats;
+    reading_ahead_.store(true);
+    // a progress callback makes the steps short (about a second each), so turning read-ahead
+    // off is noticed soon
+    const bool ok = sync(prompt, 0, err, [](int, int) {}, nullptr, &stats, false);
+    reading_ahead_.store(false);
+    res.t_ms = ms_since(t0);
+    if (!ok) {
+        if (err == "stopped") {
+            res.ok = true;
+            res.stopped = true;
+            res.n_ready = (int) common_prefix(cache_, prompt.units);
+        } else {
+            res.error = err;
+        }
+        return res;
+    }
+    res.ok = true;
+    res.n_evaluated = stats.n_evaluated;
+    return res;
+}
+
+ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
+    const long faults0 = major_faults();
+    ChatResult res;
+    stop_.store(false);
+    const auto t_start = std::chrono::steady_clock::now();
+    if (!ctx_ || !tmpls_) {
+        res.error = "No model is loaded.";
         res.stats.stop_reason = "error";
         return with_faults(res, faults0);
     }
 
-    const size_t first = all[0].role == "system" ? 1 : 0;
-    const int n_ctx = (int) llama_n_ctx(ctx_);
-    const int reserve = std::min(1024, n_ctx / 4);
-
-    auto make_inputs = [&](size_t drop, bool add_gen) {
-        common_chat_templates_inputs in;
-        if (first) in.messages.push_back(all[0]);
-        for (size_t i = first + drop; i < all.size(); i++) in.messages.push_back(all[i]);
-        in.add_generation_prompt = add_gen;
-        in.use_jinja = true;
-        in.enable_thinking = req.enable_thinking;
-        in.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
-        if (req.now_ms > 0) {
-            in.now = std::chrono::system_clock::time_point(std::chrono::milliseconds(req.now_ms));
-        }
-        return in;
-    };
-    auto media_of = [&](size_t drop) {
-        std::vector<Media> out;
-        if (first) out.insert(out.end(), all_media[0].begin(), all_media[0].end());
-        for (size_t i = first + drop; i < all.size(); i++) out.insert(out.end(), all_media[i].begin(), all_media[i].end());
-        return out;
-    };
-
-    size_t drop = 0;
-    std::unique_ptr<common_chat_session> session;
-    Prompt prompt;
+    Rendered r;
     std::string err;
-    bool any_media = false;
-    for (const auto & v : all_media) any_media = any_media || !v.empty();
-    if (any_media && !mtmd_) {
+    if (!collect(req, r, err)) {
+        res.error = err;
+        res.stats.stop_reason = "error";
+        return with_faults(res, faults0);
+    }
+    const int n_ctx = (int) llama_n_ctx(ctx_);
+    if (r.any_media() && !mtmd_) {
         // the picture part loads on first use; say so, it takes a few seconds
         if (cb.on_media) cb.on_media(-1, 0);
         if (!ensure_mtmd(err)) {
@@ -1308,28 +1480,14 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             return with_faults(res, faults0);
         }
     }
-    while (true) {
-        try {
-            session = std::make_unique<common_chat_session>(tmpls_, vocab_, make_inputs(drop, true));
-        } catch (const std::exception & e) {
-            res.error = std::string("The model's chat template failed: ") + e.what();
-            res.stats.stop_reason = "error";
-            return with_faults(res, faults0);
-        }
-        if (!build_prompt(session->prompt().str(), media_of(drop), prompt, err)) {
-            res.error = err;
-            res.stats.stop_reason = "error";
-            return with_faults(res, faults0);
-        }
-        const size_t remaining = all.size() - first - drop;
-        const int cells = (int) prompt.units.size() + prompt.extra_cells;
-        if (cells + reserve <= n_ctx || remaining <= 1) break;
-        // Leave out the oldest exchange: everything up to the next message of yours.
-        size_t next = first + drop + 1;
-        while (next < all.size() && all[next].role != "user") next++;
-        if (next >= all.size()) break;
-        drop = next - first;
+    if (!fit(req, r, err)) {
+        res.error = err;
+        res.stats.stop_reason = "error";
+        return with_faults(res, faults0);
     }
+    auto & session = r.session;
+    Prompt & prompt = r.prompt;
+    const size_t drop = r.drop;
     res.stats.n_dropped = (int) drop;
     const int prompt_cells = (int) prompt.units.size() + prompt.extra_cells;
     if (prompt_cells + 16 > n_ctx) {
@@ -1345,10 +1503,10 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     size_t snapshot_at = 0;
     if (!can_rm_part_) {
         try {
-            auto plain = common_chat_templates_apply(tmpls_, make_inputs(drop, false));
+            auto plain = common_chat_templates_apply(tmpls_, inputs_for(r.all, r.first, drop, false, req));
             Prompt pp;
             std::string e2;
-            if (build_prompt(plain.prompt.str(), media_of(drop), pp, e2)) {
+            if (build_prompt(plain.prompt.str(), media_for(r.all_media, r.first, drop), pp, e2)) {
                 snapshot_at = common_prefix(pp.units, prompt.units);
             }
         } catch (const std::exception &) {
@@ -1357,7 +1515,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     }
 
     const auto t_prompt0 = std::chrono::steady_clock::now();
-    if (!sync(prompt, snapshot_at, err, cb.on_prompt_progress, cb.on_media, &res.stats)) {
+    if (!sync(prompt, snapshot_at, err, cb.on_prompt_progress, cb.on_media, &res.stats, true)) {
         res.stats.t_prompt_ms = ms_since(t_prompt0);
         if (err == "stopped") {
             res.ok = true;
@@ -1418,9 +1576,11 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     // the first token, from the prompt's last logits
     std::vector<token> pending;
     {
+        const auto t_s = std::chrono::steady_clock::now();
         const token id = common_sampler_sample(smpl, ctx_, -1);
         common_sampler_accept(smpl, id, true);
         pending.push_back(id);
+        res.stats.t_sample_ms += ms_since(t_s);
     }
 
     std::vector<token> draft;
@@ -1437,6 +1597,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             if (n_gen == 1) res.stats.t_first_ms = ms_since(t_start);
             raw += piece;
             if (parser_ok) {
+                const auto t_p = std::chrono::steady_clock::now();
                 try {
                     common_chat_input chunk;
                     chunk.append(piece, id);
@@ -1446,6 +1607,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 } catch (const std::exception &) {
                     parser_ok = false;
                 }
+                res.stats.t_parse_ms += ms_since(t_p);
             }
             bool hit = false;
             for (const auto & s : stops) {
@@ -1461,9 +1623,13 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             if (hit) { reason = "eos"; done = true; break; }
             if (n_gen >= max_tokens) { reason = "length"; done = true; break; }
         }
-        emit(n_gen);
+        {
+            const auto t_e = std::chrono::steady_clock::now();
+            emit(n_gen);
+            res.stats.t_emit_ms += ms_since(t_e);
+        }
         if (done) break;
-        if (stop_.load()) { reason = "stopped"; break; }
+        if (stopping()) { reason = "stopped"; break; }
         if (cells_used() + 2 >= n_ctx) { reason = "context"; break; }
 
         const token last = pending.back();
@@ -1524,7 +1690,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 llama_memory_seq_rm(llama_get_memory(ctx_), 0, (llama_pos) before, -1);
                 trim_draft(before);
             }
-            if (ret == 2 || stop_.load()) reason = "stopped";
+            if (ret == 2 || stopping()) reason = "stopped";
             else if (ret == 1) reason = "context";
             else {
                 reason = "error";
@@ -1538,6 +1704,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
             res.stats.t_sync_ms += ms_since(t_s);
         }
 
+        const auto t_smp = std::chrono::steady_clock::now();
         std::vector<token> ids;
         if (draft.empty()) {
             const token id = common_sampler_sample(smpl, ctx_, 0);
@@ -1552,6 +1719,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
                 ids = common_sampler_sample_and_accept_n(smpl, ctx_, idxs, draft);
             }
         }
+        res.stats.t_sample_ms += ms_since(t_smp);
         const size_t accepted = ids.size() - 1;  // drafts the model agreed with
         if (accepted < draft.size()) {
             llama_memory_seq_rm(llama_get_memory(ctx_), 0, pos + 1 + (llama_pos) accepted, -1);

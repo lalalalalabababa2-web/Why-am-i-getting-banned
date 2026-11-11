@@ -85,7 +85,8 @@ class SettingsActivity : AppCompatActivity() {
             s.memoryMode = MemoryMode.values()[it]
         }
         switch("Compact conversation memory",
-            "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact.$reloadNote",
+            "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact, and " +
+                "slower to read and write with in long chats on models that look at the whole chat in every layer.$reloadNote",
             s.kvQ8) { s.kvQ8 = it }
         choice("Prompt batch size",
             "Tokens read per step when reading a message. Larger reads long prompts faster and needs a little more memory.$reloadNote",
@@ -108,6 +109,10 @@ class SettingsActivity : AppCompatActivity() {
         }
         row("Speed test", if (s.measuredSummary.isBlank()) "Measure reading and writing speed at different thread counts with the loaded model."
         else s.measuredSummary) { runSpeedTest() }
+        switch("Read ahead",
+            "After a reply, and when you start typing, the model already reads the part of the chat your next message " +
+                "needs (mostly its own last reply), so the next reply starts sooner. A few seconds of work after each reply.",
+            s.readAhead) { s.readAhead = it }
         switch("Keep writing in the background",
             "Lets a reply finish when you switch apps or the screen turns off, with a notification showing how far it " +
                 "has got.",

@@ -52,6 +52,36 @@ std::string dump(const json & j) {
     return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// A conversation and how to reply to it, from the JSON the Kotlin side builds (ChatController).
+void parse_request(const json & j, oa::ChatRequest & req) {
+    for (const auto & m : j.at("messages")) {
+        oa::Message msg{m.value("role", std::string("user")), m.value("content", std::string()),
+                        m.value("reasoning", std::string())};
+        if (m.contains("media")) {
+            for (const auto & md : m.at("media")) {
+                msg.media.push_back({md.value("path", std::string()), md.value("label", std::string()),
+                                     md.value("frame", false)});
+            }
+        }
+        req.messages.push_back(std::move(msg));
+    }
+    req.enable_thinking = j.value("thinking", true);
+    req.spec_n_max = j.value("spec_n_max", -1);
+    req.now_ms = j.value("now_ms", (int64_t) 0);
+    if (j.contains("sampling")) {
+        const auto & s = j.at("sampling");
+        req.sampling.temp = s.value("temp", req.sampling.temp);
+        req.sampling.top_p = s.value("top_p", req.sampling.top_p);
+        req.sampling.top_k = s.value("top_k", req.sampling.top_k);
+        req.sampling.min_p = s.value("min_p", req.sampling.min_p);
+        req.sampling.repeat_penalty = s.value("repeat_penalty", req.sampling.repeat_penalty);
+        req.sampling.presence_penalty = s.value("presence_penalty", req.sampling.presence_penalty);
+        req.sampling.max_tokens = s.value("max_tokens", req.sampling.max_tokens);
+        const int64_t seed = s.value("seed", (int64_t) -1);
+        req.sampling.seed = seed < 0 ? 0xFFFFFFFFu : (uint32_t) seed;
+    }
+}
+
 bool take_exception(JNIEnv * env) {
     if (env->ExceptionCheck()) {
         env->ExceptionDescribe();
@@ -164,6 +194,37 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeStop(JNIEnv *, jclass) {
     engine().request_stop();
 }
 
+// Reads the conversation ahead of the next message (see Engine::read_ahead). The request is the
+// one a reply would get, with the next message in it as the text given in "probe".
+JNIEXPORT jbyteArray JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeReadAhead(JNIEnv * env, jclass, jbyteArray jrequest) {
+    oa::ChatRequest req;
+    std::string probe;
+    try {
+        const json j = json::parse(from_bytes(env, jrequest));
+        parse_request(j, req);
+        probe = j.value("probe", std::string());
+    } catch (const std::exception & e) {
+        json r = {{"ok", false}, {"error", std::string("Bad request: ") + e.what()}};
+        return to_bytes(env, dump(r));
+    }
+    const auto res = engine().read_ahead(req, probe);
+    json r = {
+        {"ok", res.ok},
+        {"stopped", res.stopped},
+        {"n_evaluated", res.n_evaluated},
+        {"n_ready", res.n_ready},
+        {"t_ms", res.t_ms},
+        {"error", res.error},
+    };
+    return to_bytes(env, dump(r));
+}
+
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeAllowReadAhead(JNIEnv *, jclass, jboolean on) {
+    engine().set_read_ahead_allowed(on == JNI_TRUE);
+}
+
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeResetCache(JNIEnv *, jclass) {
     engine().reset_cache();
@@ -201,33 +262,7 @@ JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jbyteArray jrequest, jobject listener) {
     oa::ChatRequest req;
     try {
-        const json j = json::parse(from_bytes(env, jrequest));
-        for (const auto & m : j.at("messages")) {
-            oa::Message msg{m.value("role", std::string("user")), m.value("content", std::string()),
-                            m.value("reasoning", std::string())};
-            if (m.contains("media")) {
-                for (const auto & md : m.at("media")) {
-                    msg.media.push_back({md.value("path", std::string()), md.value("label", std::string()),
-                                         md.value("frame", false)});
-                }
-            }
-            req.messages.push_back(std::move(msg));
-        }
-        req.enable_thinking = j.value("thinking", true);
-        req.spec_n_max = j.value("spec_n_max", -1);
-        req.now_ms = j.value("now_ms", (int64_t) 0);
-        if (j.contains("sampling")) {
-            const auto & s = j.at("sampling");
-            req.sampling.temp = s.value("temp", req.sampling.temp);
-            req.sampling.top_p = s.value("top_p", req.sampling.top_p);
-            req.sampling.top_k = s.value("top_k", req.sampling.top_k);
-            req.sampling.min_p = s.value("min_p", req.sampling.min_p);
-            req.sampling.repeat_penalty = s.value("repeat_penalty", req.sampling.repeat_penalty);
-            req.sampling.presence_penalty = s.value("presence_penalty", req.sampling.presence_penalty);
-            req.sampling.max_tokens = s.value("max_tokens", req.sampling.max_tokens);
-            const int64_t seed = s.value("seed", (int64_t) -1);
-            req.sampling.seed = seed < 0 ? 0xFFFFFFFFu : (uint32_t) seed;
-        }
+        parse_request(json::parse(from_bytes(env, jrequest)), req);
     } catch (const std::exception & e) {
         json r = {{"ok", false}, {"error", std::string("Bad request: ") + e.what()}};
         return to_bytes(env, dump(r));
@@ -295,6 +330,8 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"t_draft_ms", res.stats.t_draft_ms},
             {"t_verify_ms", res.stats.t_verify_ms},
             {"t_sync_ms", res.stats.t_sync_ms},
+            {"t_sample_ms", res.stats.t_sample_ms},
+            {"t_parse_ms", res.stats.t_parse_ms},
             {"n_majflt", res.stats.n_majflt},
             {"stop_reason", res.stats.stop_reason},
         }},

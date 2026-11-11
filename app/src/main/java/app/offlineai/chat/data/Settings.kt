@@ -103,6 +103,13 @@ class Settings(context: Context) {
     var replyNotifications: Boolean
         get() = bool("reply_notifications", true)
         set(v) = put("reply_notifications", v)
+    /**
+     * Read the conversation ahead of the next message: after a reply, and when you start typing,
+     * the model reads what the next reply's prompt will start with, so that reply begins sooner.
+     */
+    var readAhead: Boolean
+        get() = bool("read_ahead", true)
+        set(v) = put("read_ahead", v)
     var streamIntervalMs: Int
         get() = int("stream_interval", 50)
         set(v) = put("stream_interval", v)

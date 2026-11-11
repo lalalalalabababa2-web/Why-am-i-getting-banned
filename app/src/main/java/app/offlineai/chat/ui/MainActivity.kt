@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
     private lateinit var input: EditText
+    private var composerWasBlank = true
     private lateinit var send: ImageButton
     private lateinit var jump: ImageButton
     private lateinit var progress: ProgressBar
@@ -225,7 +226,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-                override fun afterTextChanged(s: Editable?) = updateSend()
+                override fun afterTextChanged(s: Editable?) {
+                    updateSend()
+                    // the first character of a message: the model starts getting ready for it
+                    val blank = s.isNullOrBlank()
+                    if (!blank && composerWasBlank) app.chat.readAhead()
+                    composerWasBlank = blank
+                }
             })
         }
         composer.addView(input, lp(0, WRAP, 1f))

@@ -2,8 +2,9 @@ package app.offlineai.chat.engine
 
 /**
  * The calls into the native engine (app/src/main/cpp/jni_bridge.cpp). Text crosses as UTF-8
- * bytes both ways. Load, chat and unload must all come from the same single thread; only
- * [nativeStop] may be called from anywhere.
+ * bytes both ways. Load, chat, read-ahead and unload must all come from the same single thread;
+ * only [nativeStop], [nativeAllowReadAhead], [nativeSetThreads] and [nativeSetBackground] may be
+ * called from anywhere.
  */
 object NativeEngine {
     @Volatile
@@ -27,6 +28,14 @@ object NativeEngine {
     @JvmStatic external fun nativeResetCache()
     @JvmStatic external fun nativeReleaseMedia()
     @JvmStatic external fun nativeChat(request: ByteArray, listener: ChatListener?): ByteArray
+    /**
+     * Reads the conversation ahead of the next message, so the next reply only has to read the
+     * message itself. [request] is what [nativeChat] takes, with the next message in it as the
+     * text given under "probe". Same thread as load and chat.
+     */
+    @JvmStatic external fun nativeReadAhead(request: ByteArray): ByteArray
+    /** From any thread. Off ends a read-ahead in progress after its current step (about a second) and holds the next ones back. */
+    @JvmStatic external fun nativeAllowReadAhead(on: Boolean)
     @JvmStatic external fun nativeSetThreads(n: Int)
     /** Gentle writing while another app is in front: [threads] threads, low priority, takes effect at the next step. */
     @JvmStatic external fun nativeSetBackground(on: Boolean, threads: Int)

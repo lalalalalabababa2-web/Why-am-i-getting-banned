@@ -282,10 +282,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Only a build whose on-device tests passed becomes the download.
+  # Only a build whose on-device tests passed becomes the download, and only from this branch: a
+  # run started by hand on another branch tests and builds it (the APK is in its artifacts) but
+  # leaves the download link alone.
   publish:
     name: Publish
     needs: [apk, emulator, engine-tests]
+    if: github.ref == 'refs/heads/offline-ai'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

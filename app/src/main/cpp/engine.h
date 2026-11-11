@@ -124,6 +124,9 @@ struct ChatStats {
     double      t_draft_ms     = 0;  // writing time spent drafting
     double      t_verify_ms    = 0;  //   ... in the model's steps (one per draft check)
     double      t_sync_ms      = 0;  //   ... keeping the drafter's memory in step with the model
+    double      t_sample_ms    = 0;  //   ... picking each token from the model's scores
+    double      t_parse_ms     = 0;  //   ... splitting the reply into thinking and answer
+    double      t_emit_ms      = 0;  //   ... handing the reply so far to the screen
     long        n_majflt       = 0;  // pages read back from storage during the turn (the model does not fit)
     std::string stop_reason;         // eos, length, context, stopped, error
 };
@@ -164,6 +167,16 @@ struct ModelInfo {
     bool        audio             = false;
 };
 
+// What Engine::read_ahead did.
+struct ReadAheadResult {
+    bool        ok          = false;
+    bool        stopped     = false;  // interrupted; what was read so far stays in memory
+    int         n_evaluated = 0;      // positions read now
+    int         n_ready     = 0;      // positions of the next prompt now in memory
+    double      t_ms        = 0;
+    std::string error;
+};
+
 struct BenchResult {
     int    threads = 0;
     double pp_tps  = 0;  // prompt reading, tokens per second
@@ -191,9 +204,25 @@ public:
 
     ChatResult chat(const ChatRequest & req, const ChatCallbacks & cb);
 
+    // Reads the conversation ahead of your next message, while you read the last reply or type:
+    // everything the next reply's prompt will start with, so that reply only has to read the
+    // message itself. `req` is the conversation with the next message already in it, saying
+    // `probe`; what the prompt holds before that text is what gets read. Matters most for
+    // models that think: their templates drop old thinking from the history, so the last reply
+    // has to be read again without it (see the snapshots above), and here that happens before
+    // you press send instead of after. Samples nothing and changes no reply.
+    ReadAheadResult read_ahead(const ChatRequest & req, const std::string & probe);
+    // Safe from any thread. Off ends a read-ahead in progress after the step it is on (about a
+    // second; what it has read stays) and makes the next ones return at once, until it is turned
+    // on again. Replies are not affected.
+    void set_read_ahead_allowed(bool on) { ahead_off_.store(!on); }
+
     // Safe to call from any thread: ends prompt evaluation or generation as soon as possible.
     void request_stop() { stop_.store(true); }
     void clear_stop() { stop_.store(false); }
+    bool stop_requested() const { return stop_.load(); }
+    // A stop was asked for (or, while reading ahead, reading ahead was turned off).
+    bool stopping() const { return stop_.load() || (reading_ahead_.load() && ahead_off_.load()); }
 
     // Forget everything in memory.
     void reset_cache();
@@ -267,10 +296,16 @@ private:
         bool has_media() const { return !media.empty(); }
     };
 
+    struct Rendered;  // a request on its way to becoming a prompt (engine.cpp)
+
+    bool collect(const ChatRequest & req, Rendered & r, std::string & err) const;
+    bool fit(const ChatRequest & req, Rendered & r, std::string & err);
+    static void cut_prompt(Prompt & p, size_t n);
     bool build_prompt(const std::string & text, const std::vector<Media> & media, Prompt & out, std::string & err);
+    // `need_logits`: leave the last token's logits ready for sampling (false when reading ahead).
     bool sync(const Prompt & prompt, size_t snapshot_at, std::string & err,
               const std::function<void(int, int)> & progress, const std::function<void(int, int)> & on_media,
-              ChatStats * stats);
+              ChatStats * stats, bool need_logits);
     bool decode_text(const std::vector<token> & tokens, size_t from, size_t to, bool logits_last,
                      std::string & err, const std::function<void(int, int)> & progress, int total, size_t reused);
     bool decode_media(const Prompt & prompt, const Segment & seg, mtmd_input_chunks * chunks, std::string & err);
@@ -316,6 +351,8 @@ private:
     bool                  is_swa_      = false;
     bool                  prefer_even_ = false;  // 1-/2-bit weights: prompt steps of a multiple of 4 tokens
     std::atomic<bool>     stop_{false};
+    std::atomic<bool>     ahead_off_{false};      // reading ahead is not wanted right now
+    std::atomic<bool>     reading_ahead_{false};  // inside read_ahead()
     std::atomic<int>      want_threads_{0};
     int                   cur_threads_ = 0;
     // Threads that stay between steps (llama would start and stop them for every step), on the
