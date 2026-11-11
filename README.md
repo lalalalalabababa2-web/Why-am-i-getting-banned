@@ -157,6 +157,12 @@ as without it, the memory still matches a fresh read of the whole conversation, 
 twice reads nothing new, writing the last reply again afterwards still works, and reading ahead
 stopped part way leaves a working engine. `test_fattn` (above) runs here too.
 
+With real models (`real.sh`), the wait from pressing send to the first word of a follow-up, with
+thinking on and a previous answer of about 150 tokens, on 4 x86 threads: Qwen3.5 4B 0.49 s with
+reading ahead against 2.26 s without, Gemma 4 E2B 0.14 s against 0.71 s. The time saved grows
+with the length of the last answer, and a phone reads more slowly than this machine, so there it
+is seconds per message.
+
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
 pictures and video frames through its projector, and both Bonsai models answering a question.
