@@ -41,11 +41,6 @@ browser when Android asks. New builds install over old ones and keep models and 
   another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
   priority while another app is in front, so the phone stays smooth. A reply is saved every few
   seconds while it is written, so if Android closes the app anyway, what was written is kept.
-- **Long chats stay fast**: while writing, the model looks back over the whole conversation in
-  every layer, and in ggml that look-back went one remembered word at a time; by a few thousand
-  words it cost more than the model itself. The app's own attention kernel does it in three
-  vectorized passes, a block of words at a time for every head together (see Changes to
-  llama.cpp): the same result, several times faster once a chat is long.
 - **Reading ahead**: after a reply, and again when you start typing, the model reads the part of
   the chat your next message will need, so the next reply starts sooner. Models that think drop
   their old thinking from the chat, so their last reply has to be read again before the next one
@@ -111,35 +106,6 @@ lets it call a 4x4 one. They matter most in low-memory mode, where the weights s
 and ggml's own repacked kernels (which need a copy of the weights in memory) are not used. `tools/host-test/test_kernels.c` checks them against plain C (on ARM in CI; on
 other computers through [SIMDe](https://github.com/simd-everywhere/simde)).
 
-`0002-fattn-fast.patch` and `fattn-fast.inc`: attention while writing (and while checking drafted
-words). ggml's flash attention handles one remembered position at a time: a dot product with its
-key, one `expf`, then its value added into a half-float sum, millions of tiny steps per written
-word in a long chat. The kernel takes the same sum in three passes: every key's dot product with
-the query, four keys at a time; one vectorized exp over all the scores; the values added with
-their weights, four at a time, in 32-bit floats. While writing, each thread takes a slice of the
-conversation and runs every head over it a block at a time, so each key and value comes in from
-memory once and serves all the heads that share it. NEON on the phone (AVX2/AVX-512 on desktops
-for the tests). Used for half-float memory (the default); the 8-bit "compact" memory keeps ggml's
-own path. `OA_FATTN_OFF=1` in the environment turns it off, for comparing.
-`tools/host-test/test_fattn.cpp` checks it against the exact answer in double precision (it is
-within 2e-6 everywhere; ggml's own path is within about 1e-2, because it sums in half floats)
-over 15 shapes: long and short memories, masks with holes and values, soft caps, several drafted
-words at once, rows that can see nothing, odd head sizes and thread counts. It also passes on
-ARM (armv8.0 and armv9 with SVE2, cross-compiled and run under QEMU).
-
-Writing speed with a long chat in memory, Llama 3.2 1B Q4_K_M, 4 x86 threads (ms per word,
-lower is better):
-
-| Words in memory | 32 | 1000 | 2000 | 4000 | 8000 |
-|---|---|---|---|---|---|
-| ggml's attention | 48 | 66 | 74 | 141 | 224 |
-| this kernel | 36 | 40 | 43 | 42 | 49 |
-
-That is 4.6 times faster at 8000 words. Models with sliding windows (Gemma) or few attention
-layers (Qwen3.5 and its fine-tunes, LFM2.5) gain less, since less of their time is attention.
-The ARM CI runner measures it too (`SPEED: ... by tokens of conversation in memory`, with and
-without the kernel); a phone's numbers will differ.
-
 ## Tests
 
 `tools/host-test/run.sh` builds llama.cpp for the computer it runs on, makes tiny random models
@@ -155,13 +121,22 @@ by the test), greedy replies must be the same tokens as without drafting. And re
 the hybrid, sliding-window and plain models, the replies after reading ahead are the same tokens
 as without it, the memory still matches a fresh read of the whole conversation, reading ahead
 twice reads nothing new, writing the last reply again afterwards still works, and reading ahead
-stopped part way leaves a working engine. `test_fattn` (above) runs here too.
+stopped part way leaves a working engine.
 
 With real models (`real.sh`), the wait from pressing send to the first word of a follow-up, with
-thinking on and a previous answer of about 150 tokens, on 4 x86 threads: Qwen3.5 4B 0.49 s with
-reading ahead against 2.26 s without, Gemma 4 E2B 0.14 s against 0.71 s. The time saved grows
-with the length of the last answer, and a phone reads more slowly than this machine, so there it
-is seconds per message.
+thinking on and a previous answer of about 150 tokens: Qwen3.5 0.8B 0.11 s with reading ahead
+against 0.95 s without on GitHub's ARM runner; Qwen3.5 4B 0.49 s against 2.26 s and Gemma 4 E2B
+0.14 s against 0.71 s on 4 x86 threads. The time saved grows with the length of the last answer,
+and a phone reads more slowly than these machines, so there it is seconds per message. Models
+that do not think (Llama 3.2 1B) save little: their last reply is already in memory as written.
+
+`real.sh` also measures writing speed as a chat grows (`by tokens of conversation in memory`). On
+the ARM runner: Llama 3.2 1B 40 tokens/s with 64 tokens in memory, 30 at 2048, 25 at 4096, 19 at
+8192; Gemma 4 E2B 21, 17, 14, 12. Every written token reads the whole conversation memory, so this
+is mostly memory bandwidth. An attention kernel that ran the look-back in vectorized passes
+instead of one position at a time was tried: 4.6 times faster at 8192 tokens on x86, where ggml has
+no native half-float arithmetic, but no faster on ARM, where it does (2.15 ms against ggml's 2.01
+for one layer at 8192 tokens), so it is not in the app.
 
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),

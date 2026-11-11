@@ -30,11 +30,5 @@ g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
   -L "$OUT/llama/bin" -lllama-common -lmtmd -lllama -lggml -lggml-base -lpthread \
   -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/test_engine"
 
-# Offline AI's attention kernel against the exact answer and ggml's reference path
-g++ -std=c++17 -O2 -I "$SRC/ggml/include" "$ROOT/tools/host-test/test_fattn.cpp" \
-  -L "$OUT/llama/bin" -lggml -lggml-cpu -lggml-base -lpthread \
-  -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/test_fattn"
-"$OUT/test_fattn"
-
 # REAL_MODELS: a folder with Qwen3.5-0.8B-Q4_K_M.gguf (MTP) and mmproj-F16.gguf, for the real-model tests
 ASAN_OPTIONS=detect_leaks=0 "$OUT/test_engine" "$OUT/models" "$SRC" ${REAL_MODELS:+"$REAL_MODELS"}

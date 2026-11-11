@@ -85,8 +85,7 @@ class SettingsActivity : AppCompatActivity() {
             s.memoryMode = MemoryMode.values()[it]
         }
         switch("Compact conversation memory",
-            "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact, and " +
-                "slower to read and write with in long chats on models that look at the whole chat in every layer.$reloadNote",
+            "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact.$reloadNote",
             s.kvQ8) { s.kvQ8 = it }
         choice("Prompt batch size",
             "Tokens read per step when reading a message. Larger reads long prompts faster and needs a little more memory.$reloadNote",

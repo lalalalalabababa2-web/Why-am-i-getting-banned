@@ -556,9 +556,7 @@ static void test_read_ahead(const std::string & path, const char * label, bool r
 }
 
 // Writing speed with more and more of a conversation in memory. Models that attend to the whole
-// conversation in every layer slow down as it grows; how much is what Offline AI's attention
-// kernel (third_party/patches/fattn-fast.inc) changes. real.sh runs this twice, the second time
-// with OA_FATTN_OFF=1 for ggml's own attention.
+// conversation in every layer slow down as it grows, because every written token reads all of it.
 static void test_context_speed(const std::string & path, const char * label) {
     if (!std::ifstream(path).good()) {
         std::printf("== context speed %s: %s not there, skipped\n", label, path.c_str());
