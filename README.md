@@ -36,6 +36,11 @@ browser when Android asks. New builds install over old ones and keep models and 
   say appears in the box as you say it, written by the phone's own on-device speech recognition
   (Android 12 and later), and waits there to be checked and sent. Only an on-device recognizer is
   used, never one that sends the sound online; phones without one keep the plain send button.
+- **Talking**: hold the microphone (or tap *Talk instead of typing* in a new chat) for a spoken
+  conversation. What you say is sent when you stop, the reply is read aloud, and then it listens
+  again; tap the microphone while it reads to answer at once, or *End* to stop. It ends by itself
+  after two silent turns in a row or when you leave the app, and keeps the screen on meanwhile.
+  Speech recognition and the voice are the phone's own, so this works with no connection too.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several

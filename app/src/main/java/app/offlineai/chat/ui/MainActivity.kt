@@ -65,6 +65,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     /** A first model downloading from the empty screen: it loads the moment it is on the phone. */
     private var firstPending: String? = null
     private lateinit var starters: LinearLayout
+    private lateinit var talk: TextView
+    private lateinit var voiceBar: LinearLayout
+    private lateinit var voiceState: TextView
     private lateinit var attach: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
@@ -86,8 +89,45 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         if (ok) record() else toast("Recording needs the microphone permission.")
     }
     private val askMicToDictate = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) startDictation() else toast("Speaking a message needs the microphone permission.")
+        val toTalk = talkAfterPermission
+        talkAfterPermission = false
+        when {
+            !ok -> toast("Speaking a message needs the microphone permission.")
+            toTalk -> voice.start()
+            else -> startDictation()
+        }
     }
+    /** The microphone permission was asked for to start talking, not for one message. */
+    private var talkAfterPermission = false
+
+    /** Talking: listen, send what was said, read the reply aloud, listen again. */
+    private val voice: VoiceLoop = VoiceLoop(object : VoiceLoop.Hooks {
+        override fun listen(): Boolean {
+            // a moment first, so the last recognizer has let go of the microphone and the reply's
+            // voice has died down; what goes wrong after that ends the conversation
+            send.postDelayed({
+                if (voice.state == VoiceLoop.State.LISTENING && dictation == null && !startDictation()) voice.failed()
+            }, 300)
+            return true
+        }
+        override fun send(words: String): Boolean = sendNow(words)
+        override fun speak(text: String): Boolean {
+            val id = voiceReplyId ?: return false
+            ReadAloud.read(this@MainActivity, id, text) { voice.spoken() }
+            return true
+        }
+        override fun quiet() {
+            cancelDictation()
+            ReadAloud.stop()
+        }
+        override fun changed() = refreshVoice()
+    })
+    /** The reply being read aloud while talking. */
+    private var voiceReplyId: String? = null
+    /** The reply was stopped by hand while talking: listen again instead of reading it out. */
+    private var voiceStopped = false
+    /** Whether the send button shows the microphone (a long press starts talking). */
+    private var micShown = false
 
     /** Speech turned into text in the message box, while listening; null otherwise. */
     private var dictation: Dictation? = null
@@ -223,6 +263,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             }, lp(WRAP, WRAP).apply { topMargin = dp(8); gravity = Gravity.CENTER_HORIZONTAL })
         }
         empty.addView(starters, lp(MATCH, WRAP).apply { topMargin = dp(12) })
+        talk = pill("Talk instead of typing") { startTalk() }.apply { visibility = View.GONE }
+        empty.addView(talk, lp(WRAP, WRAP).apply { topMargin = dp(16); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(text("About & credits", 13f, Palette.text3).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -243,6 +285,18 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             addView(draftRow)
         }
         root.addView(draftScroll, lp(MATCH, WRAP))
+
+        // while talking: what is happening, and a way out
+        voiceBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(12), dp(2))
+            visibility = View.GONE
+        }
+        voiceState = text("", 14f, Palette.text2)
+        voiceBar.addView(voiceState, lp(0, WRAP, 1f))
+        voiceBar.addView(pill("End") { voice.stop() }, lp(WRAP, WRAP).apply { marginStart = dp(8) })
+        root.addView(voiceBar, lp(MATCH, WRAP))
 
         // composer
         val composer = LinearLayout(this).apply {
@@ -290,6 +344,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             scaleType = android.widget.ImageView.ScaleType.CENTER
             background = ripple(rounded(Palette.accent, dp(22).toFloat()), dp(22).toFloat())
             setOnClickListener { onSendOrStop() }
+            setOnLongClickListener {
+                if (!micShown) return@setOnLongClickListener false
+                startTalk()
+                true
+            }
         }
         composer.addView(send, lp(dp(44), dp(44)).apply { marginStart = dp(8) })
         root.addView(composer, lp(MATCH, WRAP))
@@ -343,6 +402,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     override fun onStop() {
         subtitle.removeCallbacks(ticker)
+        voice.stop()
         cancelDictation()
         super.onStop()
     }
@@ -564,8 +624,16 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             dictation?.stop()
             return
         }
+        if (voice.state == VoiceLoop.State.SPEAKING) {
+            // cut the reading short to answer
+            send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+            ReadAloud.stop()
+            voice.spoken()
+            return
+        }
         if (app.chat.generating) {
             send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+            if (voice.state == VoiceLoop.State.WAITING) voiceStopped = true
             app.chat.stop()
             return
         }
@@ -582,13 +650,55 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             if (canDictate) dictate()
             return
         }
+        sendNow(text)
+    }
+
+    /** Sends the message, with the attachments waiting in the composer; false if it could not go. */
+    private fun sendNow(text: String): Boolean {
+        if (preparing > 0 || (text.isBlank() && app.chat.draftAttachments.isEmpty())) return false
         askForNotificationsOnce()
         scroller.follow()
-        if (app.chat.send(text)) {
-            send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-            input.setText("")
-            refreshDraft()
+        if (!app.chat.send(text)) return false
+        send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+        input.setText("")
+        refreshDraft()
+        return true
+    }
+
+    /** Starts talking: from then on what you say is sent and each reply is read aloud. */
+    private fun startTalk() {
+        if (voice.on) return
+        if (app.engine.loaded == null) {
+            startActivity(Intent(this, ModelsActivity::class.java))
+            return
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            talkAfterPermission = true
+            askMicToDictate.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        voice.start()
+    }
+
+    /** While talking and waiting for the reply: once it is written, it is read aloud (unless it was stopped). */
+    private fun voiceReplyCheck() {
+        if (voice.state != VoiceLoop.State.WAITING || app.chat.generating) return
+        val last = app.chat.conversation.messages.lastOrNull()
+        val readIt = last != null && last.role == "assistant" && !last.error && !voiceStopped
+        voiceStopped = false
+        voiceReplyId = last?.id
+        voice.replied(if (readIt) last!!.content else "")
+    }
+
+    private fun refreshVoice() {
+        voiceBar.visibility = if (voice.on) View.VISIBLE else View.GONE
+        voiceState.text = when (voice.state) {
+            VoiceLoop.State.LISTENING -> "Talking: listening…"
+            VoiceLoop.State.WAITING -> "Talking: the reply is being written…"
+            VoiceLoop.State.SPEAKING -> "Talking: reading the reply aloud. Tap the microphone to answer."
+            VoiceLoop.State.OFF -> ""
+        }
+        refreshAll()
     }
 
     /** The "writing a reply" notification needs permission on Android 13 and later; asked once. */
@@ -608,8 +718,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     }
 
     /** Listens with the phone's offline speech recognition; the words appear in the box as they come. */
-    private fun startDictation() {
-        if (dictation != null || app.chat.generating) return
+    private fun startDictation(): Boolean {
+        if (dictation != null || app.chat.generating) return false
         dictationBefore = input.text.toString()
         val d = Dictation(
             this,
@@ -618,7 +728,22 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 dictation = null
                 if (words.isNotBlank()) showDictated(words)
                 endDictation()
-                if (error != null) toast(error)
+                if (voice.on) {
+                    // talking: what was said goes out as a message
+                    when (error) {
+                        null -> voice.heard(if (words.isNotBlank()) input.text.toString() else "")
+                        Dictation.NOTHING_HEARD -> {
+                            voice.heard("")
+                            if (!voice.on) toast("Stopped talking: nothing was heard twice in a row.")
+                        }
+                        else -> {
+                            toast(error)
+                            voice.failed()
+                        }
+                    }
+                } else if (error != null) {
+                    toast(error)
+                }
             },
             onLevel = { level ->
                 val scale = 1f + 0.18f * level
@@ -628,12 +753,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val why = d.start()
         if (why != null) {
             toast(why)
-            return
+            return false
         }
         dictation = d
         send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
         input.hint = "Listening…"
         updateSend()
+        return true
     }
 
     private fun showDictated(words: String) {
@@ -663,17 +789,20 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val generating = app.chat.generating
         val listening = dictation != null
         val hasSomething = input.text.isNotBlank() || app.chat.draftAttachments.isNotEmpty()
+        val speaking = voice.state == VoiceLoop.State.SPEAKING
         // nothing to send yet: speak it instead
         val mic = !generating && !listening && !hasSomething && preparing == 0 && app.engine.loaded != null && canDictate
+        micShown = mic && !voice.on
         val icon = when {
             generating || listening -> R.drawable.ic_stop
-            mic -> R.drawable.ic_mic
+            mic || speaking -> R.drawable.ic_mic
             else -> R.drawable.ic_send
         }
         send.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
         send.contentDescription = when {
             generating -> "Stop"
             listening -> "Stop listening"
+            speaking -> "Answer now"
             mic -> "Speak a message"
             else -> "Send"
         }
@@ -682,7 +811,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             val r = dp(22).toFloat()
             send.background = ripple(rounded(if (listening) Palette.danger else Palette.accent, r), r)
         }
-        val enabled = generating || listening || mic || (app.engine.loaded != null && hasSomething && preparing == 0)
+        val enabled = generating || listening || mic || speaking || (app.engine.loaded != null && hasSomething && preparing == 0)
         send.alpha = if (enabled) 1f else 0.4f
         send.isEnabled = enabled || app.engine.loaded == null
     }
@@ -713,7 +842,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         refreshEmpty()
         updateSend()
         updateJump()
-        val keepOn = app.settings.keepScreenOn && (app.chat.generating || app.engine.isLoading)
+        val keepOn = voice.on || (app.settings.keepScreenOn && (app.chat.generating || app.engine.isLoading))
         if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
@@ -723,6 +852,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty.visibility = if (noMessages) View.VISIBLE else View.GONE
         val loaded = app.engine.loaded
         starters.visibility = if (loaded != null && app.nativeError == null && !app.engine.isLoading) View.VISIBLE else View.GONE
+        talk.visibility = if (starters.visibility == View.VISIBLE && canDictate && !voice.on) View.VISIBLE else View.GONE
         when {
             app.nativeError != null -> {
                 emptyText.text = "The AI engine could not start on this phone."
@@ -903,9 +1033,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     override fun onMessagesChanged() {
         adapter.submit()
         refreshAll()
+        voiceReplyCheck()
     }
 
     override fun onConversationSwitched() {
+        voice.stop()
         adapter.reset()
         scroller.jumpToBottom(smooth = false)
         refreshDraft()

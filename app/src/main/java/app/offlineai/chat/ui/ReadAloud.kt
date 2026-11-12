@@ -1,7 +1,10 @@
 package app.offlineai.chat.ui
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 
 /**
@@ -18,13 +21,29 @@ object ReadAloud {
     /** The message being read, if any. */
     private var readingId: String? = null
 
+    /** Counts readings, so the pieces of an earlier one are told apart from the current one's. */
+    private var reading = 0
+    /** The utterance id of the current reading's last piece. */
+    private var lastPiece: String? = null
+    /** Called once the current reading is over by itself (read out, or no voice to read with). */
+    private var finished: (() -> Unit)? = null
+    private val main = Handler(Looper.getMainLooper())
+
     fun isReading(id: String): Boolean = readingId == id && (waiting.isNotEmpty() || tts?.isSpeaking == true)
 
-    fun read(context: Context, id: String, markdown: String) {
+    /**
+     * Reads the reply aloud. [onFinished] runs on the main thread once it has been read out, or
+     * at once if there is nothing to read or no voice to read with; not after [stop].
+     */
+    fun read(context: Context, id: String, markdown: String, onFinished: (() -> Unit)? = null) {
         stop()
         val pieces = pieces(spoken(markdown))
-        if (pieces.isEmpty()) return
+        if (pieces.isEmpty()) {
+            onFinished?.let { main.post(it) }
+            return
+        }
         readingId = id
+        finished = onFinished
         val engine = tts
         if (engine != null && ready) {
             say(engine, pieces)
@@ -39,7 +58,14 @@ object ReadAloud {
             ready = status == TextToSpeech.SUCCESS
             val started = tts
             if (ready && started != null) {
-                say(started, waiting.toList())
+                started.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) = over(utteranceId)
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) = over(utteranceId)
+                    override fun onError(utteranceId: String?, errorCode: Int) = over(utteranceId)
+                })
+                if (waiting.isNotEmpty()) say(started, waiting.toList())
                 waiting.clear()
             } else {
                 failed = true
@@ -47,6 +73,10 @@ object ReadAloud {
                 readingId = null
                 Toast.makeText(app, "This phone has no text-to-speech voice. Add one in Android's settings " +
                     "(System, Languages, Text-to-speech).", Toast.LENGTH_LONG).show()
+                finished?.let { f ->
+                    finished = null
+                    main.post(f)
+                }
             }
         }
     }
@@ -54,12 +84,28 @@ object ReadAloud {
     fun stop() {
         waiting.clear()
         readingId = null
+        lastPiece = null
+        finished = null
         runCatching { tts?.stop() }
     }
 
     private fun say(engine: TextToSpeech, pieces: List<String>) {
+        reading++
+        lastPiece = "offline-ai-$reading-${pieces.size - 1}"
         pieces.forEachIndexed { i, p ->
-            engine.speak(p, if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, "offline-ai-$i")
+            engine.speak(p, if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD, null, "offline-ai-$reading-$i")
+        }
+    }
+
+    /** A piece was read (or could not be); called on the speech engine's thread. */
+    private fun over(utteranceId: String?) {
+        main.post {
+            if (utteranceId == null || utteranceId != lastPiece) return@post
+            lastPiece = null
+            readingId = null
+            val f = finished
+            finished = null
+            f?.invoke()
         }
     }
 
