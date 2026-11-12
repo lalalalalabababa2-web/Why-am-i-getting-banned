@@ -28,7 +28,8 @@ browser when Android asks. New builds install over old ones and keep models and 
   file from the phone's storage or a pasted link.
 - **Chat**: replies stream in as they are written; models that think show their thinking in a
   fold above the answer; code blocks have a copy button; tables line up. Stop, write again, edit
-  and resend the last message. A reply can be read aloud by the phone's own text-to-speech
+  and resend the last message. Maths that models write as LaTeX ($\frac{3}{4}$, x^2, \boxed{51})
+  shows as readable text (3/4, x², 51), while a price like $5 stays a price. A reply can be read aloud by the phone's own text-to-speech
   (offline once its voice is installed) or shared to another app. An empty chat offers a few
   things to try. Chats are saved on the phone.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with

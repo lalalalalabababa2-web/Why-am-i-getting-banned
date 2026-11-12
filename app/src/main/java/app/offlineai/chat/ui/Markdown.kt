@@ -138,7 +138,7 @@ object Markdown {
     private fun plainCell(cell: String): String {
         var t = CELL_BREAK.replace(cell, " ")
         t = CELL_LINK.replace(t) { it.groupValues[1] }
-        return t.replace("**", "").replace("__", "").replace("~~", "").replace("`", "").trim()
+        return MathText.pretty(t).replace("**", "").replace("__", "").replace("~~", "").replace("`", "").trim()
     }
 
     /** Pads table cells so the columns line up in a monospaced font. */
@@ -234,7 +234,8 @@ object Markdown {
 
     private fun paragraph(ctx: Context, src: String): CharSequence {
         val sb = SpannableStringBuilder()
-        val lines = src.trimEnd().split('\n')
+        // maths written as LaTeX ($\frac{3}{4}$, \boxed{51}) shown as readable text
+        val lines = MathText.pretty(src).trimEnd().split('\n')
         for ((idx, raw) in lines.withIndex()) {
             if (idx > 0) sb.append('\n')
             val trimmed = raw.trimStart()
