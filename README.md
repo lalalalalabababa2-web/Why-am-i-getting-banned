@@ -49,9 +49,11 @@ browser when Android asks. New builds install over old ones and keep models and 
   loaded next to the first (for example Qwen3.5 0.8B with LFM2.5 1.2B). It takes about as long as
   one reply per answer, plus the review. With Qwen3.5 0.8B on twelve short word problems (thinking
   off): 10 of 12 right as a team of two, against 8 of 12 answering alone,
-  at 30.8 s a reply against 13.4 s on 4 x86 threads (measured with the first version of the review,
-  before it was split into checking and reply; the review caught, for example, an answer that left
-  out a step).
+  at 30.8 s a reply against 13.4 s on 4 x86 threads. The review caught, for example, an answer that
+  left out a step. Its reply sometimes mentions the separate answers; asking it to write its
+  checking first and the reply after a "Reply:" line was tried, and the 0.8B model then often left
+  the line out and got no more right than alone (8 of 12), so the review writes its reply directly.
+  A model that thinks does its checking in its thinking, which goes in the fold.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several

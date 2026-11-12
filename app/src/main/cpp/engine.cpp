@@ -1651,43 +1651,9 @@ static std::string team_review_message(const std::string & question, const std::
     for (size_t i = 0; i < answers.size(); i++) {
         m += "\n[Answer " + std::to_string(i + 1) + "]\n" + answers[i] + "\n";
     }
-    m += "\nCheck the answers against each other and look for mistakes; where they disagree, work out which one is "
-         "right. Write that checking first. Then write a line with only \"Reply:\" on it, and after it the best reply "
-         "to the message above, written as a reply to it, without mentioning the separate answers.";
+    m += "\nCheck each answer for mistakes. Where they disagree, work out which one is right. Then write the "
+         "best reply to the message above: complete on its own, without mentioning the separate answers.";
     return m;
-}
-
-// Where the review's reply starts: after its line "Reply:" (also "**Reply:**", "## Reply", or "Reply: text"
-// on one line). Gives the end of the checking and the start of the reply, or false if there is none yet.
-static bool find_review_reply(const std::string & t, size_t & check_end, size_t & reply_start) {
-    bool found = false;
-    size_t line = 0;
-    while (line < t.size()) {
-        size_t eol = t.find('\n', line);
-        const bool complete = eol != std::string::npos;
-        if (!complete) eol = t.size();
-        size_t i = line;
-        while (i < eol && (t[i] == ' ' || t[i] == '#' || t[i] == '*' || t[i] == '>')) i++;
-        static const char kWord[] = "reply";
-        size_t k = 0;
-        while (k < 5 && i + k < eol && std::tolower((unsigned char) t[i + k]) == kWord[k]) k++;
-        if (k == 5) {
-            size_t j = i + 5;
-            while (j < eol && (t[j] == '*' || t[j] == ' ')) j++;
-            if (j < eol && t[j] == ':') {
-                j++;
-                while (j < eol && (t[j] == '*' || t[j] == ' ')) j++;
-                // "Reply:" alone on its line counts once the line is over; text after it starts the reply
-                if (j < eol || complete) {
-                    check_end = line;
-                    reply_start = j < eol ? j : (complete ? eol + 1 : eol);
-                    found = true;  // the last one wins: a model may quote the instruction first
-                }
-            }
-        }
-        line = complete ? eol + 1 : t.size();
-    }
-    return found;
 }
 
 static std::string trimmed(const std::string & s) {
@@ -1784,41 +1750,22 @@ ChatResult Engine::chat_team(const ChatRequest & req, const ChatCallbacks & cb, 
     ChatRequest rv = req;
     rv.team = 0;
     if (!answers.empty()) rv.messages.back().content = team_review_message(req.messages.back().content, answers);
-    // The review's own thinking, then its checking, go in the fold under "Review:"; what follows its
-    // line "Reply:" is the reply. Until that line comes, everything it writes is checking.
+    // The review writes the reply; its own thinking, if it thinks, goes in the fold under the
+    // answers. (Asking it to write its checking first and the reply after a "Reply:" line was tried:
+    // Qwen3.5 0.8B then often left that line out or wrote no real reply, and got fewer right.)
     const std::string head = notes + "\n\nReview:\n";
-    auto split = [&](const std::string & r, const std::string & c, std::string & fold, std::string & reply) {
-        size_t check_end = 0, reply_start = 0;
-        const bool has = !answers.empty() && find_review_reply(c, check_end, reply_start);
-        const std::string checking = trimmed(has ? c.substr(0, check_end) : (answers.empty() ? "" : c));
-        std::string review = trimmed(r);
-        if (!checking.empty()) review += (review.empty() ? "" : "\n\n") + checking;
-        fold = review.empty() ? notes : head + review;
-        reply = has ? trimmed(c.substr(reply_start)) : (answers.empty() ? c : "");
-    };
     const int before = total.n_generated;
     ChatCallbacks rc;
     rc.on_prompt_progress = cb.on_prompt_progress;
     rc.on_media = cb.on_media;
     if (cb.on_update) {
         rc.on_update = [&, before](const std::string & r, const std::string & c, int g) {
-            std::string fold, reply;
-            split(r, c, fold, reply);
-            cb.on_update(fold, reply, before + g);
+            cb.on_update(trimmed(r).empty() ? notes : head + r, c, before + g);
         };
     }
     ChatResult res = chat_one(rv, rc);
     add_pass(total, res.stats);
-    size_t check_end = 0, reply_start = 0;
-    if (!answers.empty() && find_review_reply(res.content, check_end, reply_start)) {
-        std::string fold, reply;
-        split(res.reasoning, res.content, fold, reply);
-        res.reasoning = fold;
-        res.content = reply;
-    } else {
-        // no "Reply:" line: all it wrote is the reply
-        res.reasoning = trimmed(res.reasoning).empty() ? notes : head + trimmed(res.reasoning);
-    }
+    res.reasoning = trimmed(res.reasoning).empty() ? notes : head + trimmed(res.reasoning);
     res.stats = total;
     res.stats.team = n;
     return res;
