@@ -275,6 +275,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         private val actions = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
         private var actionsKey = ""
 
+        // download speed: bytes per millisecond, smoothed over the last few refreshes
+        private var lastDone = -1L
+        private var lastAt = 0L
+        private var rate = 0.0
+
         init {
             val head = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
             head.addView(text(title, 16f, bold = true), lp(0, WRAP, 1f))
@@ -393,7 +398,25 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                             else -> "Paused"
                         }
                         DownloadManager.STATUS_PENDING -> "Starting…"
-                        else -> "Downloading ${ModelStore.formatBytes(d.done)} of ${if (total > 0) ModelStore.formatBytes(total) else "?"}"
+                        else -> {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (lastDone in 0..d.done && now - lastAt >= 500) {
+                                val recent = (d.done - lastDone).toDouble() / (now - lastAt)
+                                rate = if (rate <= 0.0) recent else rate * 0.7 + recent * 0.3
+                            }
+                            if (lastDone < 0 || now - lastAt >= 500) {
+                                lastDone = d.done
+                                lastAt = now
+                            }
+                            val speed = if (rate > 0.0) " · ${ModelStore.formatBytes((rate * 1000).toLong())}/s" else ""
+                            val left = if (rate > 0.0 && total > d.done) " · ${timeLeft(((total - d.done) / rate / 1000).toLong())} left" else ""
+                            "Downloading ${ModelStore.formatBytes(d.done)} of ${if (total > 0) ModelStore.formatBytes(total) else "?"}$speed$left"
+                        }
+                    }
+                    if (d.status != DownloadManager.STATUS_RUNNING) {
+                        // paused or starting: the next speed is measured afresh
+                        lastDone = -1L
+                        rate = 0.0
                     }
                 }
                 else -> {
@@ -462,6 +485,13 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 row2.visibility = if (row2.childCount > 0) View.VISIBLE else View.GONE
             }
         }
+    }
+
+    /** "about 40 s", "12 min", "1 h 5 min". */
+    private fun timeLeft(seconds: Long): String = when {
+        seconds < 60 -> "under a minute"
+        seconds < 3600 -> "${(seconds + 30) / 60} min"
+        else -> "${seconds / 3600} h ${(seconds % 3600 + 30) / 60} min"
     }
 
     private fun downloadExtra(m: CatalogModel, kind: String, f: ExtraFile, title: String) {

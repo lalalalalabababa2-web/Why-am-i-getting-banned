@@ -171,8 +171,9 @@ class ChatsActivity : AppCompatActivity() {
     private fun rowMenu(anchor: android.view.View, c: ChatSummary) {
         val pm = PopupMenu(this, anchor)
         pm.menu.add(0, 1, 0, "Rename")
-        pm.menu.add(0, 2, 1, "Export as Markdown")
-        pm.menu.add(0, 3, 2, "Delete")
+        pm.menu.add(0, 4, 1, "Share as text")
+        pm.menu.add(0, 2, 2, "Export as Markdown")
+        pm.menu.add(0, 3, 3, "Delete")
         pm.setOnMenuItemClickListener {
             when (it.itemId) {
                 1 -> rename(c)
@@ -182,10 +183,29 @@ class ChatsActivity : AppCompatActivity() {
                     exportOne.launch("$name.md")
                 }
                 3 -> confirmDelete(c)
+                4 -> shareAsText(c)
             }
             true
         }
         pm.show()
+    }
+
+    /** The whole chat, as Markdown, to another app on the phone (notes, messages, mail). */
+    private fun shareAsText(c: ChatSummary) {
+        if (io.isShutdown) return
+        io.execute {
+            val full = app.chats.load(c.id)?.let { ChatStore.toMarkdown(it) } ?: return@execute
+            // what one hand-over between apps can carry (about 1 MB); Export keeps the whole chat
+            val text = if (full.length > 300_000) full.substring(0, 300_000) + "\n\n(cut short here; Export saves the whole chat)" else full
+            main.post {
+                if (isFinishing) return@post
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(android.content.Intent.EXTRA_SUBJECT, c.title.ifBlank { "Chat" })
+                    .putExtra(android.content.Intent.EXTRA_TEXT, text)
+                runCatching { startActivity(android.content.Intent.createChooser(send, "Share the chat")) }
+            }
+        }
     }
 
     private fun rename(c: ChatSummary) {

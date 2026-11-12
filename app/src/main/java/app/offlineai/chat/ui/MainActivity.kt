@@ -514,6 +514,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     private fun onSendOrStop() {
         if (app.chat.generating) {
+            send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
             app.chat.stop()
             return
         }
@@ -530,6 +531,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         askForNotificationsOnce()
         scroller.follow()
         if (app.chat.send(text)) {
+            send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
             input.setText("")
             refreshDraft()
         }
