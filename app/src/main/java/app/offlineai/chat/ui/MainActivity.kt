@@ -281,9 +281,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         scroller.jumpToBottom(smooth = false)
 
         app.nativeError?.let { showMessage("The engine did not start", it, null) }
+        val crashed = app.lastExit != null
         app.lastExit?.let { exit ->
             app.lastExit = null
             showMessage(exit.title, exit.message, exit.details)
+        }
+        // not on top of a problem report: it shows the next time instead
+        if (!crashed && app.nativeError == null) {
+            WhatsNew.maybeShow(this, app.settings.whatsNewSeen) { app.settings.whatsNewSeen = it }
         }
         app.loadLastModel()
         refreshDraft()

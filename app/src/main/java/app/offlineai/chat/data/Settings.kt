@@ -239,6 +239,10 @@ class Settings(context: Context) {
     var askedNotifications: Boolean
         get() = bool("asked_notifications", false)
         set(v) = put("asked_notifications", v)
+    /** The "What's new" list last shown (or skipped, on a first install). */
+    var whatsNewSeen: Int
+        get() = int("whats_new_seen", 0)
+        set(v) = put("whats_new_seen", v)
 
     /** The file of the model to load on start. */
     var lastModelFile: String?
