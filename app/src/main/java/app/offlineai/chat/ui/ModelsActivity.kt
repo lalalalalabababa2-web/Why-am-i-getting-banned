@@ -15,7 +15,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import app.offlineai.chat.App
+import app.offlineai.chat.R
 import app.offlineai.chat.data.Catalog
 import app.offlineai.chat.data.CatalogModel
 import app.offlineai.chat.data.DownloadState
@@ -69,7 +71,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             isSingleLine = true
             background = rounded(Palette.surface2, dp(20).toFloat(), dp(1), Palette.border)
             setCompoundDrawablesRelativeWithIntrinsicBounds(
-                androidx.core.content.ContextCompat.getDrawable(context, app.offlineai.chat.R.drawable.ic_search)
+                ContextCompat.getDrawable(context, R.drawable.ic_search)
                     ?.mutate()?.apply { setTint(Palette.text3) }, null, null, null,
             )
             compoundDrawablePadding = dp(8)
