@@ -607,6 +607,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     }
 
     private fun refreshAll() {
+        // who you are writing to
+        val hint = app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
+        if (input.hint?.toString() != hint) input.hint = hint
         refreshHeader()
         refreshEmpty()
         updateSend()

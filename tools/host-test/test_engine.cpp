@@ -1219,7 +1219,9 @@ static void test_thinking(const std::string & path, const char * label) {
     oa::ChatCallbacks cb;
     auto r = e.chat(req, cb);
     std::printf("  ok=%d reason=%s thinking=%zu chars answer=[%s] err=%s\n", r.ok, r.stats.stop_reason.c_str(),
-                r.reasoning.size(), r.content.c_str(), r.error.c_str());
+                r.reasoning.size(), r.content.substr(0, 200).c_str(), r.error.c_str());
+    std::printf("SPEED: %s, %d tokens written in %.0f ms: parsing %.0f ms, sampling %.0f ms, handing over %.0f ms\n", label,
+                r.stats.n_generated, r.stats.t_gen_ms, r.stats.t_parse_ms, r.stats.t_sample_ms, r.stats.t_emit_ms);
     CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
     CHECK(!r.reasoning.empty(), "%s: no thinking came back with thinking on", label);
     if (!question) CHECK(r.content.find("51") != std::string::npos, "%s: wrong or missing answer: %s", label, r.content.c_str());
