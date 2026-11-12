@@ -56,6 +56,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   one step of about a second), and the reply is the same either way.
 - **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
   sampling (each model's recommended values by default), drafting, reading ahead, picture detail.
+- **About**: what the app promises (runs on the phone, no account, online only to download a
+  model), the phone's cores, memory and engine build, credits for the engine, the model makers
+  and everyone whose files it downloads (taken from the catalog), and the full license text of
+  every library in the app (assets/licenses: the MIT and BSD notices have to go with the APK).
 
 | Group | Models |
 |---|---|

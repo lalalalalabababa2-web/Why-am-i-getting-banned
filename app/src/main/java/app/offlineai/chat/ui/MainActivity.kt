@@ -189,6 +189,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             startActivity(Intent(this, ModelsActivity::class.java))
         }
         empty.addView(emptyButton, lp(WRAP, WRAP).apply { topMargin = dp(20); gravity = Gravity.CENTER_HORIZONTAL })
+        empty.addView(text("About & credits", 13f, Palette.text3).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = ripple(null, dp(14).toFloat())
+            setOnClickListener { startActivity(Intent(this@MainActivity, AboutActivity::class.java)) }
+        }, lp(WRAP, WRAP).apply { topMargin = dp(18); gravity = Gravity.CENTER_HORIZONTAL })
         middle.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(middle, lp(MATCH, 0, 1f))
 

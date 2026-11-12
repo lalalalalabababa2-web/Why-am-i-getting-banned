@@ -295,6 +295,9 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         content.addView(sectionTitle("About"))
+        row("About Offline AI", "What it promises, what it is made with, credits and open-source licenses.") {
+            startActivity(Intent(this, AboutActivity::class.java))
+        }
         val loaded = app.engine.loaded
         content.addView(note(
             "Offline AI ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
