@@ -149,7 +149,7 @@ class ChatsActivity : AppCompatActivity() {
                 val h = ChatDates.section(c.updatedAt, now)
                 if (h != heading) {
                     heading = h
-                    content.addView(sectionTitle(h).apply { accessibilityHeading = true })
+                    content.addView(sectionTitle(h).apply { isAccessibilityHeading = true })
                 }
             }
             val row = LinearLayout(this).apply {
