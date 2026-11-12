@@ -87,14 +87,15 @@ object Palette {
         set(true, Accent.SLATE, 1f)
     }
 
-    fun set(dark: Boolean, accent: Accent, fontScale: Float) {
+    /** [system]: the phone's own accent for dark and light, used for [Accent.SYSTEM]. */
+    fun set(dark: Boolean, accent: Accent, fontScale: Float, system: Pair<Int, Int>? = null) {
         this.dark = dark
         this.fontScale = fontScale
         if (dark) {
             bg = 0xFF131415.toInt(); surface1 = 0xFF1B1C1E.toInt(); surface2 = 0xFF242629.toInt(); surface3 = 0xFF2E3034.toInt()
             border = 0xFF2D2F33.toInt(); borderStrong = 0xFF3E4146.toInt()
             text = 0xFFE6E7E9.toInt(); text2 = 0xFFA4A7AC.toInt(); text3 = 0xFF70747A.toInt()
-            this.accent = accent.dark; onAccent = 0xFF101418.toInt()
+            this.accent = system?.first ?: accent.dark; onAccent = 0xFF101418.toInt()
             positive = 0xFF7FB08A.toInt(); caution = 0xFFD4A24C.toInt(); danger = 0xFFD4706C.toInt()
             ripple = 0x1FFFFFFF; codeBg = 0xFF17181A.toInt(); inlineCode = 0xFFD9DCE0.toInt()
             synKeyword = 0xFFC792EA.toInt(); synString = 0xFFA5D6A7.toInt(); synComment = 0xFF6F7680.toInt(); synNumber = 0xFFF0B97A.toInt()
@@ -102,7 +103,7 @@ object Palette {
             bg = 0xFFF1F2F4.toInt(); surface1 = 0xFFF9FAFB.toInt(); surface2 = 0xFFFFFFFF.toInt(); surface3 = 0xFFE6E8EB.toInt()
             border = 0xFFDDE0E4.toInt(); borderStrong = 0xFFC2C6CC.toInt()
             text = 0xFF1A1B1D.toInt(); text2 = 0xFF51555B.toInt(); text3 = 0xFF7D828A.toInt()
-            this.accent = accent.light; onAccent = 0xFFFFFFFF.toInt()
+            this.accent = system?.second ?: accent.light; onAccent = 0xFFFFFFFF.toInt()
             positive = 0xFF2C7748.toInt(); caution = 0xFF8F6208.toInt(); danger = 0xFFB33F3A.toInt()
             ripple = 0x16000000; codeBg = 0xFFF6F7F8.toInt(); inlineCode = 0xFF2A2C30.toInt()
             synKeyword = 0xFF7B3FB8.toInt(); synString = 0xFF2E7D32.toInt(); synComment = 0xFF8A9099.toInt(); synNumber = 0xFFA4570F.toInt()
@@ -123,7 +124,15 @@ object Palette {
             ThemeMode.SYSTEM -> (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
                 Configuration.UI_MODE_NIGHT_YES
         }
-        set(night, settings.accent, settings.fontScale)
+        // the wallpaper's accent: a light tone on dark, a deep one on light, as the system uses them
+        val system = if (settings.accent == Accent.SYSTEM && android.os.Build.VERSION.SDK_INT >= 31) {
+            runCatching {
+                context.getColor(android.R.color.system_accent1_200) to context.getColor(android.R.color.system_accent1_600)
+            }.getOrNull()
+        } else {
+            null
+        }
+        set(night, settings.accent, settings.fontScale, system)
     }
 }
 

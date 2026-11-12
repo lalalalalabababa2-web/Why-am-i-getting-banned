@@ -171,30 +171,51 @@ class ChatStore(context: Context) {
         null
     }
 
-    fun list(): List<ChatSummary> =
-        (dir.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray()).mapNotNull { f ->
-            try {
-                val j = JSONObject(f.readText())
-                ChatSummary(j.getString("id"), j.optString("title"), j.optLong("updated_at"),
-                    j.optJSONArray("messages")?.length() ?: 0)
-            } catch (e: Exception) {
-                null
+    /**
+     * What the chat list and search need from one file, kept while the file is unchanged: opening
+     * the list or typing a search used to read and parse every chat again, every time.
+     */
+    private class Indexed(val modified: Long, val length: Long, val summary: ChatSummary, val text: String)
+    private val index = HashMap<String, Indexed>()
+
+    /** The summaries and searchable text of every chat, re-reading only files that changed. */
+    private fun indexed(): List<Indexed> = synchronized(index) {
+        val files = dir.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray()
+        val seen = HashSet<String>()
+        val out = ArrayList<Indexed>(files.size)
+        for (f in files) {
+            seen += f.name
+            val modified = f.lastModified()
+            val length = f.length()
+            val cached = index[f.name]
+            if (cached != null && cached.modified == modified && cached.length == length) {
+                out += cached
+                continue
             }
-        }.sortedByDescending { it.updatedAt }
+            try {
+                val c = Conversation.fromJson(JSONObject(f.readText()))
+                val text = buildString {
+                    append(c.title.lowercase()).append('\n')
+                    for (m in c.messages) append(m.content.lowercase()).append('\n')
+                }
+                val entry = Indexed(modified, length, ChatSummary(c.id, c.title, c.updatedAt, c.messages.size), text)
+                index[f.name] = entry
+                out += entry
+            } catch (e: Exception) {
+                index.remove(f.name)
+            }
+        }
+        index.keys.retainAll(seen)
+        out
+    }
+
+    fun list(): List<ChatSummary> = indexed().map { it.summary }.sortedByDescending { it.updatedAt }
 
     /** Conversations whose title or any message contains [query] (ignoring case). */
     fun search(query: String): List<ChatSummary> {
-        val q = query.trim()
+        val q = query.trim().lowercase()
         if (q.isEmpty()) return list()
-        return (dir.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray()).mapNotNull { f ->
-            try {
-                val c = Conversation.fromJson(JSONObject(f.readText()))
-                val hit = c.title.contains(q, true) || c.messages.any { it.content.contains(q, true) }
-                if (hit) ChatSummary(c.id, c.title, c.updatedAt, c.messages.size) else null
-            } catch (e: Exception) {
-                null
-            }
-        }.sortedByDescending { it.updatedAt }
+        return indexed().filter { q in it.text }.map { it.summary }.sortedByDescending { it.updatedAt }
     }
 
     /** Renames a conversation that is not open (the open one is renamed in memory and saved). */

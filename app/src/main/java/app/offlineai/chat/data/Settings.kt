@@ -40,6 +40,8 @@ enum class Accent(val label: String, val dark: Int, val light: Int) {
     AMBER("Amber", 0xFFE0B25C.toInt(), 0xFF85600D.toInt()),
     ROSE("Rose", 0xFFE59AA2.toInt(), 0xFFA54649.toInt()),
     VIOLET("Violet", 0xFFB3A5EA.toInt(), 0xFF62509F.toInt()),
+    // the phone's own accent, from the wallpaper (Android 12 and later; Slate before that)
+    SYSTEM("From the wallpaper", 0xFF8FA9C7.toInt(), 0xFF3C5F86.toInt()),
 }
 
 /** Everything the user can change, kept in one SharedPreferences file. */
