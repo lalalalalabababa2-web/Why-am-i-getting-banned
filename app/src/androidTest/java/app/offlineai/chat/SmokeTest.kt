@@ -11,6 +11,7 @@ import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.Catalog
 import app.offlineai.chat.ui.AboutActivity
 import app.offlineai.chat.ui.ChatsActivity
+import app.offlineai.chat.ui.Dictation
 import app.offlineai.chat.ui.MathText
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.Markdown
@@ -271,6 +272,34 @@ class SmokeTest {
         val bb = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         assertEquals("16 kHz", 16_000, bb.getInt(24))
         assertEquals("mono", 1, bb.getShort(22).toInt())
+    }
+
+    /** With the box empty the send button offers speaking instead, on phones that turn speech into text offline. */
+    @Test
+    fun emptyBoxOffersSpeakingWhereItCan() {
+        // an earlier test may have it loaded already: never rewrite a file the engine has mapped
+        val have = File(app.models.dir, "test-llama.gguf")
+        load(if (have.isFile && have.length() > 0) have else installModel("test-llama.gguf"))
+        onMain { app.chat.newChat() }
+        ActivityScenario.launch(MainActivity::class.java).use { sc ->
+            Thread.sleep(500)
+            var canSpeak = false
+            var button: String? = null
+            sc.onActivity { a ->
+                canSpeak = Dictation.available(a)
+                button = findDescribed(a.window.decorView, setOf("Send", "Speak a message"))?.contentDescription?.toString()
+            }
+            Log.i(TAG, "offline speech recognition: $canSpeak, button: $button")
+            assertEquals(if (canSpeak) "Speak a message" else "Send", button)
+        }
+    }
+
+    private fun findDescribed(v: android.view.View, descriptions: Set<String>): android.view.View? {
+        if (v.contentDescription?.toString() in descriptions) return v
+        if (v is android.view.ViewGroup) {
+            for (i in 0 until v.childCount) findDescribed(v.getChildAt(i), descriptions)?.let { return it }
+        }
+        return null
     }
 
     @Test

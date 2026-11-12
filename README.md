@@ -32,6 +32,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   shows as readable text (3/4, x², 51), while a price like $5 stays a price. A reply can be read aloud by the phone's own text-to-speech
   (offline once its voice is installed) or shared to another app. An empty chat offers a few
   things to try. Chats are saved on the phone.
+- **Speaking a message**: with the message box empty, the send button is a microphone. What you
+  say appears in the box as you say it, written by the phone's own on-device speech recognition
+  (Android 12 and later), and waits there to be checked and sent. Only an on-device recognizer is
+  used, never one that sends the sound online; phones without one keep the plain send button.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several

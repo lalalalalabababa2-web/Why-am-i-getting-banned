@@ -85,6 +85,18 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) record() else toast("Recording needs the microphone permission.")
     }
+    private val askMicToDictate = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) startDictation() else toast("Speaking a message needs the microphone permission.")
+    }
+
+    /** Speech turned into text in the message box, while listening; null otherwise. */
+    private var dictation: Dictation? = null
+    /** What the box held when listening started; the spoken words go after it. */
+    private var dictationBefore = ""
+    /** Whether this phone turns speech into text offline (then an empty box offers a microphone). */
+    private val canDictate by lazy { Dictation.available(this) }
+    /** The send button's colour as last set (accent, or the listening colour). */
+    private var sendListening: Boolean? = null
 
     /** Theme, accent and text size this screen was built with; a change rebuilds it. */
     private var look = ""
@@ -331,6 +343,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     override fun onStop() {
         subtitle.removeCallbacks(ticker)
+        cancelDictation()
         super.onStop()
     }
 
@@ -545,6 +558,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     }
 
     private fun onSendOrStop() {
+        if (dictation != null) {
+            // done speaking: the last words come in a moment
+            send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+            dictation?.stop()
+            return
+        }
         if (app.chat.generating) {
             send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
             app.chat.stop()
@@ -559,7 +578,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             toast("Wait a moment: the attachments are still being prepared.")
             return
         }
-        if (text.isBlank() && app.chat.draftAttachments.isEmpty()) return
+        if (text.isBlank() && app.chat.draftAttachments.isEmpty()) {
+            if (canDictate) dictate()
+            return
+        }
         askForNotificationsOnce()
         scroller.follow()
         if (app.chat.send(text)) {
@@ -577,13 +599,90 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
+    private fun dictate() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startDictation()
+        } else {
+            askMicToDictate.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    /** Listens with the phone's offline speech recognition; the words appear in the box as they come. */
+    private fun startDictation() {
+        if (dictation != null || app.chat.generating) return
+        dictationBefore = input.text.toString()
+        val d = Dictation(
+            this,
+            onPartial = { words -> showDictated(words) },
+            onDone = { words, error ->
+                dictation = null
+                if (words.isNotBlank()) showDictated(words)
+                endDictation()
+                if (error != null) toast(error)
+            },
+            onLevel = { level ->
+                val scale = 1f + 0.18f * level
+                send.animate().scaleX(scale).scaleY(scale).setDuration(90).start()
+            },
+        )
+        val why = d.start()
+        if (why != null) {
+            toast(why)
+            return
+        }
+        dictation = d
+        send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+        input.hint = "Listening…"
+        updateSend()
+    }
+
+    private fun showDictated(words: String) {
+        val before = dictationBefore.trimEnd()
+        val text = if (before.isEmpty()) words.replaceFirstChar { it.uppercase() } else "$before $words"
+        input.setText(text)
+        input.setSelection(text.length)
+    }
+
+    /** Back to typing; what was heard so far stays in the box. */
+    private fun cancelDictation() {
+        val d = dictation ?: return
+        dictation = null
+        d.cancel()
+        endDictation()
+    }
+
+    private fun endDictation() {
+        send.animate().cancel()
+        send.scaleX = 1f
+        send.scaleY = 1f
+        input.hint = app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
+        updateSend()
+    }
+
     private fun updateSend() {
         val generating = app.chat.generating
-        val icon = if (generating) R.drawable.ic_stop else R.drawable.ic_send
-        send.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
-        send.contentDescription = if (generating) "Stop" else "Send"
+        val listening = dictation != null
         val hasSomething = input.text.isNotBlank() || app.chat.draftAttachments.isNotEmpty()
-        val enabled = generating || (app.engine.loaded != null && hasSomething && preparing == 0)
+        // nothing to send yet: speak it instead
+        val mic = !generating && !listening && !hasSomething && preparing == 0 && app.engine.loaded != null && canDictate
+        val icon = when {
+            generating || listening -> R.drawable.ic_stop
+            mic -> R.drawable.ic_mic
+            else -> R.drawable.ic_send
+        }
+        send.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
+        send.contentDescription = when {
+            generating -> "Stop"
+            listening -> "Stop listening"
+            mic -> "Speak a message"
+            else -> "Send"
+        }
+        if (sendListening != listening) {
+            sendListening = listening
+            val r = dp(22).toFloat()
+            send.background = ripple(rounded(if (listening) Palette.danger else Palette.accent, r), r)
+        }
+        val enabled = generating || listening || mic || (app.engine.loaded != null && hasSomething && preparing == 0)
         send.alpha = if (enabled) 1f else 0.4f
         send.isEnabled = enabled || app.engine.loaded == null
     }
@@ -608,7 +707,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     private fun refreshAll() {
         // who you are writing to
-        val hint = app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
+        val hint = if (dictation != null) "Listening…" else app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
         if (input.hint?.toString() != hint) input.hint = hint
         refreshHeader()
         refreshEmpty()

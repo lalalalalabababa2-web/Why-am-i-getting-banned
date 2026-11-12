@@ -13,8 +13,17 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- only to ask, from Settings, that battery saving leave a long reply alone -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- only asked for when you choose to record a sound for a model that hears -->
+    <!-- only asked for when you choose to record a sound for a model that hears, or to speak a
+         message (turned into text by the phone's own offline speech recognition) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- the phone's speech recognition, for speaking a message (Android 11 and later only show
+         an app the services it says it uses) -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <!--
         extractNativeLibs: the engine loads its CPU variants (one library per ARM feature level)
