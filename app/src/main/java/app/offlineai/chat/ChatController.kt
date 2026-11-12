@@ -44,6 +44,12 @@ class ChatController(private val app: App) {
         private set
     val generating: Boolean get() = streaming != null
 
+    /**
+     * The conversation the reply being written belongs to. It is saved into that one even when
+     * another chat is opened meanwhile; null once that conversation has been deleted.
+     */
+    private var replyConversation: Conversation? = null
+
     var promptDone = 0
         private set
     var promptTotal = 0
@@ -61,7 +67,7 @@ class ChatController(private val app: App) {
     /** Seconds left reading the message, from the speed so far; -1 until there is a speed to go by. */
     fun promptSecondsLeft(): Int {
         if (promptT0 == 0L || promptDone <= promptDone0 || promptTotal <= promptDone) return -1
-        val ms = android.os.SystemClock.elapsedRealtime() - promptT0
+        val ms = SystemClock.elapsedRealtime() - promptT0
         if (ms < 300) return -1
         val perMs = (promptDone - promptDone0).toDouble() / ms
         return ((promptTotal - promptDone) / perMs / 1000.0).toInt() + 1
@@ -123,7 +129,7 @@ class ChatController(private val app: App) {
     /** Attachments picked but never sent are dropped, files and all, when you leave the chat. */
     private fun discardDraft() {
         if (draftAttachments.isEmpty()) return
-        app.chats.deleteFiles(draftAttachments)
+        app.chats.deleteFiles(conversation.id, draftAttachments)
         draftAttachments.clear()
     }
 
@@ -146,9 +152,16 @@ class ChatController(private val app: App) {
         switched()
     }
 
-    /** A conversation was deleted elsewhere. */
+    /** A conversation is being deleted elsewhere: nothing may save it again. */
     fun forget(id: String) {
+        if (replyConversation?.id == id) replyConversation = null
         if (conversation.id == id) newChat()
+    }
+
+    /** Every conversation is being deleted. */
+    fun forgetAll() {
+        replyConversation = null
+        newChat()
     }
 
     /** The open conversation was renamed or changed elsewhere; reload it from disk. */
@@ -185,7 +198,7 @@ class ChatController(private val app: App) {
     fun mediaDir() = app.chats.mediaDir(conversation.id)
 
     fun removeDraftAttachment(a: Attachment) {
-        if (draftAttachments.remove(a)) app.chats.deleteFiles(listOf(a))
+        if (draftAttachments.remove(a)) app.chats.deleteFiles(conversation.id, listOf(a))
     }
 
     /** Writes the last reply again. */
@@ -217,7 +230,7 @@ class ChatController(private val app: App) {
     fun delete(message: ChatMessage) {
         if (generating) return
         conversation.messages.remove(message)
-        app.chats.deleteFiles(message.attachments)
+        app.chats.deleteFiles(conversation.id, message.attachments)
         save()
         changed()
     }
@@ -246,6 +259,7 @@ class ChatController(private val app: App) {
         val request = buildRequest(model)
         conversation.messages.add(reply)
         streaming = reply
+        replyConversation = conversation
         lastPartialSave = SystemClock.uptimeMillis()
         promptDone = 0
         promptTotal = 0
@@ -266,7 +280,7 @@ class ChatController(private val app: App) {
             override fun onPromptProgress(done: Int, total: Int) {
                 if (promptT0 == 0L || done < promptDone) {
                     // the speed is measured from the first progress report on
-                    promptT0 = android.os.SystemClock.elapsedRealtime()
+                    promptT0 = SystemClock.elapsedRealtime()
                     promptDone0 = done
                 }
                 promptDone = done
@@ -284,7 +298,7 @@ class ChatController(private val app: App) {
                 val now = SystemClock.uptimeMillis()
                 if (now - lastPartialSave > 3000) {
                     lastPartialSave = now
-                    save()
+                    replyConversation?.let { app.chats.saveAsync(it) }
                 }
             }
 
@@ -303,6 +317,8 @@ class ChatController(private val app: App) {
 
     private fun finish(reply: ChatMessage, o: ChatOutcome) {
         streaming = null
+        val convo = replyConversation
+        replyConversation = null
         reply.partial = false
         GenerationService.stop(app)
         if (!o.ok) {
@@ -313,16 +329,17 @@ class ChatController(private val app: App) {
             reply.content = o.content.trim()
             reply.reasoning = o.reasoning.trim()
             if (reply.content.isEmpty() && reply.reasoning.isEmpty() && o.stopReason == "stopped") {
-                conversation.messages.remove(reply)
+                convo?.messages?.remove(reply)
             } else {
                 reply.stats = describe(o)
             }
         }
-        save()
+        // into the chat it was written for, which may not be the one open now
+        convo?.let { app.chats.saveAsync(it) }
         changed()
         status()
         // while you read the reply, the model gets ready for your next message
-        if (!reply.error && app.inFront) readAhead()
+        if (!reply.error && app.inFront && convo === conversation) readAhead()
         if (!app.inFront && app.settings.replyNotifications && o.stopReason != "stopped") {
             val text = (if (reply.content.isNotBlank()) reply.content else reply.reasoning).take(300)
             GenerationService.replyReady(app, if (reply.error) "The reply failed" else "Reply ready", text.ifBlank { "Open the chat to see it." })

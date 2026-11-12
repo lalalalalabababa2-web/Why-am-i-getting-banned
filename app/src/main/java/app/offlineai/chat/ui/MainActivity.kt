@@ -348,6 +348,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     /** Copies picked files into the chat's own storage (pictures shrunk, videos turned into frames, sound into WAV). */
     private fun importMedia(kind: String, uris: List<Uri>) {
+        val chatId = app.chat.conversation.id
         val dir = app.chat.mediaDir()
         val detail = app.settings.pictureDetail
         val frames = app.settings.videoFrames
@@ -367,6 +368,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 runOnUiThread {
                     preparing = (preparing - 1).coerceAtLeast(0)
                     result.onSuccess { a ->
+                        if (app.chat.conversation.id != chatId) {
+                            // another chat was opened meanwhile; the files are in this one's folder
+                            app.chats.deleteFiles(chatId, listOf(a))
+                            return@onSuccess
+                        }
                         app.chat.draftAttachments.add(a)
                         if (a.kind == "audio" && a.durationMs >= Settings.MAX_SOUND_SECONDS * 1000L - 500) {
                             toast("Only the first ${Settings.MAX_SOUND_SECONDS} seconds are kept; that is as much as the model hears at once.")

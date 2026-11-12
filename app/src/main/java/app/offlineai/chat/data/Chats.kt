@@ -6,6 +6,7 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * A picture, a sound or a video sent with a message, copied into the app's own storage. A video
@@ -99,11 +100,13 @@ class Conversation(
 
     companion object {
         fun fromJson(j: JSONObject): Conversation {
+            val updated = j.optLong("updated_at")
             val c = Conversation(
                 id = j.getString("id"),
                 title = j.optString("title"),
-                createdAt = j.optLong("created_at"),
-                updatedAt = j.optLong("updated_at"),
+                // the date models are told the chat is from: fixed, or their prompt would change with the day
+                createdAt = j.optLong("created_at").takeIf { it > 0 } ?: updated.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                updatedAt = updated,
             )
             val arr = j.optJSONArray("messages") ?: JSONArray()
             for (i in 0 until arr.length()) c.messages.add(ChatMessage.fromJson(arr.getJSONObject(i)))
@@ -123,11 +126,10 @@ class ChatStore(context: Context) {
     fun mediaDir(chatId: String): File = File(media, chatId).apply { mkdirs() }
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "chat-io") }
 
-    /** Writes a conversation now (on the calling thread). */
+    /** Writes a conversation and waits until it is written (after any saves still waiting). */
     fun save(c: Conversation) {
-        if (c.messages.isEmpty()) return
-        c.updatedAt = System.currentTimeMillis()
-        write(c.id, c.toJson().toString())
+        saveAsync(c)
+        flush()
     }
 
     /**
@@ -142,6 +144,17 @@ class ChatStore(context: Context) {
         io.execute { write(id, text) }
     }
 
+    /** Waits for the saves already handed to the writing thread. */
+    private fun flush() {
+        try {
+            io.submit {}.get(10, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            // a write that hangs this long is not worth freezing the screen for
+        }
+    }
+
+    /** One writer at a time: two writes of one chat would share its temporary file. */
+    @Synchronized
     private fun write(id: String, text: String) {
         try {
             val tmp = File(dir, "$id.json.tmp")
@@ -184,25 +197,39 @@ class ChatStore(context: Context) {
         }.sortedByDescending { it.updatedAt }
     }
 
+    /** Renames a conversation that is not open (the open one is renamed in memory and saved). */
     fun rename(id: String, title: String) {
+        flush()
         val c = load(id) ?: return
         c.title = title
         write(id, c.toJson().toString())
     }
 
+    /** Deletes a conversation and its files; a save still waiting is written first, not after. */
     fun delete(id: String) {
+        flush()
         File(dir, "$id.json").delete()
         File(media, id).deleteRecursively()
     }
 
     fun deleteAll() {
+        flush()
         dir.listFiles()?.forEach { it.delete() }
         media.deleteRecursively()
     }
 
-    /** Removes the files of attachments no longer in the conversation. */
-    fun deleteFiles(attachments: List<Attachment>) {
-        attachments.flatMap { it.files }.forEach { runCatching { File(it).delete() } }
+    /**
+     * Removes the files of attachments no longer in conversation [chatId]. Only files in that
+     * conversation's own folder: an imported copy of a chat names the files of the original.
+     */
+    fun deleteFiles(chatId: String, attachments: List<Attachment>) {
+        val own = runCatching { File(media, chatId).canonicalPath + File.separator }.getOrNull() ?: return
+        for (path in attachments.flatMap { it.files }) {
+            runCatching {
+                val f = File(path)
+                if (f.canonicalPath.startsWith(own)) f.delete()
+            }
+        }
     }
 
     /** All conversations as one JSON document, for a backup. */
@@ -238,7 +265,8 @@ class ChatStore(context: Context) {
             } catch (e: Exception) {
                 continue
             }
-            val id = if (File(dir, "${c.id}.json").exists()) UUID.randomUUID().toString() else c.id
+            // the id names its file: one that could point elsewhere, or is taken, gets a new one
+            val id = if (!SAFE_ID.matches(c.id) || File(dir, "${c.id}.json").exists()) UUID.randomUUID().toString() else c.id
             val copy = Conversation(id, c.title, c.createdAt, c.updatedAt, c.messages)
             write(id, copy.toJson().toString())
             added++
@@ -247,6 +275,8 @@ class ChatStore(context: Context) {
     }
 
     companion object {
+        private val SAFE_ID = Regex("[A-Za-z0-9_-]{1,64}")
+
         /** One conversation as Markdown, for reading or sharing. */
         fun toMarkdown(c: Conversation): String = buildString {
             append("# ").append(c.title.ifBlank { "Chat" }).append("\n\n")

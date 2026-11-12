@@ -450,15 +450,19 @@ class ModelStore(private val context: Context) {
         Thread {
             var name = "model.gguf"
             var size = -1L
-            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val si = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (ni >= 0) name = c.getString(ni) ?: name
-                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+            try {
+                context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val si = c.getColumnIndex(OpenableColumns.SIZE)
+                        if (ni >= 0) name = c.getString(ni) ?: name
+                        if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                    }
                 }
+            } catch (e: Exception) {
+                // a provider that will not say: the copy below still works, or says why not
             }
-            name = name.replace('/', '_')
+            name = safeFileName(name)
             if (!name.endsWith(".gguf", ignoreCase = true)) name += ".gguf"
             val part = File(dir, "$name.part")
             val error = try {
@@ -524,10 +528,16 @@ class ModelStore(private val context: Context) {
             if (!url.startsWith("http://") && !url.startsWith("https://")) return null
             // A Hugging Face page link to a file (…/blob/main/x.gguf) downloads the page, not the file.
             url = url.replace("/blob/", "/resolve/")
-            val path = Uri.parse(url).path ?: return null
-            val name = path.substringAfterLast('/')
+            val path = Uri.parse(url).path ?: return null  // already decoded
+            val name = safeFileName(path.substringAfterLast('/'))
             if (!name.endsWith(".gguf", ignoreCase = true)) return null
-            return url to Uri.decode(name)
+            return url to name
+        }
+
+        /** A name that stays inside the model folder: no folders in it, not hidden, not empty. */
+        fun safeFileName(raw: String): String {
+            val base = raw.substringAfterLast('/').substringAfterLast('\\')
+            return base.filter { it >= ' ' && it != ':' }.trim().trimStart('.').ifBlank { "model.gguf" }
         }
 
         fun describeFailure(reason: Int): String = when (reason) {

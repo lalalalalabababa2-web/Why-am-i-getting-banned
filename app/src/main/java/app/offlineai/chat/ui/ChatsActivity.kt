@@ -204,7 +204,9 @@ class ChatsActivity : AppCompatActivity() {
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val title = field.text.toString().trim()
-                if (app.chat.conversation.id == c.id && !app.chat.generating) {
+                if (app.chat.conversation.id == c.id) {
+                    // the open chat: its copy in memory is the one saved from now on (a reply being
+                    // written saves it every few seconds), so the new title goes there
                     app.chat.conversation.title = title
                     app.chats.save(app.chat.conversation)
                 } else {
@@ -221,8 +223,9 @@ class ChatsActivity : AppCompatActivity() {
             .setTitle("Delete this chat?")
             .setMessage(c.title.ifBlank { "Untitled" })
             .setPositiveButton("Delete") { _, _ ->
-                app.chats.delete(c.id)
+                // first, so a reply still being written into it does not save it again
                 app.chat.forget(c.id)
+                app.chats.delete(c.id)
                 load()
             }
             .setNegativeButton("Cancel", null)
@@ -234,7 +237,7 @@ class ChatsActivity : AppCompatActivity() {
             .setTitle("Delete all chats?")
             .setMessage("This cannot be undone. Export them first if you want a copy.")
             .setPositiveButton("Delete all") { _, _ ->
-                app.chat.newChat()
+                app.chat.forgetAll()
                 app.chats.deleteAll()
                 load()
             }

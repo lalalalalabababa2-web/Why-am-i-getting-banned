@@ -152,6 +152,9 @@ data class ChatOutcome(
         }
 
         fun failure(message: String) = ChatOutcome(false, "", "", message, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, "error")
+
+        /** Stopped before the engine started on it. */
+        fun stoppedEarly() = ChatOutcome(true, "", "", "", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0, "stopped")
     }
 }
 
@@ -187,6 +190,14 @@ class EngineController {
     private val cancelLoad = AtomicBoolean(false)
     /** The conversation to read ahead next, until the engine thread picks it up. */
     private val aheadRequest = AtomicReference<ByteArray?>(null)
+    /**
+     * Stop was pressed for the reply that is waiting or being written. The engine forgets a stop
+     * that comes before it starts on a reply (a reply can wait about a second behind a read-ahead
+     * step), so this one is kept until the reply ends and given to the engine again.
+     */
+    private val replyStopped = AtomicBoolean(false)
+    /** A reply is queued and the engine has not started on it. */
+    private val replyWaiting = AtomicBoolean(false)
 
     @Volatile var phase: Phase = Phase.IDLE
         private set
@@ -341,12 +352,12 @@ class EngineController {
         queue.put { if (loaded != null) NativeEngine.nativeReleaseMedia() }
     }
 
-    /** Threads for the next step; takes effect between tokens, even in the middle of a reply. */
     /** Gentle mode while another app is in front (see [NativeEngine.nativeSetBackground]). */
     fun setBackground(on: Boolean, threads: Int) {
         runCatching { NativeEngine.nativeSetBackground(on, threads) }
     }
 
+    /** Threads for the next step; takes effect between tokens, even in the middle of a reply. */
     fun setThreads(n: Int) {
         if (n > 0) NativeEngine.nativeSetThreads(n)
     }
@@ -398,10 +409,13 @@ class EngineController {
         // a read-ahead in progress finishes the step it is on (about a second, and what it read is
         // what this reply needs first), then the reply takes over
         endReadAhead()
+        replyStopped.set(false)
+        replyWaiting.set(true)
         phase = Phase.BUSY
         announce()
         val bytes = request.toString().toByteArray(Charsets.UTF_8)
         queue.put {
+            replyWaiting.set(false)
             val model = loaded
             if (model == null) {
                 phase = Phase.IDLE
@@ -409,36 +423,63 @@ class EngineController {
                 main.post { listener.onDone(ChatOutcome.failure("No model is loaded.")) }
                 return@put
             }
+            if (replyStopped.get()) {
+                // stopped while it waited: nothing to write
+                phase = Phase.READY
+                announce()
+                main.post { listener.onDone(ChatOutcome.stoppedEarly()) }
+                return@put
+            }
             phase = Phase.BUSY
             activityLog?.invoke("writing:${model.key}")
-            val result = NativeEngine.nativeChat(bytes, object : ChatListener {
-                override fun onPromptProgress(done: Int, total: Int) {
-                    main.post { listener.onPromptProgress(done, total) }
-                }
+            // whatever happens below, the reply ends: a chat left waiting for it could never send again
+            var outcome: ChatOutcome? = null
+            try {
+                val result = NativeEngine.nativeChat(bytes, object : ChatListener {
+                    /** A stop pressed in the moment between the check above and the engine starting. */
+                    private fun keepStopped() {
+                        if (replyStopped.get()) NativeEngine.nativeStop()
+                    }
 
-                override fun onUpdate(reasoning: ByteArray, content: ByteArray, generated: Int) {
-                    val r = reasoning.toString(Charsets.UTF_8)
-                    val c = content.toString(Charsets.UTF_8)
-                    main.post { listener.onUpdate(r, c, generated) }
-                }
+                    override fun onPromptProgress(done: Int, total: Int) {
+                        keepStopped()
+                        main.post { listener.onPromptProgress(done, total) }
+                    }
 
-                override fun onMedia(index: Int, total: Int) {
-                    main.post { listener.onMedia(index, total) }
+                    override fun onUpdate(reasoning: ByteArray, content: ByteArray, generated: Int) {
+                        keepStopped()
+                        val r = reasoning.toString(Charsets.UTF_8)
+                        val c = content.toString(Charsets.UTF_8)
+                        main.post { listener.onUpdate(r, c, generated) }
+                    }
+
+                    override fun onMedia(index: Int, total: Int) {
+                        keepStopped()
+                        main.post { listener.onMedia(index, total) }
+                    }
+                })
+                outcome = try {
+                    ChatOutcome.parse(result.toString(Charsets.UTF_8))
+                } catch (e: Exception) {
+                    ChatOutcome.failure("The engine returned something unreadable.")
                 }
-            })
-            activityLog?.invoke("ready:${model.key}")
-            val outcome = try {
-                ChatOutcome.parse(result.toString(Charsets.UTF_8))
-            } catch (e: Exception) {
-                ChatOutcome.failure("The engine returned something unreadable.")
+            } finally {
+                activityLog?.invoke("ready:${model.key}")
+                phase = if (loaded != null) Phase.READY else Phase.IDLE
+                announce()
+                val done = outcome ?: ChatOutcome.failure("Something went wrong in the app while writing this reply.")
+                main.post { listener.onDone(done) }
             }
-            phase = if (loaded != null) Phase.READY else Phase.IDLE
-            announce()
-            main.post { listener.onDone(outcome) }
         }
     }
 
+    /**
+     * Stops the reply (or speed test) in progress. A reply still waiting is dropped when its turn
+     * comes, and what the engine is doing meanwhile (reading ahead) finishes its step instead of
+     * being cut off: a step cut short loses a hybrid model's whole memory of the conversation.
+     */
     fun stop() {
-        NativeEngine.nativeStop()
+        replyStopped.set(true)
+        if (!replyWaiting.get()) NativeEngine.nativeStop()
     }
 }
