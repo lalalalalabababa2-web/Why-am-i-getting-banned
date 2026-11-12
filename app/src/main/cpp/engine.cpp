@@ -171,6 +171,9 @@ static ChatResult & with_faults(ChatResult & r, long faults0) {
 // Drafted tokens a hybrid model can copy from the conversation per step (one recurrent-state copy each).
 static constexpr int kRsNgram = 3;
 
+// Most tokens a block drafter (DSpark, DFlash) may propose per step: steps of 8 tokens.
+static constexpr int kMaxBlockDraft = 7;
+
 static double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -210,7 +213,10 @@ void Engine::free_spec() {
     }
     spec_kind_.clear();
     spec_n_max_ = 0;
+    spec_made_n_ = 0;
     ngram_ = false;
+    dft_own_mem_ = false;
+    dft_block_ = false;
 }
 
 void Engine::release_media() {
@@ -247,6 +253,26 @@ void Engine::unload() {
     free_pools();
 }
 
+// The drafting set-up for `n_max` drafted tokens per step, from what load() found.
+common_speculative * Engine::make_spec(int n_max) {
+    common_params_speculative sp;
+    sp.types.clear();
+    if (ngram_) sp.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+    if (ctx_dft_) sp.types.push_back((common_speculative_type) dft_type_);
+    sp.draft.n_max = n_max;
+    sp.draft.n_min = 0;
+    sp.draft.ctx_tgt = ctx_;
+    sp.draft.ctx_dft = ctx_dft_;
+    sp.ngram_mod.n_match = 24;
+    sp.ngram_mod.n_max = ngram_n_max_;
+    sp.ngram_mod.n_min = ngram_n_min_;
+    try {
+        return common_speculative_init(sp, 1);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+}
+
 struct ProgressBridge {
     const std::function<bool(float)> * fn;
 };
@@ -273,8 +299,8 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     stop_.store(false);
 
     // What kind of drafting this file allows: its own MTP head (Qwen3.5 "-MTP" files), or a
-    // separate drafter file next to it (Gemma 4).
-    const int n_draft = params.spec_n_max > 0 ? std::min(4, params.spec_n_max) : 0;
+    // separate drafter file next to it: Gemma 4's MTP assistant, or a DSpark/DFlash block
+    // drafter (LFM2.5-VL 3B's), which guesses a whole block of tokens in one step.
     has_mtp_ = false;
     try {
         for (auto t : common_speculative_types_from_gguf(path)) {
@@ -282,8 +308,22 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         }
     } catch (...) {
     }
-    const bool file_mtp = n_draft > 0 && has_mtp_;
-    const bool use_drafter = n_draft > 0 && !file_mtp && !params.drafter_path.empty();
+    const bool file_mtp = params.spec_n_max > 0 && has_mtp_;
+    const bool use_drafter = params.spec_n_max > 0 && !file_mtp && !params.drafter_path.empty();
+    dft_type_ = COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+    if (use_drafter) {
+        try {
+            for (auto t : common_speculative_types_from_gguf(params.drafter_path)) {
+                if (t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) dft_type_ = t;
+            }
+        } catch (...) {
+        }
+    }
+    const bool block_drafter = use_drafter && dft_type_ != COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+    // A head drafts one token per pass, so a few are the most that pay on a CPU. A block drafter
+    // writes its whole block in one pass, and checking 8 tokens costs the model about two passes
+    // of its 4-token kernels, so up to 7 can pay off when most of them are right.
+    const int n_draft = params.spec_n_max > 0 ? std::min(block_drafter ? kMaxBlockDraft : 4, params.spec_n_max) : 0;
 
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
@@ -390,7 +430,9 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     // ---- speculative decoding ----
     if ((n_draft > 0 || want_ngram) && can_draft) {
         auto dcp = cp;
-        dcp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        // a block drafter is a small model of its own, with its own memory; it borrows the
+        // model's embeddings through ctx_other when it has none
+        dcp.ctx_type = block_drafter ? LLAMA_CONTEXT_TYPE_DEFAULT : LLAMA_CONTEXT_TYPE_MTP;
         dcp.n_rs_seq = 0;
         dcp.ctx_other = ctx_;
         dcp.n_ctx = llama_n_ctx(ctx_);
@@ -417,32 +459,30 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         if (ctx_dft_) {
             llama_set_abort_callback(ctx_dft_, abort_cb, this);
             if (pool_cur_) llama_attach_threadpool(ctx_dft_, pool_cur_, pool_cur_);
+            // whether its memory is its own (kept in snapshots) or the model's (Gemma 4's assistant)
+            dft_own_mem_ = block_drafter || llama_get_ctx_other(ctx_dft_) != ctx_;
         }
 
         const bool head = ctx_dft_ != nullptr;
         if (head || want_ngram) {
-            common_params_speculative sp;
-            sp.types.clear();
-            if (want_ngram) sp.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
-            if (head) sp.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
-            sp.draft.n_max = n_draft;
-            sp.draft.n_min = 0;
-            sp.draft.ctx_tgt = ctx_;
-            sp.draft.ctx_dft = ctx_dft_;
-            sp.ngram_mod.n_match = 24;
-            sp.ngram_mod.n_max = ngram_n_max;
-            sp.ngram_mod.n_min = recurrent ? kRsNgram : 15;
-            try {
-                spec_ = common_speculative_init(sp, 1);
-            } catch (const std::exception &) {
-                spec_ = nullptr;
-            }
+            ngram_ = want_ngram;
+            ngram_n_max_ = ngram_n_max;
+            ngram_n_min_ = recurrent ? kRsNgram : 15;
+            if (head) dft_type_ = file_mtp ? (int) COMMON_SPECULATIVE_TYPE_DRAFT_MTP : dft_type_;
+            dft_block_ = head && block_drafter;
+            spec_ = make_spec(n_draft);
             if (spec_) {
                 spec_n_max_ = n_draft;
-                ngram_ = want_ngram;
-                if (head) spec_kind_ = file_mtp ? "mtp" : "drafter";
+                spec_made_n_ = n_draft;
+                if (head) {
+                    spec_kind_ = file_mtp ? "mtp"
+                               : dft_type_ == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK ? "dspark"
+                               : dft_type_ == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH ? "dflash" : "drafter";
+                }
                 if (want_ngram) spec_kind_ += spec_kind_.empty() ? "ngram" : "+ngram";
             } else {
+                ngram_ = false;
+                dft_block_ = false;
                 if (ctx_dft_) { llama_free(ctx_dft_); ctx_dft_ = nullptr; }
                 if (model_dft_) { llama_model_free(model_dft_); model_dft_ = nullptr; }
             }
@@ -637,7 +677,7 @@ void Engine::save_snapshot() {
     if (written == 0) return;
     s.data.resize(written);
     s.extra_cells = cache_extra_cells_;
-    if (ctx_dft_ && llama_get_ctx_other(ctx_dft_) != ctx_) {
+    if (ctx_dft_ && dft_own_mem_) {
         try {
             const size_t dsize = llama_state_seq_get_size(ctx_dft_, 0);
             if (dsize > 0) {
@@ -674,7 +714,7 @@ bool Engine::restore_snapshot(const Snapshot & s) {
     }
     if (ctx_dft_) {
         if (auto * dmem = llama_get_memory(ctx_dft_)) {
-            if (llama_get_ctx_other(ctx_dft_) != ctx_) {
+            if (dft_own_mem_) {
                 llama_memory_seq_rm(dmem, 0, -1, -1);
                 if (!s.data_dft.empty()) llama_state_seq_set_data(ctx_dft_, s.data_dft.data(), s.data_dft.size(), 0);
             }
@@ -1622,6 +1662,18 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     }
     const auto & preserved = sp.preserved_tokens;
     const auto & stops = session->additional_stops();
+
+    // A block drafter writes the whole block it was made for, whatever a step asks; a reply that
+    // asks for fewer (the drafting test) gets one made for that many, so it pays only for those.
+    if (spec_ && dft_block_ && req.spec_n_max != 0) {
+        const int want = req.spec_n_max > 0 ? std::min(req.spec_n_max, spec_n_max_) : spec_n_max_;
+        if (want > 0 && want != spec_made_n_) {
+            common_speculative_free(spec_);
+            spec_ = make_spec(want);
+            if (spec_) spec_made_n_ = want;
+            else if ((spec_ = make_spec(spec_made_n_)) == nullptr) spec_kind_.clear();  // as it was, or none
+        }
+    }
 
     // drafting for this reply: as loaded, or capped for this request (the speed test)
     const bool spec_on = spec_ && req.spec_n_max != 0;

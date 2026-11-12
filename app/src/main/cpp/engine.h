@@ -325,6 +325,7 @@ private:
     bool memory_truncate(size_t n_tokens);
     int  cells_used() const { return (int) cache_.size() + cache_extra_cells_; }
     void free_spec();
+    common_speculative * make_spec(int n_max);
 
     llama_model *          model_ = nullptr;
     llama_context *        ctx_   = nullptr;
@@ -336,6 +337,12 @@ private:
     llama_context *        ctx_dft_   = nullptr;   // the drafter's context (MTP head or drafter file)
     common_speculative *   spec_      = nullptr;
     std::string            spec_kind_;
+    int                    dft_type_ = 0;          // common_speculative_type of the drafter file
+    bool                   dft_own_mem_ = false;   // the drafter keeps memory of its own (not the model's)
+    bool                   dft_block_ = false;     // a block drafter (DSpark, DFlash): drafts a block per pass
+    int                    spec_made_n_ = 0;       // drafted tokens per step spec_ was made for
+    int                    ngram_n_max_ = 0;
+    int                    ngram_n_min_ = 0;
     bool                   has_mtp_ = false;
     int                    spec_n_max_ = 0;        // drafter tokens per step
     int                    spec_n_out_ = 1;        // outputs per step the context was made for

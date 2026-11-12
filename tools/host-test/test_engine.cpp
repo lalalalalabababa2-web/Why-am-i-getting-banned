@@ -1016,6 +1016,90 @@ static void test_speed(const std::string & model, const char * label, const std:
     }
 }
 
+// Pictures and video frames through a model's projector: the colour must be seen, the next turn
+// must not read the picture again, frames are read with their times, and a damaged picture fails
+// with a message instead of crashing.
+static void test_vision(const std::string & model, const std::string & mmproj, const char * label, const std::string & tmp) {
+    if (!exists(model) || !exists(mmproj)) {
+        std::printf("== pictures %s: %s or its projector not there, skipped\n", label, model.c_str());
+        return;
+    }
+    std::printf("== pictures: %s\n", label);
+    oa::LoadParams lp;
+    lp.n_ctx = 4096;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 0;  // as the app has it until the drafting test says otherwise
+    lp.mmproj_path = mmproj;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(model, lp, err)) {
+        std::fprintf(stderr, "  FAIL %s: load with the projector: %s\n", label, err.c_str());
+        g_failures++;
+        return;
+    }
+    CHECK(e.info().vision, "%s: the projector should read pictures", label);
+
+    const std::string red = write_ppm(tmp + "/red.ppm", 128, 96, 220, 20, 20);
+    oa::ChatRequest pic;
+    pic.now_ms = 1760000000000LL;
+    pic.enable_thinking = false;
+    pic.sampling.temp = 0.0f;
+    pic.sampling.top_k = 1;
+    pic.sampling.max_tokens = 24;
+    oa::Message m{"user", "What colour fills this picture? Answer with one word.", ""};
+    m.media.push_back({red, "", false});
+    pic.messages.push_back(m);
+    int media_calls = 0;
+    oa::ChatCallbacks pcb;
+    pcb.on_media = [&](int, int) { media_calls++; };
+    auto r1 = e.chat(pic, pcb);
+    std::printf("  picture: ok=%d media=%d media_ms=%.0f prompt=%d reply=[%s] err=%s\n", r1.ok, r1.stats.n_media,
+                r1.stats.t_media_ms, r1.stats.n_prompt, r1.content.c_str(), r1.error.c_str());
+    std::printf("SPEED: %s, one 128x96 picture read in %.0f ms on %d threads\n", label, r1.stats.t_media_ms, lp.n_threads);
+    CHECK(r1.ok && r1.stats.n_media == 1, "%s: the picture was not read", label);
+    CHECK(lower(r1.content).find("red") != std::string::npos, "%s: the model did not see red: %s", label, r1.content.c_str());
+    pic.messages.push_back({"assistant", r1.content, r1.reasoning});
+    pic.messages.push_back({"user", "Is it a photo of a person? Answer yes or no.", ""});
+    auto r2 = e.chat(pic, pcb);
+    std::printf("  follow-up: ok=%d media=%d reused=%d of %d reply=[%s]\n", r2.ok, r2.stats.n_media, r2.stats.n_reused,
+                r2.stats.n_prompt, r2.content.c_str());
+    CHECK(r2.ok && r2.stats.n_media == 0, "%s: the follow-up read the picture again", label);
+    CHECK(r2.stats.n_reused > r1.stats.n_prompt / 2, "%s: the follow-up did not reuse the picture in memory", label);
+
+    // video: frames with their times
+    const std::string f1 = write_ppm(tmp + "/f1.ppm", 96, 96, 20, 20, 220);
+    const std::string f2 = write_ppm(tmp + "/f2.ppm", 96, 96, 20, 200, 20);
+    oa::ChatRequest vid = pic;
+    vid.messages.clear();
+    oa::Message vm{"user", "These are two frames of a video. What colour is the first frame, and the second?", ""};
+    vm.media.push_back({f1, "[0m0.0s]", true});
+    vm.media.push_back({f2, "[0m2.0s]", true});
+    vid.messages.push_back(vm);
+    vid.sampling.max_tokens = 40;
+    auto r3 = e.chat(vid, pcb);
+    std::printf("  video frames: ok=%d media=%d reply=[%s] err=%s\n", r3.ok, r3.stats.n_media, r3.content.c_str(), r3.error.c_str());
+    CHECK(r3.ok && r3.stats.n_media == 2, "%s: the frames were not read", label);
+    const std::string lr3 = lower(r3.content);
+    CHECK(lr3.find("blue") != std::string::npos || lr3.find("green") != std::string::npos,
+          "%s: the model saw neither frame's colour: %s", label, r3.content.c_str());
+
+    // a damaged attachment fails with a message instead of crashing
+    {
+        std::ofstream bad(tmp + "/bad.jpg");
+        bad << "not a picture";
+    }
+    oa::ChatRequest broken = pic;
+    broken.messages.clear();
+    oa::Message bm{"user", "What is this?", ""};
+    bm.media.push_back({tmp + "/bad.jpg", "", false});
+    broken.messages.push_back(bm);
+    auto r4 = e.chat(broken, pcb);
+    std::printf("  damaged picture: ok=%d err=%s\n", r4.ok, r4.error.c_str());
+    CHECK(!r4.ok && !r4.error.empty(), "%s: a damaged picture should fail with a message", label);
+    auto r5 = e.chat(pic, pcb);
+    CHECK(r5.ok, "%s: the engine should work again after a damaged picture: %s", label, r5.error.c_str());
+}
+
 static void test_real(const std::string & dir, const std::string & tmp) {
     const std::string model = dir + "/Qwen3.5-0.8B-Q4_K_M.gguf";
     const std::string mmproj = dir + "/mmproj-F16.gguf";
@@ -1100,66 +1184,45 @@ static void test_real(const std::string & dir, const std::string & tmp) {
         e.set_background(false, 2);
     }
 
-    // 3. a picture: the colour must be seen, and the next turn must not read it again
-    const std::string red = write_ppm(tmp + "/red.ppm", 128, 96, 220, 20, 20);
-    oa::ChatRequest pic;
-    pic.now_ms = 1760000000000LL;
-    pic.enable_thinking = false;
-    pic.sampling.temp = 0.0f;
-    pic.sampling.top_k = 1;
-    pic.sampling.max_tokens = 24;
-    oa::Message m{"user", "What colour fills this picture? Answer with one word.", ""};
-    m.media.push_back({red, "", false});
-    pic.messages.push_back(m);
-    int media_calls = 0;
-    oa::ChatCallbacks pcb;
-    pcb.on_media = [&](int, int) { media_calls++; };
-    auto r1 = e.chat(pic, pcb);
-    std::printf("  picture: ok=%d media=%d media_ms=%.0f prompt=%d reply=[%s] err=%s\n", r1.ok, r1.stats.n_media,
-                r1.stats.t_media_ms, r1.stats.n_prompt, r1.content.c_str(), r1.error.c_str());
-    std::printf("SPEED: one 128x96 picture read in %.0f ms on %d threads\n", r1.stats.t_media_ms, lp.n_threads);
-    CHECK(r1.ok && r1.stats.n_media == 1, "the picture was not read");
-    CHECK(lower(r1.content).find("red") != std::string::npos, "the model did not see red: %s", r1.content.c_str());
-    pic.messages.push_back({"assistant", r1.content, r1.reasoning});
-    pic.messages.push_back({"user", "Is it a photo of a person? Answer yes or no.", ""});
-    auto r2 = e.chat(pic, pcb);
-    std::printf("  follow-up: ok=%d media=%d reused=%d of %d reply=[%s]\n", r2.ok, r2.stats.n_media, r2.stats.n_reused,
-                r2.stats.n_prompt, r2.content.c_str());
-    CHECK(r2.ok && r2.stats.n_media == 0, "the follow-up read the picture again");
-    CHECK(r2.stats.n_reused > r1.stats.n_prompt / 2, "the follow-up did not reuse the picture in memory");
+    test_vision(model, mmproj, "Qwen3.5 0.8B Q4_K_M", tmp);
+}
 
-    // 4. video: frames with their times
-    const std::string f1 = write_ppm(tmp + "/f1.ppm", 96, 96, 20, 20, 220);
-    const std::string f2 = write_ppm(tmp + "/f2.ppm", 96, 96, 20, 200, 20);
-    oa::ChatRequest vid = pic;
-    vid.messages.clear();
-    oa::Message vm{"user", "These are two frames of a video. What colour is the first frame, and the second?", ""};
-    vm.media.push_back({f1, "[0m0.0s]", true});
-    vm.media.push_back({f2, "[0m2.0s]", true});
-    vid.messages.push_back(vm);
-    vid.sampling.max_tokens = 40;
-    auto r3 = e.chat(vid, pcb);
-    std::printf("  video frames: ok=%d media=%d reply=[%s] err=%s\n", r3.ok, r3.stats.n_media, r3.content.c_str(), r3.error.c_str());
-    CHECK(r3.ok && r3.stats.n_media == 2, "the frames were not read");
-    const std::string lr3 = lower(r3.content);
-    CHECK(lr3.find("blue") != std::string::npos || lr3.find("green") != std::string::npos,
-          "the model saw neither frame's colour: %s", r3.content.c_str());
-
-    // a damaged attachment fails with a message instead of crashing
-    {
-        std::ofstream bad(tmp + "/bad.jpg");
-        bad << "not a picture";
+// A model that thinks, with thinking on as the app has it: the thinking and the answer come apart,
+// and no thinking tags are left in the answer.
+static void test_thinking(const std::string & path, const char * label) {
+    if (!exists(path)) {
+        std::printf("== thinking %s: %s not there, skipped\n", label, path.c_str());
+        return;
     }
-    oa::ChatRequest broken = pic;
-    broken.messages.clear();
-    oa::Message bm{"user", "What is this?", ""};
-    bm.media.push_back({tmp + "/bad.jpg", "", false});
-    broken.messages.push_back(bm);
-    auto r4 = e.chat(broken, pcb);
-    std::printf("  damaged picture: ok=%d err=%s\n", r4.ok, r4.error.c_str());
-    CHECK(!r4.ok && !r4.error.empty(), "a damaged picture should fail with a message");
-    auto r5 = e.chat(pic, pcb);
-    CHECK(r5.ok, "the engine should work again after a damaged picture: %s", r5.error.c_str());
+    std::printf("== thinking: %s\n", label);
+    oa::LoadParams lp;
+    lp.n_ctx = 4096;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 0;
+    oa::Engine e;
+    std::string err;
+    if (!e.load(path, lp, err)) {
+        std::fprintf(stderr, "  FAIL %s: load: %s\n", label, err.c_str());
+        g_failures++;
+        return;
+    }
+    CHECK(e.info().supports_thinking, "%s: the template should take a thinking switch", label);
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = true;
+    req.sampling.temp = 0.0f;
+    req.sampling.top_k = 1;
+    req.sampling.max_tokens = 1536;
+    req.messages.push_back({"user", "What is 17 times 3? Work it out, then answer with just the number.", ""});
+    oa::ChatCallbacks cb;
+    auto r = e.chat(req, cb);
+    std::printf("  ok=%d reason=%s thinking=%zu chars answer=[%s] err=%s\n", r.ok, r.stats.stop_reason.c_str(),
+                r.reasoning.size(), r.content.c_str(), r.error.c_str());
+    CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
+    CHECK(!r.reasoning.empty(), "%s: no thinking came back with thinking on", label);
+    CHECK(r.content.find("51") != std::string::npos, "%s: wrong or missing answer: %s", label, r.content.c_str());
+    CHECK(r.content.find("<think>") == std::string::npos && r.content.find("</think>") == std::string::npos,
+          "%s: thinking tags left in the answer: %s", label, r.content.c_str());
 }
 
 // Bonsai: Qwen models with weights of -1/0/+1 (Q2_0, with PrismML's Hadamard rotation) or 1 bit
@@ -1320,6 +1383,32 @@ int main(int argc, char ** argv) {
         test_context_speed(argv[4], argv[5]);
         return g_failures ? 1 : 0;
     }
+    if (argc >= 7 && std::string(argv[3]) == "--speed") {
+        // test_engine <tiny models dir> <llama.cpp dir> --speed <model.gguf> <drafter.gguf or -> <label>
+        // writing speed with 0, 1, 3 and 7 drafted tokens per step, every word checked against the model's own pick
+        const std::string drafter = std::string(argv[5]) == "-" ? "" : argv[5];
+        test_speed(argv[4], argv[6], drafter, {0, 1, 3, 7}, false, kStoryPrompt);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+    if (argc >= 7 && std::string(argv[3]) == "--vision") {
+        // test_engine <tiny models dir> <llama.cpp dir> --vision <model.gguf> <mmproj.gguf> <label>
+        test_vision(argv[4], argv[5], argv[6], dir);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+    if (argc >= 6 && std::string(argv[3]) == "--answer") {
+        // test_engine <tiny models dir> <llama.cpp dir> --answer <model.gguf> <label>: loads, answers, reads a long message
+        test_bonsai(argv[4], argv[5], 2048);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+    if (argc >= 6 && std::string(argv[3]) == "--think") {
+        // test_engine <tiny models dir> <llama.cpp dir> --think <model.gguf> <label>
+        test_thinking(argv[4], argv[5]);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     if (argc >= 5 && std::string(argv[3]) == "--cut") {
         // test_engine <tiny models dir> <llama.cpp dir> --cut <model.gguf>
         test_context_cut(argv[4]);
@@ -1355,6 +1444,14 @@ int main(int argc, char ** argv) {
         profile_writing(std::string(argv[3]) + "/Bonsai-27B-Q1_0.gguf", "Bonsai 27B Q1_0", true);
         profile_writing(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0", true);
         test_bonsai(std::string(argv[3]) + "/Ternary-Bonsai-2-9B-Q2_0.gguf", "Ternary Bonsai 2 9B Q2_0, low memory", 2048, true);
+        // Spark-X2.6 (iFlytek's on-device models), pictures and video frames with Qwen3-VL and
+        // LFM2.5-VL, and LFM2.5-VL's DSpark block drafter: same words with and without it, and how fast
+        test_bonsai(rd + "/Spark-X2.6-1.7B-Q4_K_M.gguf", "Spark-X2.6 1.7B Q4_K_M", 2048);
+        test_thinking(rd + "/Spark-X2.6-1.7B-Q4_K_M.gguf", "Spark-X2.6 1.7B Q4_K_M");
+        test_vision(rd + "/Qwen3VL-2B-Instruct-Q4_K_M.gguf", rd + "/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf", "Qwen3-VL 2B Q4_K_M", rd);
+        test_vision(rd + "/LFM2.5-VL-3B-Q4_K_M.gguf", rd + "/mmproj-LFM2.5-VL-3B-Q8_0.gguf", "LFM2.5-VL 3B Q4_K_M", rd);
+        test_speed(rd + "/LFM2.5-VL-3B-Q4_K_M.gguf", "LFM2.5-VL 3B Q4_K_M, DSpark", rd + "/LFM2.5-VL-3B-DSpark-F16.gguf",
+                   {0, 1, 3, 7}, false, kStoryPrompt);
         // abliterated copies load and answer like their originals
         test_bonsai(std::string(argv[3]) + "/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", "Qwen3.5 2B abliterated", 2048);
         test_bonsai(std::string(argv[3]) + "/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf", "LFM2.5 1.2B abliterated", 2048);

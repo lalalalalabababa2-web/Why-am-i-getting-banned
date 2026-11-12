@@ -66,7 +66,7 @@ jobs:
       - name: Tools
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
 
-      # about 15 GB of models; the x86 image carries SDKs these tests do not need
+      # about 21 GB of models; the x86 image carries SDKs these tests do not need
       - name: Disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
@@ -86,6 +86,14 @@ jobs:
           get prism-ml/Bonsai-27B-gguf Bonsai-27B-Q1_0.gguf
           get mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf
           get mradermacher/Huihui-LFM2.5-1.2B-Instruct-abliterated-GGUF Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf
+          # Spark-X2.6 (answers, thinking), pictures and video frames with Qwen3-VL and LFM2.5-VL, and
+          # LFM2.5-VL's DSpark block drafter (same words with and without it, and how fast)
+          get bartowski/Spark-X2.6-1.7B-GGUF Spark-X2.6-1.7B-Q4_K_M.gguf
+          get Qwen/Qwen3-VL-2B-Instruct-GGUF Qwen3VL-2B-Instruct-Q4_K_M.gguf
+          get Qwen/Qwen3-VL-2B-Instruct-GGUF mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf
+          get LiquidAI/LFM2.5-VL-3B-GGUF LFM2.5-VL-3B-Q4_K_M.gguf
+          get LiquidAI/LFM2.5-VL-3B-GGUF mmproj-LFM2.5-VL-3B-Q8_0.gguf
+          get LiquidAI/LFM2.5-VL-3B-DSpark-GGUF LFM2.5-VL-3B-DSpark-F16.gguf
           df -h . ; free -g ; nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
 
       # Offline AI's ARM kernels for Bonsai's 1- and 2-bit weights, against plain C, with and
