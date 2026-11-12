@@ -322,3 +322,29 @@ jobs:
           EOF
           gh release delete offline-ai-latest --cleanup-tag --yes 2>/dev/null || true
           gh release create offline-ai-latest OfflineAI.apk OfflineAI-source.zip --target "$GITHUB_SHA" --title "Offline AI $VERSION" --notes-file notes.md --latest=false
+
+  # A run started by hand on any other branch: its APK as a pre-release with a fixed link, so a
+  # build can be tried on a phone before it reaches offline-ai (and before its on-device tests end):
+  # https://github.com/<owner>/<repo>/releases/download/offline-ai-preview/OfflineAI.apk
+  preview:
+    name: Preview download
+    needs: [apk]
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/offline-ai'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: OfflineAI-apk
+
+      - name: Publish the preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<NOTES
+          A preview of Offline AI, built from ${GITHUB_SHA::7} on the \`${GITHUB_REF_NAME}\` branch (run ${GITHUB_RUN_NUMBER}). Published as soon as it was built, before its on-device tests finished: the tested build is the one at offline-ai-latest.
+
+          Install: open OfflineAI.apk on the phone and allow installs from your browser when Android asks. It installs over the other builds and keeps your models and chats.
+          NOTES
+          gh release delete offline-ai-preview --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          gh release create offline-ai-preview OfflineAI.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Offline AI preview (run ${GITHUB_RUN_NUMBER})" --notes-file notes.md --prerelease --latest=false
