@@ -35,7 +35,11 @@ object WhatsNew {
         } catch (e: Exception) {
             true
         }
-        if (fresh) return
+        if (!fresh) show(activity)
+    }
+
+    /** The list, whenever asked for (About has a row for it). */
+    fun show(activity: Activity) {
         val box = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(activity.dp(24), activity.dp(8), activity.dp(24), activity.dp(8))

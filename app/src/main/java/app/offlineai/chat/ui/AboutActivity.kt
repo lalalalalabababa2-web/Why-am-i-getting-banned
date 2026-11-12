@@ -65,6 +65,12 @@ class AboutActivity : AppCompatActivity() {
         })
         content.addView(hero, lp(MATCH, WRAP))
 
+        val news = pill("What's new in this version") { WhatsNew.show(this) }
+        content.addView(news, lp(WRAP, WRAP).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(4)
+        })
+
         // ---- the promise
         content.addView(sectionTitle("Private by design"))
         val promise = card()
