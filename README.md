@@ -25,7 +25,9 @@ browser when Android asks. New builds install over old ones and keep models and 
   file from the phone's storage or a pasted link.
 - **Chat**: replies stream in as they are written; models that think show their thinking in a
   fold above the answer; code blocks have a copy button; tables line up. Stop, write again, edit
-  and resend the last message. Chats are saved on the phone.
+  and resend the last message. A reply can be read aloud by the phone's own text-to-speech
+  (offline once its voice is installed) or shared to another app. An empty chat offers a few
+  things to try. Chats are saved on the phone.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several
@@ -54,7 +56,8 @@ browser when Android asks. New builds install over old ones and keep models and 
   can start; that now happens while you read and type instead of after you press send. Opening an
   old chat and typing gets the whole chat read while you type. Sending takes over at once (within
   one step of about a second), and the reply is the same either way.
-- **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt,
+- **Settings**: context size, CPU threads, thinking on or off, reply length, system prompt (or a
+  ready-made style: brief, friendly, coder, writer, tutor, translator),
   sampling (each model's recommended values by default), drafting, reading ahead, picture detail.
 - **About**: what the app promises (runs on the phone, no account, online only to download a
   model), the phone's cores, memory and engine build, credits for the engine, the model makers

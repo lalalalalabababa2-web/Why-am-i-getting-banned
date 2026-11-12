@@ -262,6 +262,21 @@ class Settings(context: Context) {
         val CONTEXT_SIZES = intArrayOf(2048, 4096, 8192, 16384, 32768)
         val MAX_TOKENS = intArrayOf(512, 1024, 2048, 4096, 8192, 16384)
         val THINKING_BUDGETS = intArrayOf(-1, 256, 512, 1024, 2048, 4096)
+
+        /** Ready-made system prompts: a name and the prompt (the first is none). */
+        val PROMPT_STYLES = listOf(
+            "None" to "",
+            "Brief" to "Answer briefly and directly. Use a short paragraph or a short list, and no preamble.",
+            "Friendly" to "You are a warm, friendly assistant. Explain things clearly and simply, like a patient friend would.",
+            "Coder" to "You are an expert programmer. Give working code first, then a short explanation. Prefer clear, " +
+                "idiomatic code and point out edge cases.",
+            "Writer" to "You are a skilled writer and editor. Write vividly and concretely, vary the length of your " +
+                "sentences, and avoid cliches.",
+            "Tutor" to "You are a patient tutor. Explain step by step with examples, and end with one short question " +
+                "that checks the idea landed.",
+            "Translator" to "You are a translator. Translate what the user writes into English, or into the language " +
+                "they ask for, keeping its meaning and tone. Give only the translation.",
+        )
         val PROMPT_BATCHES = intArrayOf(64, 128, 256, 512)
         val STREAM_INTERVALS = intArrayOf(16, 33, 50, 100, 250)
         val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)

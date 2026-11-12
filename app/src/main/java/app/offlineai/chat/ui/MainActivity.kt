@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var empty: LinearLayout
     private lateinit var emptyText: TextView
     private lateinit var emptyButton: TextView
+    private lateinit var starters: LinearLayout
     private lateinit var attach: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
@@ -189,6 +190,20 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             startActivity(Intent(this, ModelsActivity::class.java))
         }
         empty.addView(emptyButton, lp(WRAP, WRAP).apply { topMargin = dp(20); gravity = Gravity.CENTER_HORIZONTAL })
+        // a few things to try, put in the composer (not sent) so they can be changed first
+        starters = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            visibility = View.GONE
+        }
+        for (s in STARTERS) {
+            starters.addView(pill(s) {
+                input.setText(s)
+                input.setSelection(s.length)
+                input.requestFocus()
+            }, lp(WRAP, WRAP).apply { topMargin = dp(8); gravity = Gravity.CENTER_HORIZONTAL })
+        }
+        empty.addView(starters, lp(MATCH, WRAP).apply { topMargin = dp(12) })
         empty.addView(text("About & credits", 13f, Palette.text3).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -571,6 +586,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val noMessages = app.chat.conversation.messages.isEmpty()
         empty.visibility = if (noMessages) View.VISIBLE else View.GONE
         val loaded = app.engine.loaded
+        starters.visibility = if (loaded != null && app.nativeError == null && !app.engine.isLoading) View.VISIBLE else View.GONE
         when {
             app.nativeError != null -> {
                 emptyText.text = "The AI engine could not start on this phone."
@@ -664,5 +680,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         refreshAll()
         // the write-again button depends on whether a model is loaded
         if (!app.chat.generating && adapter.itemCount > 0) adapter.notifyItemChanged(adapter.itemCount - 1)
+    }
+
+    companion object {
+        private val STARTERS = listOf(
+            "Explain how a rainbow forms, simply",
+            "Write a short poem about city lights at night",
+            "Plan a 3-day trip to Lisbon on a budget",
+            "Write a Python function that removes duplicates from a list",
+        )
     }
 }

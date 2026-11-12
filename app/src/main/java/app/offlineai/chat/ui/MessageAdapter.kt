@@ -241,12 +241,28 @@ class MessageAdapter(
             val pm = PopupMenu(v.context, v)
             pm.menu.add(0, 1, 0, "Copy")
             pm.menu.add(0, 2, 1, "Select text")
-            if (!app.chat.generating) pm.menu.add(0, 3, 2, "Delete")
+            val readable = !m.error && m.content.isNotBlank() && app.chat.streaming !== m
+            if (readable) {
+                pm.menu.add(0, 4, 2, if (ReadAloud.isReading(m.id)) "Stop reading" else "Read aloud")
+                pm.menu.add(0, 5, 3, "Share")
+            }
+            if (!app.chat.generating) pm.menu.add(0, 3, 4, "Delete")
             pm.setOnMenuItemClickListener {
                 when (it.itemId) {
                     1 -> v.context.copyText("reply", m.content)
                     2 -> actions.selectText(m.content)
-                    3 -> app.chat.delete(m)
+                    3 -> {
+                        if (ReadAloud.isReading(m.id)) ReadAloud.stop()
+                        app.chat.delete(m)
+                    }
+                    4 -> if (ReadAloud.isReading(m.id)) ReadAloud.stop() else ReadAloud.read(v.context, m.id, m.content)
+                    5 -> {
+                        // to another app on the phone (messages, notes, mail): nothing goes online from here
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                            .setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, m.content)
+                        runCatching { v.context.startActivity(android.content.Intent.createChooser(send, "Share the reply")) }
+                    }
                 }
                 true
             }

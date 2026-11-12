@@ -231,6 +231,14 @@ class SettingsActivity : AppCompatActivity() {
             Settings.MAX_TOKENS.map { "$it tokens" }, Settings.MAX_TOKENS.indexOf(s.maxTokens)) {
             s.maxTokens = Settings.MAX_TOKENS[it]
         }
+        val style = Settings.PROMPT_STYLES.indexOfFirst { it.second == s.systemPrompt }
+        choice("Style",
+            "A ready-made system prompt for the kind of help you want. Picking one replaces the system prompt below, " +
+                "which you can then change.",
+            Settings.PROMPT_STYLES.map { it.first } + (if (style < 0) listOf("Your own") else emptyList()),
+            if (style >= 0) style else Settings.PROMPT_STYLES.size) {
+            if (it < Settings.PROMPT_STYLES.size) s.systemPrompt = Settings.PROMPT_STYLES[it].second
+        }
         row("System prompt", s.systemPrompt.ifBlank { "None" }) {
             editText("System prompt", s.systemPrompt, multiLine = true) { s.systemPrompt = it.trim(); rebuild() }
         }
