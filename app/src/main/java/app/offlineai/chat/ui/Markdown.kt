@@ -128,9 +128,26 @@ object Markdown {
         return out
     }
 
+    private val CELL_LINK = Regex("\\[([^\\]]*)\\]\\([^)]*\\)")
+    private val CELL_BREAK = Regex("<br\\s*/?>", RegexOption.IGNORE_CASE)
+
+    /**
+     * A table cell as plain text: the table is drawn in a monospaced block, where `**bold**` or a
+     * link would show its markup and push the columns out of line.
+     */
+    private fun plainCell(cell: String): String {
+        var t = CELL_BREAK.replace(cell, " ")
+        t = CELL_LINK.replace(t) { it.groupValues[1] }
+        return t.replace("**", "").replace("__", "").replace("~~", "").replace("`", "").trim()
+    }
+
     /** Pads table cells so the columns line up in a monospaced font. */
     private fun formatTable(rows: List<String>): String {
-        val cells = rows.map { r -> r.trim('|').split('|').map { it.trim() } }
+        // "\|" is a | inside a cell, not a column edge
+        val cells = rows.map { r ->
+            r.trim().removePrefix("|").removeSuffix("|").replace("\\|", "\u0000").split('|')
+                .map { plainCell(it.replace('\u0000', '|')) }
+        }
         val isRule = { row: List<String> -> row.all { c -> c.isNotEmpty() && c.all { it == '-' || it == ':' } } }
         val cols = cells.maxOf { it.size }
         val widths = IntArray(cols)
@@ -213,6 +230,7 @@ object Markdown {
     private val BULLET = Regex("^[-*+]\\s+(.*)$")
     private val NUMBERED = Regex("^(\\d+[.)])\\s+(.*)$")
     private val RULE = Regex("^([-*_])\\1{2,}$")
+    private val TASK = Regex("^\\[([ xX])\\]\\s+")
 
     private fun paragraph(ctx: Context, src: String): CharSequence {
         val sb = SpannableStringBuilder()
@@ -238,9 +256,17 @@ object Markdown {
                     sb.setSpan(ForegroundColorSpan(Palette.borderStrong), lineStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 bullet != null -> {
-                    sb.append("•  ")
-                    inline(sb, bullet.groupValues[1])
-                    hang(ctx, sb, lineStart, indent, "•  ")
+                    // "- [ ] to do" and "- [x] done" are a checklist
+                    val body = bullet.groupValues[1]
+                    val task = TASK.find(body)
+                    val label = when {
+                        task == null -> "•  "
+                        task.groupValues[1].isBlank() -> "☐  "
+                        else -> "☑  "
+                    }
+                    sb.append(label)
+                    inline(sb, if (task == null) body else body.substring(task.range.last + 1))
+                    hang(ctx, sb, lineStart, indent, label)
                 }
                 numbered != null -> {
                     val label = numbered.groupValues[1] + " "

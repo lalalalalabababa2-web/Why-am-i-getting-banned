@@ -11,20 +11,27 @@ import android.text.style.ForegroundColorSpan
  * coloured as each line completes, without going over the earlier lines again.
  */
 class CodeHighlighter(lang: String) {
-    private enum class Kind { C_LIKE, HASH, MARKUP, CSS, SQL, PLAIN }
+    // by how a comment starts: // and /* (C_LIKE), # (HASH), <!-- (MARKUP), /* only (CSS), -- (SQL), ; (LISP)
+    private enum class Kind { C_LIKE, HASH, MARKUP, CSS, SQL, LISP, PLAIN }
 
     private val kind: Kind = when (lang.lowercase().trim()) {
-        "kotlin", "kt", "java", "javascript", "js", "jsx", "typescript", "ts", "tsx", "c", "cpp", "c++", "h", "hpp",
-        "cs", "csharp", "go", "golang", "rust", "rs", "swift", "dart", "scala", "groovy", "gradle", "php", "json",
-        "glsl", "hlsl", "lua", "zig", "objc", "objective-c", "gdscript" -> if (lang.lowercase() == "lua") Kind.SQL else Kind.C_LIKE
-        "python", "py", "ruby", "rb", "sh", "bash", "zsh", "shell", "powershell", "ps1", "yaml", "yml", "toml",
-        "ini", "r", "perl", "pl", "makefile", "make", "cmake", "dockerfile", "nim", "elixir", "ex" -> Kind.HASH
-        "html", "xml", "svg", "vue", "svelte" -> Kind.MARKUP
-        "css", "scss", "less" -> Kind.CSS
-        "sql", "haskell", "hs" -> Kind.SQL
-        "", "text", "txt", "plain", "code", "table", "md", "markdown" -> Kind.PLAIN
-        else -> Kind.C_LIKE
+        "python", "py", "ruby", "rb", "sh", "bash", "zsh", "fish", "shell", "console", "powershell", "ps1", "yaml", "yml",
+        "toml", "ini", "conf", "properties", "env", "dotenv", "r", "perl", "pl", "makefile", "make", "cmake", "dockerfile",
+        "nim", "elixir", "ex", "exs", "gdscript", "gd", "julia", "jl", "graphql", "gql", "nix", "tcl", "awk", "crystal",
+        "coffee", "coffeescript", "hcl", "terraform", "tf" -> Kind.HASH
+        "html", "xml", "svg", "vue", "svelte", "xaml", "plist" -> Kind.MARKUP
+        "css", "scss", "sass", "less" -> Kind.CSS
+        "sql", "mysql", "postgresql", "postgres", "psql", "sqlite", "plsql", "lua", "luau", "haskell", "hs", "elm", "ada",
+        "vhdl" -> Kind.SQL
+        "lisp", "clojure", "clj", "scheme", "racket", "elisp", "asm", "nasm", "assembly", "x86asm", "armasm" -> Kind.LISP
+        "", "text", "txt", "plain", "plaintext", "code", "table", "md", "markdown", "diff", "patch", "csv", "log" -> Kind.PLAIN
+        else -> Kind.C_LIKE  // C, C++, Java, Kotlin, JavaScript, Rust, Go, Swift, C#, JSON and the like
     }
+
+    /** C and C++ (and their shader languages): # starts a preprocessor line, not a comment. */
+    private val preprocessor = lang.lowercase().trim() in setOf(
+        "c", "h", "cpp", "c++", "cc", "cxx", "hpp", "hxx", "objc", "objective-c", "glsl", "hlsl", "cs", "csharp", "metal",
+    )
 
     /** What an unfinished construct from the previous line still needs to close, if anything. */
     private var openUntil: String? = null
@@ -47,6 +54,17 @@ class CodeHighlighter(lang: String) {
             openUntil = null
             i = stop
         }
+        // #include, #define, #pragma: the directive is a keyword, the rest is coloured as usual
+        if (preprocessor && i == start) {
+            var j = i
+            while (j < end && (s[j] == ' ' || s[j] == '\t')) j++
+            if (j < end && s[j] == '#') {
+                var w = j + 1
+                while (w < end && s[w].isLetter()) w++
+                color(text, j, w, Palette.synKeyword)
+                i = w
+            }
+        }
         while (i < end) {
             val c = s[i]
             // comments
@@ -54,6 +72,7 @@ class CodeHighlighter(lang: String) {
                 Kind.C_LIKE, Kind.CSS -> startsWith(s, "//", i, end)
                 Kind.HASH -> c == '#'
                 Kind.SQL -> startsWith(s, "--", i, end)
+                Kind.LISP -> c == ';'
                 else -> false
             }
             if (lineComment && kind != Kind.CSS) {
@@ -90,7 +109,8 @@ class CodeHighlighter(lang: String) {
                     i = at + 3
                     continue
                 }
-                if (kind == Kind.MARKUP && c == '\'' ) { i++; continue }
+                // an apostrophe in markup text, a quoted symbol in Lisp: not strings
+                if ((kind == Kind.MARKUP || kind == Kind.LISP) && c == '\'') { i++; continue }
                 var j = i + 1
                 while (j < end && s[j] != c) {
                     if (s[j] == '\\') j++

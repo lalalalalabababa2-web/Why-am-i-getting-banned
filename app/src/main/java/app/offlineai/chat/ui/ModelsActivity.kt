@@ -165,8 +165,9 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         } catch (e: Exception) {
             emptyMap()
         }
-        val localNow = app.models.local().map { it.file.name }.toSet()
-        if (localNow != knownLocal) {
+        // the folder is listed once per refresh (every second), not once for every row
+        val local = app.models.local().associateBy { it.file.name }
+        if (local.keys != knownLocal) {
             build()
             return
         }
@@ -175,7 +176,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             (if (free >= 0) "${ModelStore.formatBytes(free)} of storage free. " else "") +
             "Memory: ${ModelStore.formatBytes(app.availableRam())} free of ${ModelStore.formatBytes(app.totalRam)}." +
             (if (app.settings.offlineOnly) "\nOffline only is on (Settings), so downloads are off." else "")
-        rows.forEach { it.update(downloads) }
+        rows.forEach { it.update(downloads, local) }
         importing?.let { (name, pct) -> importRow?.text = "Copying $name… $pct%" }
     }
 
@@ -250,10 +251,10 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             return lines.joinToString("\n") to keyParts.joinToString(",")
         }
 
-        fun update(downloads: Map<String, DownloadState>) {
+        fun update(downloads: Map<String, DownloadState>, localByName: Map<String, LocalModel>) {
             val d = downloads[fileName]
             val e = app.engine
-            val local = app.models.find(fileName)
+            val local = localByName[fileName]
             val loadedNow = e.loaded
             val isLoaded = loadedNow?.key == fileName
             val isLoading = e.isLoading && e.loadingKey == fileName
@@ -347,7 +348,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 // picture support and the drafter, once the model itself is here
                 val c = catalog
                 if (c != null && (key == "local" || key == "loaded")) {
-                    val lm = app.models.find(fileName)
+                    val lm = local
                     val pics = c.pictures
                     if (pics != null && lm != null) {
                         val k = app.models.companionKey(fileName, "mmproj")
