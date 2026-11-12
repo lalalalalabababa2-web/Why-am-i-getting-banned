@@ -96,14 +96,24 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
 
         // the catalog, grouped by what you would pick it for
         val byId = Catalog.models.associateBy { it.id }
+        val placed = mutableSetOf<String>()
         fun group(title: String, note: String?, ids: List<String>) {
             val ms = ids.mapNotNull { byId[it] }
+            placed += ids
             if (ms.isEmpty()) return
             content.addView(sectionTitle(title))
             if (note != null) content.addView(text(note, 13f, Palette.text2).apply { setPadding(dp(20), 0, dp(20), dp(6)) })
             ms.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
         }
         group("Best for this phone", null, listOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b"))
+        group("New: Spark-X2.6",
+            "iFlytek's on-device models from October 2026, made for agent-style work: planning, tools, long instructions " +
+                "and code. They think before answering.",
+            listOf("spark-x26-4b", "spark-x26-1.7b"))
+        group("Pictures and video",
+            "From 2B to 8B. They look at photos, screenshots and documents, and at videos as a few frames with their " +
+                "times. Add picture support on a model's row once it is here.",
+            listOf("qwen3vl-2b", "lfm25-vl-3b", "qwen3vl-4b", "qwen3vl-8b"))
         group("Small and fast", "Under 2 GB. Quick replies, light on memory and battery; they know less.",
             listOf("qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b", "llama32-1b", "qwen35-0.8b", "gemma3-270m"))
         group("More 3-4B models", null, listOf("llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini"))
@@ -112,18 +122,13 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("Uncensored (abliterated)",
             "Community copies of the models above with their refusals removed. They answer what the originals decline; " +
                 "what they say is up to you to judge.",
-            listOf("abl-gemma4-e4b", "abl-qwen35-4b", "abl-gemma4-e2b", "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b",
-                "abl-qwen35-9b"))
+            listOf("abl-gemma4-e4b", "abl-qwen35-4b", "abl-spark-x26-4b", "abl-gemma4-e2b", "abl-qwen35-2b", "abl-llama32-3b",
+                "abl-lfm25-1.2b", "abl-qwen35-9b", "abl-qwen3vl-8b"))
         group("Bigger models",
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
             listOf("lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
         // anything in the catalog not placed above still shows
-        val placed = setOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b", "qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b",
-            "llama32-1b", "qwen35-0.8b", "gemma3-270m", "llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini",
-            "qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm", "lfm25-8b-a1b",
-            "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b", "abl-gemma4-e4b", "abl-qwen35-4b", "abl-gemma4-e2b",
-            "abl-qwen35-2b", "abl-llama32-3b", "abl-lfm25-1.2b", "abl-qwen35-9b")
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
         val local = app.models.local()

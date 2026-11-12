@@ -10,7 +10,7 @@ import android.provider.OpenableColumns
 import java.io.File
 import java.io.RandomAccessFile
 
-enum class Family { QWEN, GEMMA, LLAMA, LIQUID, MISTRAL, OTHER }
+enum class Family { QWEN, GEMMA, LLAMA, LIQUID, MISTRAL, SPARK, OTHER }
 
 /** Sampling a model's makers recommend. */
 data class Sampling(val temp: Float, val topP: Float, val topK: Int, val minP: Float, val repeat: Float = 1.0f)
@@ -23,6 +23,8 @@ fun Family.recommended(): Sampling = when (this) {
     Family.LIQUID -> Sampling(0.3f, 1.0f, 0, 0.15f, 1.05f)
     // Mistral recommends a low temperature for its instruct models
     Family.MISTRAL -> Sampling(0.15f, 1.0f, 0, 0.0f)
+    // iFlytek's settings for Spark-X2.6: full temperature, top-p, no top-k
+    Family.SPARK -> Sampling(1.0f, 0.95f, 0, 0.0f)
     Family.OTHER -> Sampling(0.7f, 0.95f, 40, 0.05f)
 }
 
@@ -59,7 +61,7 @@ data class CatalogModel(
     val page: String get() = "https://huggingface.co/$repo"
 }
 
-/** Hand-picked GGUF files that fit an 8 GB phone (sizes as published). */
+/** Hand-picked GGUF files that fit an 8 GB phone (sizes as published). Every architecture here is one this llama.cpp runs. */
 object Catalog {
     private fun qwenPictures(size: String, bytes: Long) = ExtraFile("mmproj-F16.gguf", bytes, "unsloth/Qwen3.5-$size-MTP-GGUF")
 
@@ -103,6 +105,48 @@ object Catalog {
             "The smallest Qwen3.5: very fast, sees pictures, good for quick questions and describing photos.",
             "unsloth/Qwen3.5-0.8B-MTP-GGUF", "Qwen3.5-0.8B-Q4_K_M.gguf", 550_000_000L, Family.QWEN, true,
             pictures = qwenPictures("0.8B", 205_000_000L), mtp = true,
+        ),
+        // ---- iFlytek Spark-X2.6 (October 2026), standard Q4_K_M quantizations (the official files keep the
+        // embeddings at 16 bits: 0.7-0.9 GB more for the same model)
+        CatalogModel(
+            "spark-x26-4b", "Spark-X2.6 4B", "iFlytek",
+            "iFlytek's new on-device model (October 2026), made for agent-style work: planning, tool use, long " +
+                "instructions and code. Strong reasoning for its size; thinks before answering unless Thinking is off.",
+            "bartowski/Spark-X2.6-4B-GGUF", "Spark-X2.6-4B-Q4_K_M.gguf", 2_621_104_768L, Family.SPARK, true,
+        ),
+        CatalogModel(
+            "spark-x26-1.7b", "Spark-X2.6 1.7B", "iFlytek",
+            "The small Spark-X2.6: quick and light on memory, with the same thinking and tool skills on a smaller scale.",
+            "bartowski/Spark-X2.6-1.7B-GGUF", "Spark-X2.6-1.7B-Q4_K_M.gguf", 1_088_465_824L, Family.SPARK, true,
+        ),
+        // ---- pictures and video, 2B to 8B: Qwen3-VL and LFM2.5-VL
+        CatalogModel(
+            "qwen3vl-2b", "Qwen3-VL 2B", "Alibaba Qwen",
+            "A small vision model: reads photos, screenshots, documents and video frames and answers about them. Quick on a phone.",
+            "Qwen/Qwen3-VL-2B-Instruct-GGUF", "Qwen3VL-2B-Instruct-Q4_K_M.gguf", 1_107_409_952L, Family.QWEN, true,
+            pictures = ExtraFile("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf", 445_053_216L, "Qwen/Qwen3-VL-2B-Instruct-GGUF"),
+        ),
+        CatalogModel(
+            "qwen3vl-4b", "Qwen3-VL 4B", "Alibaba Qwen",
+            "Qwen's 4B vision model: sees more detail and reads text in pictures and video frames better than the 2B.",
+            "Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf", 2_497_281_664L, Family.QWEN, true,
+            pictures = ExtraFile("mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf", 453_974_304L, "Qwen/Qwen3-VL-4B-Instruct-GGUF"),
+        ),
+        CatalogModel(
+            "qwen3vl-8b", "Qwen3-VL 8B", "Alibaba Qwen",
+            "The biggest vision model that fits: the closest look at photos, charts and video frames. Squeezed to about 4 " +
+                "bits; it needs most of the free memory, so close other apps first.",
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF", "Qwen3-VL-8B-Instruct-IQ4_XS.gguf", 4_581_288_800L, Family.QWEN, true,
+            large = true,
+            pictures = ExtraFile("mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf", 752_289_728L, "Qwen/Qwen3-VL-8B-Instruct-GGUF"),
+        ),
+        CatalogModel(
+            "lfm25-vl-3b", "LFM2.5-VL 3B", "Liquid AI",
+            "Liquid's bigger phone vision model: describes photos and video frames and reads text in pictures, quickly. " +
+                "Comes with a DSpark drafter for the drafting test.",
+            "LiquidAI/LFM2.5-VL-3B-GGUF", "LFM2.5-VL-3B-Q4_K_M.gguf", 1_674_455_072L, Family.LIQUID, true,
+            pictures = ExtraFile("mmproj-LFM2.5-VL-3B-Q8_0.gguf", 583_109_984L, "LiquidAI/LFM2.5-VL-3B-GGUF"),
+            drafter = ExtraFile("LFM2.5-VL-3B-DSpark-F16.gguf", 567_205_280L, "LiquidAI/LFM2.5-VL-3B-DSpark-GGUF"),
         ),
         // ---- PrismML: Qwen models rebuilt with weights of -1, 0 or +1 (or 1 bit), so big models get small
         CatalogModel(
@@ -214,6 +258,22 @@ object Catalog {
             pictures = ExtraFile("mmproj-model-bf16.gguf", 986_833_408L, "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF"),
         ),
         CatalogModel(
+            "abl-spark-x26-4b", "Spark-X2.6 4B abliterated", "FrostWolfAI (community)",
+            "Spark-X2.6 4B with its refusals removed (a small edit to a few layers, made with Heretic). Answers what the " +
+                "original declines; otherwise the same model.",
+            "FrostWolfAI/Spark-X2.6-4B-abliterated-GGUF", "Spark-X2.6-4B-abliterated-Q4_K_M.gguf", 2_600_225_408L,
+            Family.SPARK, false,
+        ),
+        CatalogModel(
+            "abl-qwen3vl-8b", "Qwen3-VL 8B abliterated", "huihui-ai (community)",
+            "Qwen3-VL 8B with its refusals removed: looks at photos and video frames and answers what the original declines. " +
+                "About 4 bits; close other apps first.",
+            "mradermacher/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF", "Huihui-Qwen3-VL-8B-Instruct-abliterated.IQ4_XS.gguf",
+            4_593_298_432L, Family.QWEN, false, large = true,
+            pictures = ExtraFile("Huihui-Qwen3-VL-8B-Instruct-abliterated.mmproj-Q8_0.gguf", 752_290_176L,
+                "mradermacher/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF"),
+        ),
+        CatalogModel(
             "abl-llama32-3b", "Llama 3.2 3B abliterated", "huihui-ai (community)",
             "Meta's Llama 3.2 3B with its refusals removed. A plain, steady chat model.",
             "mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF", "Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf", 2_241_004_512L,
@@ -289,6 +349,7 @@ data class LocalModel(val file: File, val catalog: CatalogModel?) {
                 "llama" in n -> Family.LLAMA
                 "lfm" in n -> Family.LIQUID
                 "mistral" in n || "ministral" in n -> Family.MISTRAL
+                "spark" in n -> Family.SPARK
                 else -> Family.OTHER
             }
         }

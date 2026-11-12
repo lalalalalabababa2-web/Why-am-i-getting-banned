@@ -257,7 +257,7 @@ class Settings(context: Context) {
         val PROMPT_BATCHES = intArrayOf(64, 128, 256, 512)
         val STREAM_INTERVALS = intArrayOf(16, 33, 50, 100, 250)
         val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)
-        val DRAFT_TOKENS = intArrayOf(0, 1, 2, 3)
+        val DRAFT_TOKENS = intArrayOf(0, 1, 2, 3, 7)
         val VIDEO_FRAMES = intArrayOf(4, 6, 8, 12)
 
         /** How long one recorded or picked sound may be (Gemma 4 hears up to 30 seconds). */

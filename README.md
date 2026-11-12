@@ -11,14 +11,14 @@ browser when Android asks. New builds install over old ones and keep models and 
 | | |
 |---|---|
 | Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp) release b11700, as a submodule in `third_party/llama.cpp` |
-| Model format | GGUF, any architecture llama.cpp supports (Gemma 4, Qwen3.5 and its fine-tunes, Llama, Mistral, …) |
+| Model format | GGUF, any architecture llama.cpp supports (Gemma 4, Qwen3.5 and its fine-tunes, Qwen3-VL, Spark-X2.6, Llama, Mistral, …) |
 | Platform | Android 11+ (API 30), arm64-v8a |
 | Language | Kotlin (UI) and C++ (engine) |
 | Toolchain | Gradle 9.7.1, AGP 9.4.0, Kotlin 2.4.20, NDK r29, CMake 3.31.6 |
 
 ## What it does
 
-- **Models screen**: 24 models from 270M to 27B that fit 8 GB of memory, grouped by what they
+- **Models screen**: 39 models from 270M to 27B that fit 8 GB of memory, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
@@ -33,9 +33,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   same. *Copying from the conversation* (n-gram drafts) is on by default: it costs nothing until a
   reply repeats text from the chat, then checks the repeated part many words at a time (3 at a
   time for Qwen3.5-style hybrid models under 10B). *Drafting with a helper* (Qwen3.5's MTP head,
-  Gemma 4's drafter) is off until the drafting test in Settings finds it faster on the phone: on
-  the CI machines it was slower or no faster (see Tests), because a CPU pays for most of each
-  extra word it checks.
+  Gemma 4's drafter, LFM2.5-VL 3B's DSpark block drafter) is off until the drafting test in
+  Settings finds it faster on the phone: on the CI machines it was slower or no faster (see
+  Tests), because a CPU pays for most of each extra word it checks. A DSpark drafter guesses a
+  whole block of up to 7 words in one pass, so the test tries 1, 3 and 7 for it.
 - **In the background**: a reply keeps going when you switch apps or turn the screen off (a
   foreground service with a wake lock), with a notification showing how far it has got and
   another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
@@ -53,10 +54,12 @@ browser when Android asks. New builds install over old ones and keep models and 
 | Group | Models |
 |---|---|
 | Best for this phone | Gemma 4 E4B, Qwen3.5 4B, Ternary Bonsai 2 9B, Gemma 4 E2B |
+| New: Spark-X2.6 | Spark-X2.6 4B and 1.7B: iFlytek's on-device models from October 2026, for agent-style work (plans, tools, code); they think before answering |
+| Pictures and video | Qwen3-VL 2B, 4B and 8B, LFM2.5-VL 3B (with a DSpark drafter); photos, screenshots, documents, and videos as frames with their times |
 | Small and fast | Qwen3.5 2B and 0.8B, LFM2.5-VL 1.6B, LFM2.5 1.2B, Llama 3.2 1B, Gemma 3 270M |
 | More 3-4B models | Llama 3.2 3B, Ministral 3 3B, Granite 4.1 3B, Phi-4-mini |
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
-| Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed |
+| Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Qwen3-VL 8B, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed; Spark-X2.6 4B by FrostWolfAI |
 | Bigger | LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
@@ -98,7 +101,11 @@ thread.
   memory; drafts are checked in one batch and rejected tokens removed again (for hybrid models,
   through llama.cpp's recurrent-state rollback). llama's default reserves logits for a whole
   prompt step (hundreds of MB with a 250k vocabulary); the engine asks for only the outputs a
-  draft can use.
+  draft can use. The kind of drafter comes from its file: an MTP head (Gemma 4's assistant), or a
+  DSpark/DFlash block drafter, a small model of its own with its own memory, fed the model's
+  hidden states as it reads and asked for a block of up to 7 tokens per step. It always writes
+  the block it was made for, so a reply that asks for fewer (the drafting test) gets one made
+  for that many.
 - Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
   Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
 
@@ -150,6 +157,14 @@ for one layer at 8192 tokens), so it is not in the app.
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
 pictures and video frames through its projector, and both Bonsai models answering a question.
+Also Spark-X2.6 1.7B answering, reading a long message and thinking (the thinking and the answer
+must come apart), pictures and video frames with Qwen3-VL 2B and LFM2.5-VL 3B, and LFM2.5-VL 3B
+with its DSpark drafter at 1, 3 and 7 drafted tokens (every word must be the model's own pick).
+On this repository's x86 test machine (4 threads) DSpark wrote the same words but more slowly
+(12.2 tokens/s without it, 9.7 with 1 drafted, 6.7 with 7): fewer than half its guesses were
+kept, and checking extra tokens costs a CPU nearly as much as writing them. `test_engine` also
+runs one model at a time: `--answer <model> <label>`, `--think <model> <label>`,
+`--vision <model> <mmproj> <label>`, `--speed <model> <drafter or -> <label>`.
 The speeds it prints are for those runners, not for a phone. From GitHub's ARM runner (4 server-class ARM
 cores; tokens per second while writing, greedy, the same words in every column):
 
@@ -187,5 +202,7 @@ git submodule update --init
 
 - Never run on a real phone by its author: built and tested on desktop and in CI only.
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
+- Spark-X2.6's own DSpark drafters (attention gates, sliding windows) and Liquid's LFM3-VL need a
+  newer llama.cpp than b11700; the app offers neither until that update.
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.

@@ -172,7 +172,8 @@ class SettingsActivity : AppCompatActivity() {
             }
             choice("Words drafted per step",
                 "The drafting test picks this for each model. 3 is usually best when drafting helps at all: the CPU " +
-                    "checks words in groups of 4 most efficiently.$reloadNote",
+                    "checks words in groups of 4 most efficiently. 7 (groups of 8) is for block drafters such as " +
+                    "DSpark; helper heads draft at most 4.$reloadNote",
                 listOf(autoLabel) + Settings.DRAFT_TOKENS.drop(1).map { "$it" }, Settings.DRAFT_TOKENS.indexOf(s.draftTokens).coerceAtLeast(0)) {
                 s.draftTokens = Settings.DRAFT_TOKENS[it]
             }
@@ -186,6 +187,8 @@ class SettingsActivity : AppCompatActivity() {
                     when (it) {
                         "mtp" -> "its own MTP head"
                         "drafter" -> "its drafter"
+                        "dspark" -> "its DSpark block drafter"
+                        "dflash" -> "its DFlash block drafter"
                         else -> "copying from the conversation"
                     }
                 } + (if (current.info.specNMax > 0) ", up to ${current.info.specNMax} words per step." else ".")
@@ -205,8 +208,8 @@ class SettingsActivity : AppCompatActivity() {
             Settings.VIDEO_FRAMES.map { "$it frames" }, Settings.VIDEO_FRAMES.indexOf(s.videoFrames).coerceAtLeast(0)) {
             s.videoFrames = Settings.VIDEO_FRAMES[it]
         }
-        content.addView(note("Pictures and sound need a model that can take them (Gemma 4, Qwen3.5, LFM2.5-VL, Ministral 3, " +
-            "Bonsai) and its picture support, downloaded from the Models screen. Sound: up to ${Settings.MAX_SOUND_SECONDS} " +
+        content.addView(note("Pictures and sound need a model that can take them (Gemma 4, Qwen3.5, Qwen3-VL, LFM2.5-VL, " +
+            "Ministral 3, Bonsai) and its picture support, downloaded from the Models screen. Sound: up to ${Settings.MAX_SOUND_SECONDS} " +
             "seconds, Gemma 4 models only."))
 
         content.addView(sectionTitle("Replies"))
@@ -367,7 +370,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         val local = app.models.find(m.key) ?: return
         val how = m.info.speculative
-        val head = "mtp" in how || "drafter" in how
+        // a block drafter (DSpark, DFlash) writes a whole block per pass; a head one word at a time
+        val block = "dspark" in how || "dflash" in how
+        val head = "mtp" in how || "drafter" in how || block
         if (!head) {
             val canHead = m.info.hasMtp || local.hasDrafter
             val drafter = local.catalog?.drafter
@@ -386,11 +391,12 @@ class SettingsActivity : AppCompatActivity() {
                 return
             }
         }
-        if ((!head || m.info.specNMax < 3) && !reloaded) {
-            // load once with the helper and room for 3 drafts per step, so every length can be tried
+        if ((!head || m.info.specNMax < (if (block) 7 else 3)) && !reloaded) {
+            // load once with the helper and room for the longest draft, so every length can be tried
+            // (a head drafter gets at most 4 whatever is asked, a block drafter 7)
             val keepTokens = app.settings.draftTokens
             val keepSpec = app.settings.speculative
-            app.settings.draftTokens = 3
+            app.settings.draftTokens = 7
             app.settings.speculative = true
             Toast.makeText(this, "Loading the model with its drafting helper…", Toast.LENGTH_SHORT).show()
             app.loadModel(local) { err ->
@@ -405,8 +411,8 @@ class SettingsActivity : AppCompatActivity() {
             app.reloadIfNeeded()
             return
         }
-        // drafting off, then each length
-        val candidates = listOf(0, 1, 2, 3).filter { it <= m.info.specNMax }
+        // drafting off, then each length: 1-3 for a head, and steps of 4 and 8 tokens for a block drafter
+        val candidates = (if (block) listOf(0, 1, 3, 7) else listOf(0, 1, 2, 3)).filter { it <= m.info.specNMax }
         val out = text("Writing a short text ${candidates.size} times with ${m.displayName}. Keep the app open.\n", 14f, Palette.text2).apply {
             setPadding(dp(24), dp(8), dp(24), 0)
             typeface = android.graphics.Typeface.MONOSPACE
