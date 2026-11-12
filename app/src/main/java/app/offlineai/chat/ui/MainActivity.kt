@@ -120,7 +120,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(4), dp(8), dp(4))
             background = ripple(null, dp(10).toFloat())
-            setOnClickListener { startActivity(Intent(this@MainActivity, ModelsActivity::class.java)) }
+            setOnClickListener { v -> switchModel(v) }
         }
         title = text("Offline AI", 16f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         subtitle = text("", 12f, Palette.text3).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
@@ -656,6 +656,50 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 emptyMore.visibility = View.GONE
             }
         }
+    }
+
+    /** The models on the phone, to switch to in one tap (the current one ticked), and the full list. */
+    private fun switchModel(anchor: View) {
+        val local = app.models.local()
+        if (local.isEmpty() || app.chat.generating || app.engine.isLoading) {
+            startActivity(Intent(this, ModelsActivity::class.java))
+            return
+        }
+        val current = app.engine.loaded?.key
+        val pm = PopupMenu(this, anchor)
+        local.forEachIndexed { i, m ->
+            pm.menu.add(0, i + 1, i, (if (m.file.name == current) "✓ " else "") + m.displayName)
+        }
+        pm.menu.add(0, 0, local.size, "All models…")
+        pm.setOnMenuItemClickListener { item ->
+            val m = local.getOrNull(item.itemId - 1)
+            when {
+                item.itemId == 0 -> startActivity(Intent(this, ModelsActivity::class.java))
+                m != null && m.file.name != current -> {
+                    val go = {
+                        app.loadModel(m)
+                        toast("Loading ${m.displayName}…")
+                    }
+                    val need = app.estimatedRam(m)
+                    val free = app.availableRam()
+                    if (need > free && !app.lowMemoryFor(m)) {
+                        // the same warning as the Models screen gives
+                        AlertDialog.Builder(this)
+                            .setTitle("This may not fit right now")
+                            .setMessage("${m.displayName} needs about ${ModelStore.formatBytes(need)} of memory and " +
+                                "${ModelStore.formatBytes(free)} is free. If it does not fit it still loads, but it reads " +
+                                "itself from storage on every step and replies crawl. Close other apps first.")
+                            .setPositiveButton("Load anyway") { _, _ -> go() }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    } else {
+                        go()
+                    }
+                }
+            }
+            true
+        }
+        pm.show()
     }
 
     /** The empty screen's one-tap start: the suggested model downloads, then loads by itself. */

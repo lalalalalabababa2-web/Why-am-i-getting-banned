@@ -341,7 +341,8 @@ class MessageAdapter(
                 footer.visibility = View.GONE
             } else {
                 footer.visibility = View.VISIBLE
-                stats.text = if (m.error) "" else m.stats
+                // which model wrote it, so a chat that changed models says who said what
+                stats.text = if (m.error) "" else listOf(m.model, m.stats).filter { it.isNotBlank() }.joinToString(" · ")
                 copy.visibility = if (m.error || m.content.isBlank()) View.GONE else View.VISIBLE
                 copy.setOnClickListener { ctx.copyText("reply", m.content) }
                 again.visibility = if (isLast && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
