@@ -255,7 +255,12 @@ class ChatController(private val app: App) {
     }
 
     private fun startReply(model: LoadedModel) {
-        val reply = ChatMessage(role = "assistant", content = "", model = model.displayName, partial = true)
+        val team = teamSize()
+        val partner = app.engine.partner?.takeIf { team > 0 && it.key == app.settings.teamPartner && it.key != model.key }
+        val reply = ChatMessage(
+            role = "assistant", content = "", partial = true, team = team,
+            model = if (partner != null) "${model.displayName} + ${partner.displayName}" else model.displayName,
+        )
         val request = buildRequest(model)
         conversation.messages.add(reply)
         streaming = reply
@@ -332,6 +337,7 @@ class ChatController(private val app: App) {
                 convo?.messages?.remove(reply)
             } else {
                 reply.stats = describe(o)
+                if (o.team > 0) reply.team = o.team
             }
         }
         // into the chat it was written for, which may not be the one open now
@@ -348,6 +354,7 @@ class ChatController(private val app: App) {
 
     private fun describe(o: ChatOutcome): String {
         val parts = mutableListOf<String>()
+        if (o.team > 0) parts += "${o.team} answers, then a review"
         if (o.tGenMs > 0 && o.nGenerated > 1) {
             parts += String.format(Locale.US, "%.1f tok/s", (o.nGenerated - 1) * 1000.0 / o.tGenMs)
         }
@@ -408,7 +415,8 @@ class ChatController(private val app: App) {
                 continue
             }
             val j = JSONObject().put("role", m.role).put("content", m.content)
-            if (m.role == "assistant" && m.reasoning.isNotBlank()) j.put("reasoning", m.reasoning)
+            // a team reply's separate answers stay out of the conversation; only its reply goes back
+            if (m.role == "assistant" && m.reasoning.isNotBlank() && m.team == 0) j.put("reasoning", m.reasoning)
             if (media != null) j.put("media", media)
             messages.put(j)
             last = j
@@ -425,12 +433,24 @@ class ChatController(private val app: App) {
         sampling.put("max_tokens", s.maxTokens).put("seed", -1)
         if (s.thinking) sampling.put("thinking_budget", s.thinkingBudget)
 
-        return JSONObject()
+        val request = JSONObject()
             .put("messages", messages)
             .put("thinking", s.thinking)
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
+        val team = teamSize()
+        if (team > 0) {
+            request.put("team", team)
+            val p = app.engine.partner
+            if (p != null && p.key == s.teamPartner && p.key != model.key) {
+                request.put("partner", true).put("partner_name", p.displayName)
+            }
+        }
+        return request
     }
+
+    /** Answers a team reply is written from (0: answered once). */
+    fun teamSize(): Int = app.settings.teamSize.let { if (it >= 2) it.coerceAtMost(3) else 0 }
 
     /** Attachments as the engine reads them; files that went missing are left out. */
     private fun mediaJson(list: List<Attachment>): JSONArray? {

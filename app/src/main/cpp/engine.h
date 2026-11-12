@@ -107,6 +107,11 @@ struct ChatRequest {
     int64_t              now_ms          = 0;  // fixed per conversation, so dated templates render the same every turn
     SamplingParams       sampling;
     int                  spec_n_max      = -1; // -1: as loaded; 0: no drafting this reply; n: at most n
+    // Team reply: this many separate answers to the last message (2 or 3; 0 for none), then one more
+    // pass that checks them against each other and writes the reply. With a partner model, every
+    // second answer is the partner's; partner_name labels its answers.
+    int                  team            = 0;
+    std::string          partner_name;
 };
 
 struct ChatStats {
@@ -135,6 +140,7 @@ struct ChatStats {
     // With Engine::set_record_steps: each writing step in order, the tokens it read (the last one
     // and its drafts) and how many of them stayed, so a test can replay the reply step for step.
     std::vector<int> step_read, step_kept;
+    int         team           = 0;  // separate answers a team reply was made from (0: not a team reply)
 };
 
 struct ChatResult {
@@ -208,7 +214,9 @@ public:
     bool loaded() const { return ctx_ != nullptr; }
     ModelInfo info() const;
 
-    ChatResult chat(const ChatRequest & req, const ChatCallbacks & cb);
+    // A reply to the conversation. A team request (req.team) is answered by several passes; with a
+    // loaded partner engine, it writes every second one of the separate answers.
+    ChatResult chat(const ChatRequest & req, const ChatCallbacks & cb, Engine * partner = nullptr);
 
     // Reads the conversation ahead of your next message, while you read the last reply or type:
     // everything the next reply's prompt will start with, so that reply only has to read the
@@ -282,6 +290,9 @@ public:
     size_t compute_bytes() const { return compute_bytes_; }
 
 private:
+    ChatResult chat_one(const ChatRequest & req, const ChatCallbacks & cb);
+    ChatResult chat_team(const ChatRequest & req, const ChatCallbacks & cb, Engine * partner);
+
     // The whole state of the model's memory after `tokens`. Checked against the prompt by its
     // tokens, so it stays usable even after the memory itself was cleared.
     struct Snapshot {

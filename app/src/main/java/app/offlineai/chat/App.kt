@@ -212,9 +212,28 @@ class App : Application() {
         loadModel(model)
     }
 
+    /**
+     * Loads the team partner the settings name next to the model, or lets one go that is no longer
+     * wanted (the team is off, or the model answers alone). [onDone] gets null or why it failed.
+     */
+    fun applyTeamPartner(onDone: ((String?) -> Unit)? = null) {
+        val want = settings.teamPartner?.takeIf { settings.teamSize >= 2 && it != settings.lastModelFile }?.let { models.find(it) }
+        val have = engine.partner
+        when {
+            want == null -> {
+                if (have != null) engine.unloadPartner()
+                onDone?.invoke(null)
+            }
+            have?.key == want.file.name -> onDone?.invoke(null)
+            else -> engine.loadPartner(want.file.name, want.displayName, want.file.absolutePath, configFor(want), onDone)
+        }
+    }
+
     fun loadModel(model: LocalModel, onDone: ((String?) -> Unit)? = null) {
         settings.lastModelFile = model.file.name
         engine.load(model.file.name, model.displayName, model.file.absolutePath, configFor(model), onDone)
+        // the team partner, unless it is now the model itself
+        applyTeamPartner()
     }
 
     /** The loaded model no longer matches the settings (context, memory mode, batch, cache precision). */

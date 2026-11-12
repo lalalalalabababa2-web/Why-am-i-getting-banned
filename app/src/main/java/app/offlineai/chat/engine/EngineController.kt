@@ -123,6 +123,8 @@ data class ChatOutcome(
     val tMediaMs: Double = 0.0,
     /** Pages read back from storage during the turn: many means the model did not fit in free memory. */
     val nMajflt: Long = 0,
+    /** Separate answers a team reply was written from (0: not a team reply). */
+    val team: Int = 0,
 ) {
     companion object {
         fun parse(json: String): ChatOutcome {
@@ -148,6 +150,7 @@ data class ChatOutcome(
                 nMedia = s.optInt("n_media"),
                 tMediaMs = s.optDouble("t_media_ms", 0.0),
                 nMajflt = s.optLong("n_majflt"),
+                team = s.optInt("team"),
             )
         }
 
@@ -326,6 +329,37 @@ class EngineController {
 
     fun cancelLoading() {
         cancelLoad.set(true)
+    }
+
+    /** The second model of a team, loaded next to the model; null when there is none. */
+    data class Partner(val key: String, val displayName: String)
+
+    @Volatile
+    var partner: Partner? = null
+        private set
+
+    /** Loads [path] as the team partner, in place of any other. [onDone] gets null on success or the reason it failed. */
+    fun loadPartner(key: String, displayName: String, path: String, config: LoadConfig, onDone: ((String?) -> Unit)? = null) {
+        queue.put {
+            NativeEngine.nativeUnloadPartner()
+            partner = null
+            val err = NativeEngine.nativeLoadPartner(
+                path.toByteArray(Charsets.UTF_8), config.toJson().toString().toByteArray(Charsets.UTF_8),
+            )?.toString(Charsets.UTF_8)
+            if (err == null) partner = Partner(key, displayName)
+            announce()
+            if (onDone != null) main.post { onDone(err) }
+        }
+    }
+
+    fun unloadPartner() {
+        queue.put {
+            if (partner != null) {
+                NativeEngine.nativeUnloadPartner()
+                partner = null
+                announce()
+            }
+        }
     }
 
     fun unload() {

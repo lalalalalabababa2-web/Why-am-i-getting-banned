@@ -179,6 +179,18 @@ class Settings(context: Context) {
         get() = str("system_prompt", "")
         set(v) = put("system_prompt", v)
 
+    /**
+     * Working together: each message is answered this many times separately, then the answers are
+     * checked against each other and the reply written from them (0: answered once, as usual).
+     */
+    var teamSize: Int
+        get() = int("team_size", 0)
+        set(v) = put("team_size", v)
+    /** The model that writes every second of those answers (its file), loaded next to the model; null: the model itself. */
+    var teamPartner: String?
+        get() = prefs.getString("team_partner", null)
+        set(v) = put("team_partner", v)
+
     // ---- sampling
     var useRecommendedSampling: Boolean
         get() = bool("recommended_sampling", true)

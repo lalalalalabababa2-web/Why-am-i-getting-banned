@@ -23,6 +23,9 @@ object NativeEngine {
     /** [options] is JSON (UTF-8): n_ctx, n_threads, n_batch, n_ubatch, low_memory, kv_q8, spec_n_max, spec_ngram, drafter, mmproj, image_max_tokens. */
     @JvmStatic external fun nativeLoad(path: ByteArray, options: ByteArray, listener: LoadListener?): ByteArray?
     @JvmStatic external fun nativeUnload()
+    /** A second model next to the first, for team replies; null on success, else why it failed. */
+    @JvmStatic external fun nativeLoadPartner(path: ByteArray, options: ByteArray): ByteArray?
+    @JvmStatic external fun nativeUnloadPartner()
     @JvmStatic external fun nativeInfo(): ByteArray
     @JvmStatic external fun nativeStop()
     @JvmStatic external fun nativeResetCache()

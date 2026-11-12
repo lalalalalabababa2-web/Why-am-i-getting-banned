@@ -1630,10 +1630,203 @@ ReadAheadResult Engine::read_ahead(const ChatRequest & req, const std::string & 
     return res;
 }
 
-ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
+// ---- team replies ----
+
+static constexpr int    kMaxTeam       = 3;
+static constexpr size_t kMaxDraftChars = 6000;  // about 1500 tokens each, so the review still fits
+
+ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb, Engine * partner) {
+    stop_.store(false);
+    if (partner) partner->stop_.store(false);
+    if (req.team >= 2 && !req.messages.empty() && req.messages.back().role == "user") {
+        return chat_team(req, cb, partner && partner != this && partner->loaded() ? partner : nullptr);
+    }
+    return chat_one(req, cb);
+}
+
+// The review's message: the last message as it was, then the separate answers to it, then what to do.
+static std::string team_review_message(const std::string & question, const std::vector<std::string> & answers) {
+    std::string m = question;
+    m += "\n\n---\nThis was answered " + std::to_string(answers.size()) + " times, separately:\n";
+    for (size_t i = 0; i < answers.size(); i++) {
+        m += "\n[Answer " + std::to_string(i + 1) + "]\n" + answers[i] + "\n";
+    }
+    m += "\nCheck the answers against each other and look for mistakes; where they disagree, work out which one is "
+         "right. Write that checking first. Then write a line with only \"Reply:\" on it, and after it the best reply "
+         "to the message above, written as a reply to it, without mentioning the separate answers.";
+    return m;
+}
+
+// Where the review's reply starts: after its line "Reply:" (also "**Reply:**", "## Reply", or "Reply: text"
+// on one line). Gives the end of the checking and the start of the reply, or false if there is none yet.
+static bool find_review_reply(const std::string & t, size_t & check_end, size_t & reply_start) {
+    bool found = false;
+    size_t line = 0;
+    while (line < t.size()) {
+        size_t eol = t.find('\n', line);
+        const bool complete = eol != std::string::npos;
+        if (!complete) eol = t.size();
+        size_t i = line;
+        while (i < eol && (t[i] == ' ' || t[i] == '#' || t[i] == '*' || t[i] == '>')) i++;
+        static const char kWord[] = "reply";
+        size_t k = 0;
+        while (k < 5 && i + k < eol && std::tolower((unsigned char) t[i + k]) == kWord[k]) k++;
+        if (k == 5) {
+            size_t j = i + 5;
+            while (j < eol && (t[j] == '*' || t[j] == ' ')) j++;
+            if (j < eol && t[j] == ':') {
+                j++;
+                while (j < eol && (t[j] == '*' || t[j] == ' ')) j++;
+                // "Reply:" alone on its line counts once the line is over; text after it starts the reply
+                if (j < eol || complete) {
+                    check_end = line;
+                    reply_start = j < eol ? j : (complete ? eol + 1 : eol);
+                    found = true;  // the last one wins: a model may quote the instruction first
+                }
+            }
+        }
+        line = complete ? eol + 1 : t.size();
+    }
+    return found;
+}
+
+static std::string trimmed(const std::string & s) {
+    const size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    const size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+// Counts and times add up over the passes of a team reply; the last pass says how it ended.
+static void add_pass(ChatStats & to, const ChatStats & s) {
+    to.n_prompt = s.n_prompt;
+    to.n_reused += s.n_reused;
+    to.n_evaluated += s.n_evaluated;
+    to.n_generated += s.n_generated;
+    to.t_prompt_ms += s.t_prompt_ms;
+    to.t_gen_ms += s.t_gen_ms;
+    to.n_dropped = std::max(to.n_dropped, s.n_dropped);
+    if (to.t_first_ms == 0) to.t_first_ms = s.t_first_ms;
+    to.used_snapshot = to.used_snapshot || s.used_snapshot;
+    to.n_drafted += s.n_drafted;
+    to.n_accepted += s.n_accepted;
+    to.n_steps += s.n_steps;
+    to.n_media += s.n_media;
+    to.t_media_ms += s.t_media_ms;
+    to.t_draft_ms += s.t_draft_ms;
+    to.t_verify_ms += s.t_verify_ms;
+    to.t_sync_ms += s.t_sync_ms;
+    to.t_sample_ms += s.t_sample_ms;
+    to.t_parse_ms += s.t_parse_ms;
+    to.t_emit_ms += s.t_emit_ms;
+    to.n_majflt += s.n_majflt;
+    to.stop_reason = s.stop_reason;
+}
+
+// Several answers to the last message, each written on its own (its own seed, and every second one
+// by the partner model when there is one), then a review pass that reads them all, checks them
+// against each other and writes the reply. The answers are what the reply's fold shows, under their
+// headings, with the review's own thinking after them. Each answer is the model's ordinary reply
+// to the conversation, so the prompt it reads is the one already in memory (the second answer
+// reads nothing new); the review only reads the last message again, with the answers in it.
+ChatResult Engine::chat_team(const ChatRequest & req, const ChatCallbacks & cb, Engine * partner) {
+    if (!ctx_) return chat_one(req, cb);
+    const int n = std::min(req.team, kMaxTeam);
+    // the answers together get at most about half the context (some 4 characters a token)
+    const size_t max_chars = std::clamp<size_t>(2 * (size_t) llama_n_ctx(ctx_) / (size_t) n, 800, kMaxDraftChars);
+    ChatStats total;
+    std::vector<std::string> answers;
+    std::string notes;
+    for (int i = 0; i < n; i++) {
+        const bool by_partner = partner && i % 2 == 1;
+        Engine & who = by_partner ? *partner : *this;
+        ChatRequest h = req;
+        h.team = 0;
+        // so they do not all say the same: each its own seed, and some randomness in each but the first
+        if (h.sampling.seed != 0xFFFFFFFFu) h.sampling.seed += (uint32_t) i * 7919u;
+        if (i > 0 && h.sampling.temp < 0.7f) h.sampling.temp = 0.7f;
+        if (i > 0 && h.sampling.top_k == 1) h.sampling.top_k = 40;
+        std::string head = notes.empty() ? "" : notes + "\n\n";
+        head += "Answer " + std::to_string(i + 1);
+        if (by_partner && !req.partner_name.empty()) head += " (" + req.partner_name + ")";
+        head += ":\n";
+        const int before = total.n_generated;
+        ChatCallbacks hc;
+        hc.on_prompt_progress = cb.on_prompt_progress;
+        hc.on_media = cb.on_media;
+        if (cb.on_update) {
+            hc.on_update = [&, before](const std::string & r, const std::string & c, int g) {
+                cb.on_update(head + (c.empty() && !r.empty() ? std::string("(thinking…)") : c), "", before + g);
+            };
+        }
+        ChatResult a = who.chat_one(h, hc);
+        add_pass(total, a.stats);
+        const bool stopped = a.stats.stop_reason == "stopped" || stop_requested() || (partner && partner->stop_requested());
+        if (!a.ok || stopped) {
+            // failed or stopped part way: what there is so far, in the fold
+            a.reasoning = head + trimmed(a.content);
+            a.content.clear();
+            a.stats = total;
+            a.stats.team = i + 1;
+            if (a.ok) a.stats.stop_reason = "stopped";
+            return a;
+        }
+        std::string d = trimmed(a.content);
+        if (d.size() > max_chars) {
+            d.resize(max_chars);
+            d.resize(utf8_complete_prefix(d));
+            d += "…";
+        }
+        notes = head + (d.empty() ? std::string("(no answer)") : d);
+        if (!d.empty()) answers.push_back(std::move(d));
+    }
+
+    ChatRequest rv = req;
+    rv.team = 0;
+    if (!answers.empty()) rv.messages.back().content = team_review_message(req.messages.back().content, answers);
+    // The review's own thinking, then its checking, go in the fold under "Review:"; what follows its
+    // line "Reply:" is the reply. Until that line comes, everything it writes is checking.
+    const std::string head = notes + "\n\nReview:\n";
+    auto split = [&](const std::string & r, const std::string & c, std::string & fold, std::string & reply) {
+        size_t check_end = 0, reply_start = 0;
+        const bool has = !answers.empty() && find_review_reply(c, check_end, reply_start);
+        const std::string checking = trimmed(has ? c.substr(0, check_end) : (answers.empty() ? "" : c));
+        std::string review = trimmed(r);
+        if (!checking.empty()) review += (review.empty() ? "" : "\n\n") + checking;
+        fold = review.empty() ? notes : head + review;
+        reply = has ? trimmed(c.substr(reply_start)) : (answers.empty() ? c : "");
+    };
+    const int before = total.n_generated;
+    ChatCallbacks rc;
+    rc.on_prompt_progress = cb.on_prompt_progress;
+    rc.on_media = cb.on_media;
+    if (cb.on_update) {
+        rc.on_update = [&, before](const std::string & r, const std::string & c, int g) {
+            std::string fold, reply;
+            split(r, c, fold, reply);
+            cb.on_update(fold, reply, before + g);
+        };
+    }
+    ChatResult res = chat_one(rv, rc);
+    add_pass(total, res.stats);
+    size_t check_end = 0, reply_start = 0;
+    if (!answers.empty() && find_review_reply(res.content, check_end, reply_start)) {
+        std::string fold, reply;
+        split(res.reasoning, res.content, fold, reply);
+        res.reasoning = fold;
+        res.content = reply;
+    } else {
+        // no "Reply:" line: all it wrote is the reply
+        res.reasoning = trimmed(res.reasoning).empty() ? notes : head + trimmed(res.reasoning);
+    }
+    res.stats = total;
+    res.stats.team = n;
+    return res;
+}
+
+ChatResult Engine::chat_one(const ChatRequest & req, const ChatCallbacks & cb) {
     const long faults0 = major_faults();
     ChatResult res;
-    stop_.store(false);
     const auto t_start = std::chrono::steady_clock::now();
     if (!ctx_ || !tmpls_) {
         res.error = "No model is loaded.";

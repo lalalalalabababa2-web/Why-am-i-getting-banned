@@ -22,6 +22,12 @@ oa::Engine & engine() {
     return *e;
 }
 
+// A second model for team replies, loaded next to the first (see Engine::chat).
+oa::Engine & partner() {
+    static oa::Engine * e = new oa::Engine();
+    return *e;
+}
+
 void log_callback(ggml_log_level level, const char * text, void *) {
     int prio = ANDROID_LOG_DEBUG;
     switch (level) {
@@ -67,6 +73,8 @@ void parse_request(const json & j, oa::ChatRequest & req) {
     }
     req.enable_thinking = j.value("thinking", true);
     req.spec_n_max = j.value("spec_n_max", -1);
+    req.team = j.value("team", 0);
+    req.partner_name = j.value("partner_name", std::string());
     req.now_ms = j.value("now_ms", (int64_t) 0);
     if (j.contains("sampling")) {
         const auto & s = j.at("sampling");
@@ -81,6 +89,28 @@ void parse_request(const json & j, oa::ChatRequest & req) {
         const int64_t seed = s.value("seed", (int64_t) -1);
         req.sampling.seed = seed < 0 ? 0xFFFFFFFFu : (uint32_t) seed;
     }
+}
+
+// Load options from the JSON the Kotlin side builds (EngineController.LoadConfig); "" or the reason they are bad.
+std::string parse_load_options(JNIEnv * env, jbyteArray joptions, oa::LoadParams & p) {
+    try {
+        const json o = json::parse(from_bytes(env, joptions));
+        p.n_ctx = o.value("n_ctx", p.n_ctx);
+        p.n_threads = o.value("n_threads", p.n_threads);
+        p.n_batch = o.value("n_batch", p.n_batch);
+        p.n_ubatch = o.value("n_ubatch", p.n_ubatch);
+        p.low_memory = o.value("low_memory", p.low_memory);
+        p.kv_q8 = o.value("kv_q8", p.kv_q8);
+        p.swa_full = o.value("swa_full", p.swa_full);
+        p.spec_n_max = o.value("spec_n_max", p.spec_n_max);
+        p.spec_ngram = o.value("spec_ngram", p.spec_ngram);
+        p.drafter_path = o.value("drafter", std::string());
+        p.mmproj_path = o.value("mmproj", std::string());
+        p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
+    } catch (const std::exception & e) {
+        return std::string("Bad load options: ") + e.what();
+    }
+    return "";
 }
 
 bool take_exception(JNIEnv * env) {
@@ -114,23 +144,8 @@ JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jpath, jbyteArray joptions,
                                                        jobject listener) {
     oa::LoadParams p;
-    try {
-        const json o = json::parse(from_bytes(env, joptions));
-        p.n_ctx = o.value("n_ctx", p.n_ctx);
-        p.n_threads = o.value("n_threads", p.n_threads);
-        p.n_batch = o.value("n_batch", p.n_batch);
-        p.n_ubatch = o.value("n_ubatch", p.n_ubatch);
-        p.low_memory = o.value("low_memory", p.low_memory);
-        p.kv_q8 = o.value("kv_q8", p.kv_q8);
-        p.swa_full = o.value("swa_full", p.swa_full);
-        p.spec_n_max = o.value("spec_n_max", p.spec_n_max);
-        p.spec_ngram = o.value("spec_ngram", p.spec_ngram);
-        p.drafter_path = o.value("drafter", std::string());
-        p.mmproj_path = o.value("mmproj", std::string());
-        p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
-    } catch (const std::exception & e) {
-        return to_bytes(env, std::string("Bad load options: ") + e.what());
-    }
+    const std::string bad = parse_load_options(env, joptions, p);
+    if (!bad.empty()) return to_bytes(env, bad);
 
     jmethodID on_progress = nullptr, on_warmup_id = nullptr;
     if (listener) {
@@ -164,6 +179,26 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeUnload(JNIEnv *, jclass) {
     engine().unload();
 }
 
+// The team partner: loaded next to the model, for team replies only (no drafting, no pictures).
+JNIEXPORT jbyteArray JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeLoadPartner(JNIEnv * env, jclass, jbyteArray jpath, jbyteArray joptions) {
+    oa::LoadParams p;
+    const std::string bad = parse_load_options(env, joptions, p);
+    if (!bad.empty()) return to_bytes(env, bad);
+    p.spec_n_max = 0;
+    p.spec_ngram = false;
+    p.drafter_path.clear();
+    p.mmproj_path.clear();
+    std::string err;
+    if (partner().load(from_bytes(env, jpath), p, err, nullptr, nullptr)) return nullptr;
+    return to_bytes(env, err.empty() ? std::string("The team partner could not be loaded.") : err);
+}
+
+JNIEXPORT void JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeUnloadPartner(JNIEnv *, jclass) {
+    partner().unload();
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
     const auto mi = engine().info();
@@ -193,6 +228,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeStop(JNIEnv *, jclass) {
     engine().request_stop();
+    partner().request_stop();
 }
 
 // Reads the conversation ahead of the next message (see Engine::read_ahead). The request is the
@@ -239,11 +275,13 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeReleaseMedia(JNIEnv *, jclass)
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeSetThreads(JNIEnv *, jclass, jint n) {
     engine().set_threads(n);
+    partner().set_threads(n);
 }
 
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeSetBackground(JNIEnv *, jclass, jboolean on, jint threads) {
     engine().set_background(on == JNI_TRUE, threads);
+    partner().set_background(on == JNI_TRUE, threads);
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -262,8 +300,11 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeBench(JNIEnv * env, jclass, ji
 JNIEXPORT jbyteArray JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jbyteArray jrequest, jobject listener) {
     oa::ChatRequest req;
+    bool with_partner = false;
     try {
-        parse_request(json::parse(from_bytes(env, jrequest)), req);
+        const json j = json::parse(from_bytes(env, jrequest));
+        parse_request(j, req);
+        with_partner = j.value("partner", false);
     } catch (const std::exception & e) {
         json r = {{"ok", false}, {"error", std::string("Bad request: ") + e.what()}};
         return to_bytes(env, dump(r));
@@ -307,7 +348,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
         };
     }
 
-    const auto res = engine().chat(req, cb);
+    const auto res = engine().chat(req, cb, with_partner && partner().loaded() ? &partner() : nullptr);
     json r = {
         {"ok", res.ok},
         {"content", res.content},
@@ -335,6 +376,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"t_parse_ms", res.stats.t_parse_ms},
             {"n_majflt", res.stats.n_majflt},
             {"stop_reason", res.stats.stop_reason},
+            {"team", res.stats.team},
         }},
     };
     return to_bytes(env, dump(r));

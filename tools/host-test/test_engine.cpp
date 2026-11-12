@@ -13,6 +13,7 @@
 #include "ggml-backend.h"
 #include "llama-ext.h"
 
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -1327,6 +1328,139 @@ static void test_thinking(const std::string & path, const char * label) {
     }
 }
 
+// Team replies: short word problems with one right number each, answered alone and by a team (the
+// model twice, or the model and a partner, then a review), counting the right final answers. How
+// much a team helps is measured, not required; what must hold is that every reply comes back with
+// an answer, the separate answers and the review are in the fold, and a stop part way through ends
+// the whole team reply.
+struct WordProblem {
+    const char * q;
+    double       a;
+};
+static const WordProblem kProblems[] = {
+    {"A baker made 24 muffins. She sold three quarters of them and gave away 2 of the rest. How many muffins does she have left?", 4},
+    {"Tom has 3 times as many marbles as Sam. Together they have 48 marbles. How many marbles does Tom have?", 36},
+    {"A train travels at 60 km per hour for 2.5 hours. How many kilometres does it travel?", 150},
+    {"5 pencils cost $1.25. How much do 12 pencils cost, in dollars?", 3},
+    {"Sara read 12 pages on Monday and twice as many on Tuesday. On Wednesday she read 5 pages fewer than on Tuesday. How many pages did she read over the three days?", 55},
+    {"A rectangle is 8 cm long and its width is half its length. What is its area in square centimetres?", 32},
+    {"How many minutes are there in 3.5 hours?", 210},
+    {"Ali is 4 years older than Ben. In 6 years their ages will add up to 40. How old is Ben now?", 12},
+    {"A shirt costs $40. It is on sale for 25% off. What is the sale price in dollars?", 30},
+    {"A farmer has 17 sheep. All but 9 run away. How many sheep does he have left?", 9},
+    {"A car uses 8 litres of fuel per 100 km. How many litres does it use for 350 km?", 28},
+    {"There are 30 students in a class and 40% of them are boys. How many girls are there?", 18},
+};
+
+// The last number in a reply ("1,250", "$3.00", "-4" and "42.5" count; the dot that ends a sentence does not).
+static bool last_number(const std::string & t, double & out) {
+    bool found = false;
+    for (size_t i = 0; i < t.size();) {
+        if (!std::isdigit((unsigned char) t[i])) {
+            i++;
+            continue;
+        }
+        size_t j = i;
+        std::string num;
+        while (j < t.size() && (std::isdigit((unsigned char) t[j]) || t[j] == ',' ||
+                                (t[j] == '.' && j + 1 < t.size() && std::isdigit((unsigned char) t[j + 1])))) {
+            if (t[j] != ',') num += t[j];
+            j++;
+        }
+        out = std::atof(num.c_str());
+        if (i > 0 && t[i - 1] == '-') out = -out;
+        found = true;
+        i = j;
+    }
+    return found;
+}
+
+static void test_team(const std::string & model, const std::string & partner_path, const char * label, int n_q,
+                      bool thinking) {
+    if (!exists(model) || (!partner_path.empty() && !exists(partner_path))) {
+        std::printf("== team %s: %s not there, skipped\n", label, model.c_str());
+        return;
+    }
+    std::printf("== team: %s%s\n", label, thinking ? " (thinking)" : "");
+    oa::LoadParams lp;
+    lp.n_ctx = 4096;
+    lp.n_threads = std::max(1, (int) std::thread::hardware_concurrency());
+    lp.spec_n_max = 0;
+    oa::Engine e, p;
+    std::string err;
+    if (!e.load(model, lp, err) || (!partner_path.empty() && !p.load(partner_path, lp, err))) {
+        std::fprintf(stderr, "  FAIL %s: load: %s\n", label, err.c_str());
+        g_failures++;
+        return;
+    }
+    oa::Engine * partner = partner_path.empty() ? nullptr : &p;
+    const int n = std::min<int>(n_q, (int) (sizeof kProblems / sizeof kProblems[0]));
+    int right_alone = 0, right_team = 0, mentions = 0;
+    double t_alone = 0, t_team = 0;
+    oa::ChatCallbacks cb;
+    for (int k = 0; k < n; k++) {
+        oa::ChatRequest req;
+        req.now_ms = 1760000000000LL;
+        req.enable_thinking = thinking;
+        req.sampling.temp = 0.7f;
+        req.sampling.top_k = 20;
+        req.sampling.top_p = 0.8f;
+        req.sampling.seed = 1234;
+        req.sampling.max_tokens = 768;
+        req.sampling.thinking_budget = 512;
+        req.messages.push_back({"user", std::string(kProblems[k].q) + " Give the final answer as a number at the end.", ""});
+        auto t0 = std::chrono::steady_clock::now();
+        auto a = e.chat(req, cb);
+        t_alone += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        double v = 0;
+        const bool ok_a = a.ok && last_number(a.content, v) && std::fabs(v - kProblems[k].a) < 1e-6;
+        right_alone += ok_a;
+
+        req.team = 2;
+        req.partner_name = partner ? "partner" : "";
+        t0 = std::chrono::steady_clock::now();
+        auto t = e.chat(req, cb, partner);
+        t_team += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const bool ok_t = t.ok && last_number(t.content, v) && std::fabs(v - kProblems[k].a) < 1e-6;
+        right_team += ok_t;
+        std::printf("  %2d: alone %s, team %s (answer %g; team said %g)\n", k + 1, ok_a ? "right" : "wrong",
+                    ok_t ? "right" : "wrong", kProblems[k].a, v);
+        if (!ok_t) std::printf("      team reply: %s\n", t.content.substr(0, 400).c_str());
+        if (t.content.find("Answer 1") != std::string::npos || t.content.find("Answer 2") != std::string::npos) mentions++;
+        CHECK(t.ok && !t.content.empty(), "%s: team reply %d came back empty: %s", label, k + 1, t.error.c_str());
+        CHECK(t.stats.team == 2, "%s: team reply %d was not made by a team (%d)", label, k + 1, t.stats.team);
+        CHECK(t.reasoning.find("Answer 1") != std::string::npos && t.reasoning.find("Answer 2") != std::string::npos,
+              "%s: the separate answers are not in the fold", label);
+        if (k == 0) std::printf("  first team reply, fold:\n%s\n  reply: %s\n", t.reasoning.c_str(), t.content.c_str());
+    }
+    std::printf("SPEED: %s%s, team of 2%s: %d of %d right (alone %d of %d), %.1f s a reply (alone %.1f s); %d replies "
+                "still name the separate answers\n", label, thinking ? " thinking" : "", partner ? " with a partner" : "",
+                right_team, n, right_alone, n, t_team / n, t_alone / n, mentions);
+
+    // a stop part way ends the whole team reply, with what there was in the fold
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.enable_thinking = false;
+    req.team = 2;
+    req.sampling.max_tokens = 400;
+    req.messages.push_back({"user", "Write a long story about a lighthouse keeper.", ""});
+    oa::ChatCallbacks sc;
+    int updates = 0;
+    sc.on_update = [&](const std::string &, const std::string &, int) {
+        if (++updates == 20) {
+            e.request_stop();
+            p.request_stop();
+        }
+    };
+    auto r = e.chat(req, sc, partner);
+    std::printf("  stopped: ok=%d reason=%s team=%d fold=%zu chars content=%zu chars\n", r.ok, r.stats.stop_reason.c_str(),
+                r.stats.team, r.reasoning.size(), r.content.size());
+    CHECK(r.ok && r.stats.stop_reason == "stopped", "%s: a stopped team reply should end stopped (%s)", label,
+          r.stats.stop_reason.c_str());
+    CHECK(r.stats.team == 1 && r.content.empty() && r.reasoning.find("Answer 1") == 0,
+          "%s: a team reply stopped during the first answer should keep that answer in the fold only", label);
+}
+
 // Bonsai: Qwen models with weights of -1/0/+1 (Q2_0, with PrismML's Hadamard rotation) or 1 bit
 // (Q1_0). They must load and answer sensibly, not just run.
 static void test_bonsai(const std::string & path, const char * label, int ctx, bool low_memory = false) {
@@ -1505,6 +1639,15 @@ int main(int argc, char ** argv) {
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }
+    if (argc >= 7 && std::string(argv[3]) == "--team") {
+        // test_engine <tiny models dir> <llama.cpp dir> --team <model.gguf> <partner.gguf or -> <label> [questions] [think]
+        const std::string partner = std::string(argv[5]) == "-" ? "" : argv[5];
+        const int nq = argc >= 8 ? std::atoi(argv[7]) : 12;
+        const bool think = argc >= 9 && std::string(argv[8]) == "think";
+        test_team(argv[4], partner, argv[6], nq, think);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     if (argc >= 6 && std::string(argv[3]) == "--think") {
         // test_engine <tiny models dir> <llama.cpp dir> --think <model.gguf> <label>
         test_thinking(argv[4], argv[5]);
@@ -1554,6 +1697,11 @@ int main(int argc, char ** argv) {
         test_vision(rd + "/LFM2.5-VL-3B-Q4_K_M.gguf", rd + "/mmproj-LFM2.5-VL-3B-Q8_0.gguf", "LFM2.5-VL 3B Q4_K_M", rd);
         test_speed(rd + "/LFM2.5-VL-3B-Q4_K_M.gguf", "LFM2.5-VL 3B Q4_K_M, DSpark", rd + "/LFM2.5-VL-3B-DSpark-F16.gguf",
                    {0, 1, 3, 7}, false, kStoryPrompt);
+        // working together: Qwen3.5 0.8B twice, and with LFM2.5 1.2B as its partner (how often each
+        // gets short word problems right, and that team replies come back whole and stop cleanly)
+        test_team(rd + "/Qwen3.5-0.8B-Q4_K_M.gguf", "", "Qwen3.5 0.8B", 6, false);
+        test_team(rd + "/Qwen3.5-0.8B-Q4_K_M.gguf", rd + "/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf",
+                  "Qwen3.5 0.8B + LFM2.5 1.2B", 6, false);
         // abliterated copies load and answer like their originals
         test_bonsai(std::string(argv[3]) + "/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", "Qwen3.5 2B abliterated", 2048);
         test_bonsai(std::string(argv[3]) + "/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf", "LFM2.5 1.2B abliterated", 2048);

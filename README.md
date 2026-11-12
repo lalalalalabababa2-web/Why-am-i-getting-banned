@@ -42,6 +42,16 @@ browser when Android asks. New builds install over old ones and keep models and 
   after two silent turns in a row or when you leave the app, and keeps the screen on meanwhile.
   Speech recognition and the voice are the phone's own, so this works with no connection too.
   The icon's other shortcut opens a new chat.
+- **Working together**: tap the model's name, then *Work together*, to have each message answered
+  two or three times separately and then settled by a review pass that checks the answers against
+  each other, looks for mistakes and writes the reply. The separate answers and the review's
+  checking are in the reply's fold. Every second answer can come from another model on the phone,
+  loaded next to the first (for example Qwen3.5 0.8B with LFM2.5 1.2B). It takes about as long as
+  one reply per answer, plus the review. With Qwen3.5 0.8B on twelve short word problems (thinking
+  off): 10 of 12 right as a team of two, against 8 of 12 answering alone,
+  at 30.8 s a reply against 13.4 s on 4 x86 threads (measured with the first version of the review,
+  before it was split into checking and reply; the review caught, for example, an answer that left
+  out a step).
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several
@@ -205,6 +215,11 @@ latest, Nemotron 3.5 Bolt E4B (answers, reads a long message, thinks when a ques
 stops at its budget, pictures and video frames, its DFlash drafter writing the same words) and
 Ornith 1.5 9B (the same, without a drafter). `OA_THINK_PROMPT` gives `--think` a harder question
 for models that answer an easy one without thinking.
+`--team <model> <partner or -> <label> [questions]` measures working together: short word
+problems with one right number each, answered alone and by a team (the same model twice, or with
+the partner), counting right final answers; every team reply must come back with a reply, its
+separate answers in the fold, and stop cleanly part way. CI runs it for Qwen3.5 0.8B alone and
+with LFM2.5 1.2B as its partner.
 The speeds it prints are for those runners, not for a phone. From GitHub's ARM runner (4 server-class ARM
 cores; tokens per second while writing, greedy, the same words in every column):
 
@@ -246,3 +261,8 @@ git submodule update --init
   newer llama.cpp than b11700; the app offers neither until that update.
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
+- Making pictures: the plan is stable-diffusion.cpp built on the same ggml as llama.cpp, with
+  one-step SDXS-512 models (a few hundred MB, one pass per picture). Not started: it needs that
+  library added to the build, which has not been approved yet.
+- Dictation and talking have only run where the emulator has no on-device speech recognizer, so
+  the listening itself is untested; the order of a spoken conversation is tested on its own.

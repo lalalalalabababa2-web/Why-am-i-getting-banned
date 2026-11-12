@@ -710,7 +710,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val readIt = last != null && last.role == "assistant" && !last.error && !voiceStopped
         voiceStopped = false
         voiceReplyId = last?.id
-        voice.replied(if (readIt) last!!.content else "")
+        voice.replied(if (readIt) last?.content.orEmpty() else "")
     }
 
     private fun refreshVoice() {
@@ -804,8 +804,19 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         send.animate().cancel()
         send.scaleX = 1f
         send.scaleY = 1f
-        input.hint = app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
+        input.hint = composerHint()
         updateSend()
+    }
+
+    /** Who you are writing to. */
+    private fun composerHint(): String {
+        val name = app.engine.loaded?.displayName
+        return when {
+            dictation != null -> "Listening…"
+            name == null -> "Message"
+            app.chat.teamSize() > 0 -> "Message $name and team"
+            else -> "Message $name"
+        }
     }
 
     private fun updateSend() {
@@ -859,7 +870,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     private fun refreshAll() {
         // who you are writing to
-        val hint = if (dictation != null) "Listening…" else app.engine.loaded?.let { "Message ${it.displayName}" } ?: "Message"
+        val hint = composerHint()
         if (input.hint?.toString() != hint) input.hint = hint
         refreshHeader()
         refreshEmpty()
@@ -958,9 +969,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             pm.menu.add(0, i + 1, i, (if (m.file.name == current) "✓ " else "") + m.displayName)
         }
         pm.menu.add(0, 0, local.size, "All models…")
+        val team = TeamDialog.summary(app)
+        pm.menu.add(0, TEAM_ITEM, local.size + 1, if (team.isEmpty()) "Work together…" else "Work together: $team…")
         pm.setOnMenuItemClickListener { item ->
             val m = local.getOrNull(item.itemId - 1)
             when {
+                item.itemId == TEAM_ITEM -> TeamDialog.show(this, app) { refreshAll() }
                 item.itemId == 0 -> startActivity(Intent(this, ModelsActivity::class.java))
                 m != null && m.file.name != current -> {
                     val go = {
@@ -1094,6 +1108,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     }
 
     companion object {
+        /** The model menu's item for working together. */
+        private const val TEAM_ITEM = 10_000
+
         /** The app's shortcuts (res/xml/shortcuts.xml). */
         const val ACTION_TALK = "app.offlineai.chat.action.TALK"
         const val ACTION_NEW_CHAT = "app.offlineai.chat.action.NEW_CHAT"

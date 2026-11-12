@@ -6,6 +6,7 @@ import android.widget.LinearLayout
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import app.offlineai.chat.data.ChatMessage
 import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.Catalog
@@ -277,9 +278,7 @@ class SmokeTest {
     /** With the box empty the send button offers speaking instead, on phones that turn speech into text offline. */
     @Test
     fun emptyBoxOffersSpeakingWhereItCan() {
-        // an earlier test may have it loaded already: never rewrite a file the engine has mapped
-        val have = File(app.models.dir, "test-llama.gguf")
-        load(if (have.isFile && have.length() > 0) have else installModel("test-llama.gguf"))
+        load(installed("test-llama.gguf"))
         onMain { app.chat.newChat() }
         ActivityScenario.launch(MainActivity::class.java).use { sc ->
             Thread.sleep(500)
@@ -302,6 +301,66 @@ class SmokeTest {
         return null
     }
 
+    /** A model file from the test assets, copied in only if it is not there yet (never over a mapped one). */
+    private fun installed(asset: String): File {
+        val have = File(app.models.dir, asset)
+        return if (have.isFile && have.length() > 0) have else installModel(asset)
+    }
+
+    /** Working together: two answers then a review, by the model alone and with a partner model next to it. */
+    @Test
+    fun teamReplies() {
+        app.settings.contextSize = 2048
+        app.settings.maxTokens = 48
+        app.settings.threads = 2
+        val main = installed("test-qwen35.gguf")
+        val other = installed("test-llama.gguf")
+        load(main)
+        try {
+            app.settings.teamSize = 2
+            app.settings.teamPartner = null
+            onMain { app.chat.newChat() }
+            turn("What is two plus two?")
+            var team = 0
+            var fold = ""
+            var model = ""
+            onMain {
+                val m = app.chat.conversation.messages.last()
+                team = m.team
+                fold = m.reasoning
+                model = m.model
+            }
+            assertEquals("a team reply", 2, team)
+            assertTrue("both answers in the fold: $fold", fold.contains("Answer 1") && fold.contains("Answer 2"))
+
+            val latch = CountDownLatch(1)
+            var error: String? = "not called"
+            onMain {
+                app.settings.teamPartner = other.name
+                app.applyTeamPartner { e ->
+                    error = e
+                    latch.countDown()
+                }
+            }
+            assertTrue("the partner loads", latch.await(120, TimeUnit.SECONDS))
+            assertNull("the partner loads: $error", error)
+            turn("And three plus three?")
+            onMain {
+                val m = app.chat.conversation.messages.last()
+                team = m.team
+                fold = m.reasoning
+                model = m.model
+            }
+            assertEquals("a team reply with a partner", 2, team)
+            assertTrue("the partner's answer is named: $fold", fold.contains("Answer 2 ("))
+            assertTrue("the reply names both models: $model", model.contains(" + "))
+        } finally {
+            app.settings.teamSize = 0
+            app.settings.teamPartner = null
+            onMain { app.applyTeamPartner() }
+        }
+    }
+
     /** The app's shortcuts (long-press its icon) are published, and New chat opens an empty chat. */
     @Test
     fun shortcuts() {
@@ -317,7 +376,7 @@ class SmokeTest {
 
         var before = ""
         onMain {
-            app.chat.conversation.messages.add(app.offlineai.chat.data.ChatMessage(role = "user", content = "an old message"))
+            app.chat.conversation.messages.add(ChatMessage(role = "user", content = "an old message"))
             before = app.chat.conversation.id
         }
         val intent = android.content.Intent(app, MainActivity::class.java).setAction(MainActivity.ACTION_NEW_CHAT)

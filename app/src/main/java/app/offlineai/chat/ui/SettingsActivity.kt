@@ -227,6 +227,11 @@ class SettingsActivity : AppCompatActivity() {
                 s.thinkingBudget = Settings.THINKING_BUDGETS[it]
             }
         }
+        val team = TeamDialog.summary(app)
+        row("Work together", if (team.isEmpty()) "Off: each message is answered once. Turn on to have two or three " +
+            "answers checked against each other before the reply." else "On: $team.") {
+            TeamDialog.show(this, app) { rebuild() }
+        }
         choice("Longest reply", "Thinking counts towards this.",
             Settings.MAX_TOKENS.map { "$it tokens" }, Settings.MAX_TOKENS.indexOf(s.maxTokens)) {
             s.maxTokens = Settings.MAX_TOKENS[it]

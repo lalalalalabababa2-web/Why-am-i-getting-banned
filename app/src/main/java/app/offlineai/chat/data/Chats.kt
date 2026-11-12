@@ -53,12 +53,15 @@ class ChatMessage(
     val attachments: List<Attachment> = emptyList(),
     /** Still being written when last saved: if the app is closed meanwhile, this is what was kept. */
     var partial: Boolean = false,
+    /** A team reply: written from this many separate answers, which are in [reasoning] (0: an ordinary reply). */
+    var team: Int = 0,
 ) {
     fun toJson(): JSONObject {
         val j = JSONObject()
             .put("id", id).put("role", role).put("content", content).put("reasoning", reasoning)
             .put("stats", stats).put("error", error).put("model", model).put("created_at", createdAt)
         if (partial) j.put("partial", true)
+        if (team > 0) j.put("team", team)
         if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
         return j
     }
@@ -79,6 +82,7 @@ class ChatMessage(
                     runCatching { Attachment.fromJson(att.getJSONObject(it)) }.getOrNull()
                 },
                 partial = j.optBoolean("partial"),
+                team = j.optInt("team"),
             )
         }
     }

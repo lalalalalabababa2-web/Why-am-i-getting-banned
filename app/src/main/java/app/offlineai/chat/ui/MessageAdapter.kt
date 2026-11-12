@@ -295,7 +295,12 @@ class MessageAdapter(
             val open = thinkingOpen[m.id] ?: (app.settings.expandThinking || (streaming && m.content.isBlank()))
             thinkWrap.visibility = if (hasThinking && open) View.VISIBLE else View.GONE
             if (hasThinking) {
-                thinkLabel.text = if (streaming && m.content.isBlank()) "Thinking…" else "Thoughts"
+                thinkLabel.text = when {
+                    m.team > 0 && streaming && m.content.isBlank() -> "Working it out together…"
+                    m.team > 0 -> "How they worked it out"
+                    streaming && m.content.isBlank() -> "Thinking…"
+                    else -> "Thoughts"
+                }
                 chevron.setImageDrawable(ContextCompat.getDrawable(ctx, if (open) R.drawable.ic_chevron_down else R.drawable.ic_chevron_right)
                     ?.mutate()?.apply { setTint(Palette.text3) })
                 if (open) {

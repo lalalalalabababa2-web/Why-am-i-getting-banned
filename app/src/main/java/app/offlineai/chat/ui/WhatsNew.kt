@@ -26,6 +26,9 @@ object WhatsNew {
             "Talk in a new chat, or long-press the app's icon and pick Talk, to talk: each reply is read aloud, then " +
             "it listens again.",
         "Settings" to "Ready-made styles for the system prompt, and an accent colour from your wallpaper.",
+        "Work together" to "Have each message answered two or three times separately, then checked and settled in a " +
+            "review: by the model itself, or with a second model on the phone loaded next to it. Tap the model's name " +
+            "at the top, then Work together.",
         "About" to "What the app promises, credits for everyone it is built on, and their licenses (Settings, About).",
     )
 

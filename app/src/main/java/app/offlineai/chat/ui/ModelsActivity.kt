@@ -547,6 +547,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             .setMessage("This frees ${ModelStore.formatBytes(model.sizeBytes)}. You can download it again later.")
             .setPositiveButton("Delete") { _, _ ->
                 if (app.engine.loaded?.key == model.file.name) app.engine.unload()
+                // a team partner goes too, and the team answers with the model alone from then on
+                if (app.settings.teamPartner == model.file.name) {
+                    app.settings.teamPartner = null
+                    app.applyTeamPartner()
+                }
                 // let the engine let go of the file first
                 main.postDelayed({
                     app.models.delete(model)
