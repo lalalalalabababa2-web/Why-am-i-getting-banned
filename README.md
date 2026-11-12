@@ -18,6 +18,9 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 ## What it does
 
+- **First start**: the empty chat suggests one model for the phone's memory (Gemma 4 E4B on an
+  8 GB phone, smaller ones on phones with less), downloads it in one tap with its progress shown,
+  and loads it the moment it is on the phone.
 - **Models screen**: 41 models from 270M to 27B that fit 8 GB of memory, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that

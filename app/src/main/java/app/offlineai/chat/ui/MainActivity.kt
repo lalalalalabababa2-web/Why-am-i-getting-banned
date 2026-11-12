@@ -33,6 +33,7 @@ import app.offlineai.chat.App
 import app.offlineai.chat.ChatController
 import app.offlineai.chat.R
 import app.offlineai.chat.data.Attachment
+import app.offlineai.chat.data.Catalog
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.ModelStore
@@ -58,6 +59,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var empty: LinearLayout
     private lateinit var emptyText: TextView
     private lateinit var emptyButton: TextView
+    private lateinit var emptyMore: TextView
+    /** What the empty screen's main button does right now. */
+    private var emptyAction: () -> Unit = {}
+    /** A first model downloading from the empty screen: it loads the moment it is on the phone. */
+    private var firstPending: String? = null
     private lateinit var starters: LinearLayout
     private lateinit var attach: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
@@ -186,10 +192,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty.addView(text("Offline AI", 22f, bold = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)) }, lp(MATCH, WRAP))
         emptyText = text("", 14f, Palette.text2).apply { gravity = Gravity.CENTER }
         empty.addView(emptyText, lp(MATCH, WRAP))
-        emptyButton = pill("Choose a model", primary = true) {
-            startActivity(Intent(this, ModelsActivity::class.java))
-        }
+        emptyAction = { startActivity(Intent(this, ModelsActivity::class.java)) }
+        emptyButton = pill("Choose a model", primary = true) { emptyAction() }
         empty.addView(emptyButton, lp(WRAP, WRAP).apply { topMargin = dp(20); gravity = Gravity.CENTER_HORIZONTAL })
+        emptyMore = pill("See all models") { startActivity(Intent(this, ModelsActivity::class.java)) }.apply { visibility = View.GONE }
+        empty.addView(emptyMore, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         // a few things to try, put in the composer (not sent) so they can be changed first
         starters = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -288,6 +295,15 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private val ticker = object : Runnable {
         override fun run() {
             if (app.chat.generating) refreshHeader()
+            // no model yet: a download's progress, and the first model loaded the moment it is here
+            if (app.engine.loaded == null && !app.engine.isLoading && app.nativeError == null) {
+                refreshEmpty()
+                val waiting = firstPending
+                if (waiting != null && !app.models.isDownloading(waiting)) {
+                    firstPending = null
+                    app.models.find(waiting)?.let { app.loadModel(it) }
+                }
+            }
             subtitle.postDelayed(this, 1000)
         }
     }
@@ -599,14 +615,70 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 emptyButton.visibility = View.GONE
             }
             loaded == null -> {
-                emptyText.text = "Pick a model to start. It downloads once, then everything runs on this phone, with no internet."
+                // finished downloads are moved into place here, so a first model is noticed at once
+                val pending = runCatching { app.models.poll() }.getOrDefault(emptyList())
+                    .firstOrNull { Catalog.byFile(it.fileName) != null }
+                val first = app.firstModel()
                 emptyButton.visibility = View.VISIBLE
+                when {
+                    pending != null -> {
+                        val name = Catalog.byFile(pending.fileName)?.name ?: pending.fileName
+                        val total = if (pending.total > 0) pending.total else Catalog.byFile(pending.fileName)?.sizeBytes ?: 0L
+                        val pct = if (total > 0) (pending.done * 100 / total).toInt() else 0
+                        if (pending.fileName == app.settings.lastModelFile) firstPending = pending.fileName
+                        emptyText.text = "Downloading $name: $pct% of ${ModelStore.formatBytes(total)}. " +
+                            (if (firstPending == pending.fileName) "It loads by itself when it is done; " else "") +
+                            "from then on everything runs on this phone, with no internet."
+                        emptyButton.text = "See downloads"
+                        emptyAction = { startActivity(Intent(this, ModelsActivity::class.java)) }
+                        emptyMore.visibility = View.GONE
+                    }
+                    first != null && app.models.local().isEmpty() -> {
+                        val failed = app.models.failures[first.file]
+                        emptyText.text = (if (failed != null) "The download stopped: $failed\n\n" else "") +
+                            "Download a model to start: once it is on the phone, everything runs here, with no " +
+                            "internet. For this phone: ${first.name}, ${ModelStore.formatBytes(first.sizeBytes)}."
+                        emptyButton.text = "Download ${first.name}"
+                        emptyAction = { startFirstDownload(first) }
+                        emptyMore.visibility = View.VISIBLE
+                    }
+                    else -> {
+                        emptyText.text = "Pick a model to start. It downloads once, then everything runs on this phone, with no internet."
+                        emptyButton.text = "Choose a model"
+                        emptyAction = { startActivity(Intent(this, ModelsActivity::class.java)) }
+                        emptyMore.visibility = View.GONE
+                    }
+                }
             }
             else -> {
                 emptyText.text = "Ask anything. Your chats stay on this phone."
                 emptyButton.visibility = View.GONE
+                emptyMore.visibility = View.GONE
             }
         }
+    }
+
+    /** The empty screen's one-tap start: the suggested model downloads, then loads by itself. */
+    private fun startFirstDownload(m: app.offlineai.chat.data.CatalogModel) {
+        if (app.settings.offlineOnly) {
+            toast("Offline only is on (Settings), so downloads are off.")
+            return
+        }
+        val free = app.models.freeBytes()
+        if (free in 0 until m.sizeBytes + 200_000_000L) {
+            toast("Not enough free space: ${m.name} needs ${ModelStore.formatBytes(m.sizeBytes)} and " +
+                "${ModelStore.formatBytes(free)} is free.")
+            return
+        }
+        val error = app.models.download(m.url, m.file, m.name)
+        if (error != null) {
+            toast(error)
+            return
+        }
+        app.settings.lastModelFile = m.file
+        firstPending = m.file
+        toast("Downloading ${m.name}. It carries on if you leave the app, and loads when it is done.")
+        refreshEmpty()
     }
 
     private fun refreshHeader() {

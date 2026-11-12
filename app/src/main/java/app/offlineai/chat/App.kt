@@ -190,6 +190,20 @@ class App : Application() {
         if (low && !engine.isBusy) engine.releaseMedia()
     }
 
+    /**
+     * The model to suggest first on this phone: the best all-rounder that fits its memory easily
+     * (Gemma 4's "E" models need about half their file size in memory).
+     */
+    fun firstModel(): app.offlineai.chat.data.CatalogModel? {
+        val id = when {
+            totalRam >= 7_000_000_000L -> "gemma4-e4b"
+            totalRam >= 5_000_000_000L -> "gemma4-e2b"
+            totalRam >= 3_500_000_000L -> "qwen35-2b"
+            else -> "qwen35-0.8b"
+        }
+        return app.offlineai.chat.data.Catalog.models.firstOrNull { it.id == id }
+    }
+
     /** Loads the model used last time, if it is still here and nothing is loaded. */
     fun loadLastModel() {
         if (nativeError != null || engine.loaded != null || engine.phase != EngineController.Phase.IDLE) return
