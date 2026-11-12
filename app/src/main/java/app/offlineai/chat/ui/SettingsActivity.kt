@@ -214,9 +214,18 @@ class SettingsActivity : AppCompatActivity() {
 
         content.addView(sectionTitle("Replies"))
         switch("Thinking", "Models that can think work through the problem before answering. Slower, often better.",
-            s.thinking) { s.thinking = it }
+            s.thinking) { s.thinking = it; rebuild() }
         switch("Show thinking open", "Keep the thinking unfolded after the answer starts.", s.expandThinking) {
             s.expandThinking = it
+        }
+        if (s.thinking) {
+            choice("Thinking budget",
+                "How long a model may think before it has to answer. On a phone long thinking takes minutes; when the " +
+                    "budget runs out the model is told to answer, and does. Higher helps with hard problems.",
+                Settings.THINKING_BUDGETS.map { if (it < 0) "No limit" else "$it tokens" },
+                Settings.THINKING_BUDGETS.indexOf(s.thinkingBudget).coerceAtLeast(0)) {
+                s.thinkingBudget = Settings.THINKING_BUDGETS[it]
+            }
         }
         choice("Longest reply", "Thinking counts towards this.",
             Settings.MAX_TOKENS.map { "$it tokens" }, Settings.MAX_TOKENS.indexOf(s.maxTokens)) {

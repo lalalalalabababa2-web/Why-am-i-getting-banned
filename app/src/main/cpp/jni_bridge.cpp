@@ -77,6 +77,7 @@ void parse_request(const json & j, oa::ChatRequest & req) {
         req.sampling.repeat_penalty = s.value("repeat_penalty", req.sampling.repeat_penalty);
         req.sampling.presence_penalty = s.value("presence_penalty", req.sampling.presence_penalty);
         req.sampling.max_tokens = s.value("max_tokens", req.sampling.max_tokens);
+        req.sampling.thinking_budget = s.value("thinking_budget", req.sampling.thinking_budget);
         const int64_t seed = s.value("seed", (int64_t) -1);
         req.sampling.seed = seed < 0 ? 0xFFFFFFFFu : (uint32_t) seed;
     }

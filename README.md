@@ -37,6 +37,12 @@ browser when Android asks. New builds install over old ones and keep models and 
   Settings finds it faster on the phone: on the CI machines it was slower or no faster (see
   Tests), because a CPU pays for most of each extra word it checks. A DSpark drafter guesses a
   whole block of up to 7 words in one pass, so the test tries 1, 3 and 7 for it.
+- **Thinking budget**: a model that thinks is stopped after 1024 tokens of thinking by default
+  (Settings: 256 to 4096, or no limit), handed a line saying it is time to answer, and answers.
+  On a phone, thinking with no limit can take minutes before the first word of the answer. This
+  is llama.cpp's reasoning-budget sampler, as its server uses it; if a model cut off like this
+  goes on thinking in its answer and closes its thinking again, that part moves back into the
+  thinking.
 - **In the background**: a reply keeps going when you switch apps or turn the screen off (a
   foreground service with a wake lock), with a notification showing how far it has got and
   another when it is ready. In *gentle* mode (the default) it drops to a few threads at a low
@@ -158,7 +164,8 @@ for one layer at 8192 tokens), so it is not in the app.
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
 pictures and video frames through its projector, and both Bonsai models answering a question.
 Also Spark-X2.6 1.7B answering, reading a long message and thinking (the thinking and the answer
-must come apart), pictures and video frames with Qwen3-VL 2B and LFM2.5-VL 3B, and LFM2.5-VL 3B
+must come apart; with a thinking budget of 8 tokens its 51 tokens of thinking are cut to 38,
+the line that ends them included, and the answer still comes, with no tags left in it), pictures and video frames with Qwen3-VL 2B and LFM2.5-VL 3B, and LFM2.5-VL 3B
 with its DSpark drafter at 1, 3 and 7 drafted tokens (every word must be the model's own pick).
 On this repository's x86 test machine (4 threads) DSpark wrote the same words but more slowly
 (12.2 tokens/s without it, 9.7 with 1 drafted, 6.7 with 7): fewer than half its guesses were

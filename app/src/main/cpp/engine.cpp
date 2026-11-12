@@ -174,6 +174,28 @@ static constexpr int kRsNgram = 3;
 // Most tokens a block drafter (DSpark, DFlash) may propose per step: steps of 8 tokens.
 static constexpr int kMaxBlockDraft = 7;
 
+// What a model that has used up its thinking budget is handed before the end of its thinking.
+static const char * kBudgetMessage = "\n\nI have thought about this long enough; time to give the answer.\n";
+
+// After its thinking was cut off, a model sometimes goes on thinking in the answer and closes its
+// thinking a second time: what comes before the last end tag in the answer is thinking too.
+static void settle_late_thinking(std::string & reasoning, std::string & content, const std::vector<std::string> & end_tags) {
+    size_t cut = std::string::npos, len = 0;
+    for (const auto & tag : end_tags) {
+        if (tag.empty()) continue;
+        const size_t at = content.rfind(tag);
+        if (at != std::string::npos && (cut == std::string::npos || at > cut)) {
+            cut = at;
+            len = tag.size();
+        }
+    }
+    if (cut == std::string::npos) return;
+    reasoning += content.substr(0, cut);
+    size_t from = cut + len;
+    while (from < content.size() && (content[from] == '\n' || content[from] == ' ')) from++;
+    content.erase(0, from);
+}
+
 static double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -1654,6 +1676,24 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     sp.penalty_present = req.sampling.presence_penalty;
     sp.seed = req.sampling.seed;
     session->apply_sampling(sp);
+    // A thinking budget: once the model has thought this long, it is told to answer and its
+    // thinking is closed for it (llama.cpp's reasoning-budget sampler, as its server does it).
+    if (req.enable_thinking && req.sampling.thinking_budget >= 0 && !session->thinking_start_tag().empty() &&
+        !session->thinking_end_tags().empty()) {
+        sp.reasoning_budget_tokens = req.sampling.thinking_budget;
+        sp.reasoning_budget_start = common_tokenize(vocab_, session->thinking_start_tag(), false, true);
+        sp.reasoning_budget_end.clear();
+        for (const auto & tag : session->thinking_end_tags()) {
+            if (!tag.empty()) sp.reasoning_budget_end.push_back(common_tokenize(vocab_, tag, false, true));
+        }
+        if (!sp.reasoning_budget_end.empty()) {
+            llama_tokens forced = common_tokenize(vocab_, kBudgetMessage, false, false);
+            forced.insert(forced.end(), sp.reasoning_budget_end.front().begin(), sp.reasoning_budget_end.front().end());
+            sp.reasoning_budget_forced = std::move(forced);
+        } else {
+            sp.reasoning_budget_tokens = -1;
+        }
+    }
     common_sampler * smpl = common_sampler_init(model_, sp);
     if (!smpl) {
         res.error = "Could not set up sampling.";
@@ -1689,8 +1729,18 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
     std::string raw;
     std::string reasoning, content;
     bool parser_ok = true;
+    // whether the thinking budget cut the thinking off (its line is in the thinking)
+    const bool budget_on = sp.reasoning_budget_tokens >= 0;
+    const std::vector<std::string> end_tags = budget_on ? session->thinking_end_tags() : std::vector<std::string>();
+    auto budget_hit = [&](const std::string & r) { return budget_on && r.find("time to give the answer") != std::string::npos; };
     auto emit = [&](int n) {
         if (!cb.on_update) return;
+        if (parser_ok && budget_hit(reasoning)) {
+            std::string r = reasoning, c = content;
+            settle_late_thinking(r, c, end_tags);
+            cb.on_update(r.substr(0, utf8_complete_prefix(r)), c.substr(0, utf8_complete_prefix(c)), n);
+            return;
+        }
         const std::string & r = parser_ok ? reasoning : std::string();
         const std::string & c = parser_ok ? content : raw;
         cb.on_update(r.substr(0, utf8_complete_prefix(r)), c.substr(0, utf8_complete_prefix(c)), n);
@@ -1882,6 +1932,7 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         content = raw;
         reasoning.clear();
     }
+    if (parser_ok && budget_hit(reasoning)) settle_late_thinking(reasoning, content, end_tags);
     res.reasoning = reasoning.substr(0, utf8_complete_prefix(reasoning));
     res.content = content.substr(0, utf8_complete_prefix(content));
     res.stats.stop_reason = reason;

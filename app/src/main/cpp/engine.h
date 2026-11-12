@@ -81,6 +81,9 @@ struct SamplingParams {
     float    repeat_penalty   = 1.0f;
     float    presence_penalty = 0.0f;
     int      max_tokens       = 2048;
+    // Most tokens a model may think before it has to answer (-1: as long as it likes). When it runs
+    // out, it is handed a line saying so and the end of its thinking, and the answer follows.
+    int      thinking_budget  = -1;
     uint32_t seed             = 0xFFFFFFFFu;  // random
 };
 

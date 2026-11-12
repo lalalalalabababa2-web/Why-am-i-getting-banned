@@ -423,6 +423,7 @@ class ChatController(private val app: App) {
                 .put("top_k", s.topK).put("min_p", s.minP.toDouble()).put("repeat_penalty", s.repeatPenalty.toDouble())
         }
         sampling.put("max_tokens", s.maxTokens).put("seed", -1)
+        if (s.thinking) sampling.put("thinking_budget", s.thinkingBudget)
 
         return JSONObject()
             .put("messages", messages)

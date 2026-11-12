@@ -166,6 +166,13 @@ class Settings(context: Context) {
     var maxTokens: Int
         get() = int("max_tokens", 4096)
         set(v) = put("max_tokens", v)
+    /**
+     * Most tokens a model may think before it has to answer (-1: no limit). On a phone a model
+     * can think for minutes; when the budget runs out it is told to answer, and does.
+     */
+    var thinkingBudget: Int
+        get() = int("thinking_budget", 1024)
+        set(v) = put("thinking_budget", v)
     var systemPrompt: String
         get() = str("system_prompt", "")
         set(v) = put("system_prompt", v)
@@ -254,6 +261,7 @@ class Settings(context: Context) {
     companion object {
         val CONTEXT_SIZES = intArrayOf(2048, 4096, 8192, 16384, 32768)
         val MAX_TOKENS = intArrayOf(512, 1024, 2048, 4096, 8192, 16384)
+        val THINKING_BUDGETS = intArrayOf(-1, 256, 512, 1024, 2048, 4096)
         val PROMPT_BATCHES = intArrayOf(64, 128, 256, 512)
         val STREAM_INTERVALS = intArrayOf(16, 33, 50, 100, 250)
         val FONT_SCALES = floatArrayOf(0.85f, 1.0f, 1.15f, 1.3f, 1.5f)

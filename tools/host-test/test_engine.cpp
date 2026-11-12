@@ -1223,6 +1223,24 @@ static void test_thinking(const std::string & path, const char * label) {
     CHECK(r.content.find("51") != std::string::npos, "%s: wrong or missing answer: %s", label, r.content.c_str());
     CHECK(r.content.find("<think>") == std::string::npos && r.content.find("</think>") == std::string::npos,
           "%s: thinking tags left in the answer: %s", label, r.content.c_str());
+
+    // a thinking budget far below what it thought just now: the thinking is cut off about there,
+    // with the line that says so, and the answer still comes
+    const size_t free_tokens = e.tokenize(r.reasoning, false).size();
+    req.sampling.thinking_budget = 8;
+    auto rb = e.chat(req, cb);
+    const size_t budget_tokens = e.tokenize(rb.reasoning, false).size();
+    std::printf("  budget 8 (%zu tokens of thinking without): ok=%d thinking=%zu tokens [%s] answer=[%s]\n", free_tokens, rb.ok,
+                budget_tokens, rb.reasoning.c_str(), rb.content.c_str());
+    CHECK(rb.ok && !rb.content.empty(), "%s: no answer after the thinking budget ran out: %s", label, rb.error.c_str());
+    CHECK(rb.content.find("</think>") == std::string::npos, "%s: thinking tags left in the answer after the budget: %s", label,
+          rb.content.c_str());
+    if (free_tokens > 16) {
+        CHECK(rb.reasoning.find("time to give the answer") != std::string::npos,
+              "%s: the budget did not cut the thinking off", label);
+        CHECK(budget_tokens < free_tokens, "%s: the thinking was not shorter with a budget (%zu, %zu)", label, budget_tokens,
+              free_tokens);
+    }
 }
 
 // Bonsai: Qwen models with weights of -1/0/+1 (Q2_0, with PrismML's Hadamard rotation) or 1 bit
