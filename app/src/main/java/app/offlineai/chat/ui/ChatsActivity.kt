@@ -141,7 +141,17 @@ class ChatsActivity : AppCompatActivity() {
             return
         }
         val current = app.chat.conversation.id
+        // under headings by when they were last written in (search results are a list of matches instead)
+        val now = System.currentTimeMillis()
+        var heading = ""
         chats.forEach { c ->
+            if (query.isBlank()) {
+                val h = ChatDates.section(c.updatedAt, now)
+                if (h != heading) {
+                    heading = h
+                    content.addView(sectionTitle(h).apply { accessibilityHeading = true })
+                }
+            }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
