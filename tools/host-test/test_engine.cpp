@@ -422,6 +422,105 @@ static void test_chat_smoke(const std::string & path) {
 }
 
 
+// Plain words in sentences, different for each seed, about `n` words long.
+static std::string filler(int seed, int n) {
+    static const char * kWords[] = {
+        "the", "harbour", "light", "keeper", "wrote", "about", "storms", "and", "ships", "that", "passed", "near",
+        "rocks", "every", "night", "while", "gulls", "circled", "over", "grey", "water", "lamps", "turned", "slowly",
+        "boats", "came", "home", "with", "fish", "bread", "letters", "from", "town", "winter", "was", "long",
+    };
+    const int nw = (int) (sizeof kWords / sizeof kWords[0]);
+    uint32_t x = 2654435761u * (uint32_t) (seed + 1);
+    std::string s;
+    for (int i = 0; i < n; i++) {
+        x = x * 1664525u + 1013904223u;
+        if (i > 0) s += (i % 9 == 0) ? ". " : " ";
+        s += kWords[(x >> 16) % nw];
+    }
+    return s + ".";
+}
+
+// A conversation longer than the context: the oldest exchanges are left out, and the place where
+// it is cut stays put from turn to turn while the rest still fits, so the memory of the last turn
+// is used again (a moved cut changes everything after the system message, and the whole
+// conversation is read again). When it has to move, it leaves a quarter of the context free, and
+// it is the first place that does, the same one trying every place in turn finds.
+static void test_context_cut(const std::string & path) {
+    std::printf("== context cut: %s\n", path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 1024;
+    lp.n_threads = 2;
+    lp.n_batch = 64;
+    lp.spec_n_max = 0;
+    lp.spec_ngram = false;
+    oa::Engine e, ref;
+    std::string err;
+    if (!e.load(path, lp, err) || !ref.load(path, lp, err)) {
+        std::fprintf(stderr, "  load failed: %s\n", err.c_str());
+        g_failures++;
+        return;
+    }
+    const int limit = 1024 - 256;      // context less room for the reply
+    const int roomy = limit - 1024 / 4;
+    oa::ChatCallbacks cb;
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.sampling.temp = 0.0f;
+    req.sampling.max_tokens = 1;
+    req.messages.push_back({"system", "Answer in a few words.", ""});
+    int seed = 0;
+    auto exchange = [&](oa::ChatRequest & r) {
+        r.messages.push_back({"assistant", filler(seed++, 30), ""});
+        r.messages.push_back({"user", filler(seed++, 20), ""});
+    };
+    req.messages.push_back({"user", filler(seed++, 20), ""});
+    for (int i = 0; i < 24; i++) exchange(req);
+
+    auto first = e.chat(req, cb);
+    std::printf("    first turn ok=%d prompt=%d dropped=%d err=%s\n", first.ok, first.stats.n_prompt, first.stats.n_dropped,
+                first.error.c_str());
+    CHECK(first.ok && first.stats.n_dropped > 0, "a conversation longer than the context should be cut");
+    CHECK(first.stats.n_prompt <= roomy, "a new cut should leave a quarter of the context free (%d > %d)",
+          first.stats.n_prompt, roomy);
+
+    // every place in turn: the conversation from there on, on an engine that never cut it
+    int expect = -1;
+    for (size_t at = 2; at < req.messages.size() && expect < 0; at++) {
+        if (req.messages[at].role != "user") continue;
+        oa::ChatRequest part = req;
+        part.messages.erase(part.messages.begin() + 1, part.messages.begin() + (long) at);
+        auto r = ref.chat(part, cb);
+        if (r.ok && r.stats.n_dropped == 0 && r.stats.n_prompt <= roomy) expect = (int) at - 1;
+    }
+    CHECK(expect == first.stats.n_dropped, "cut after %d messages, trying each place finds %d", first.stats.n_dropped, expect);
+
+    int stays = 0, moves = 0, prev = first.stats.n_dropped;
+    for (int turn = 0; turn < 10; turn++) {
+        exchange(req);
+        auto r = e.chat(req, cb);
+        CHECK(r.ok, "turn %d failed: %s", turn, r.error.c_str());
+        if (r.stats.n_dropped == prev) {
+            stays++;
+            CHECK(r.stats.n_prompt <= limit, "turn %d: kept a cut that no longer fits", turn);
+            CHECK(r.stats.n_reused > r.stats.n_prompt / 2, "turn %d: same cut but only %d of %d reused", turn,
+                  r.stats.n_reused, r.stats.n_prompt);
+        } else {
+            moves++;
+            CHECK(r.stats.n_dropped > prev, "turn %d: the cut moved back (%d after %d)", turn, r.stats.n_dropped, prev);
+            CHECK(r.stats.n_prompt <= roomy, "turn %d: a new cut should leave a quarter free", turn);
+        }
+        prev = r.stats.n_dropped;
+    }
+    std::printf("    10 more turns: the cut stayed %d times and moved %d times\n", stays, moves);
+    CHECK(moves >= 1 && stays >= 2 * moves, "the cut should move only every few turns (stayed %d, moved %d)", stays, moves);
+
+    // a different conversation (another system message) is cut on its own terms
+    req.messages[0].content = "Answer in a few more words.";
+    auto other = e.chat(req, cb);
+    CHECK(other.ok && other.stats.n_dropped > 0 && other.stats.n_prompt <= roomy,
+          "another conversation: ok=%d dropped=%d prompt=%d", other.ok, other.stats.n_dropped, other.stats.n_prompt);
+}
+
 // Reading ahead: after a reply, the engine reads what the next prompt will start with (the reply
 // as the template will show it next time, without its thinking), so the next reply only reads the
 // new message. The next reply must then be exactly what it would have been without reading
@@ -1221,6 +1320,12 @@ int main(int argc, char ** argv) {
         test_context_speed(argv[4], argv[5]);
         return g_failures ? 1 : 0;
     }
+    if (argc >= 5 && std::string(argv[3]) == "--cut") {
+        // test_engine <tiny models dir> <llama.cpp dir> --cut <model.gguf>
+        test_context_cut(argv[4]);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     if (argc >= 7 && std::string(argv[3]) == "--read-ahead") {
         // test_engine <tiny models dir> <llama.cpp dir> --read-ahead <model.gguf> <label> <thinking 0|1>
         test_read_ahead(argv[4], argv[5], true, std::atoi(argv[6]) != 0);
@@ -1269,6 +1374,8 @@ int main(int argc, char ** argv) {
     test_background(dir + "/llama-dense.gguf");
     test_background(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/gemma3-dense.gguf");
+    test_context_cut(dir + "/llama-dense.gguf");
+    test_context_cut(dir + "/qwen35-dense.gguf");
     for (const char * m : {"qwen35-dense.gguf", "llama-dense.gguf", "gemma3-dense.gguf"}) {
         test_read_ahead(dir + "/" + m, m, false, true);
     }

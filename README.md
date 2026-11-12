@@ -79,7 +79,13 @@ measured on one.
   the point where each reply starts, and restores it the next turn instead of re-reading the
   whole conversation.
 - Thinking and answer are separated by llama.cpp's own parser for each model's format.
-- When a conversation outgrows the context, the oldest exchanges are left out.
+- When a conversation outgrows the context, the oldest exchanges are left out. Where it is cut
+  matters as much as how much: everything after the system message changes when the cut moves,
+  and the whole conversation is read again (a minute or more on a phone for a full context). So
+  the cut stays where it was while the conversation still fits, and when it has to move it frees
+  another quarter of the context, so the next few turns fit without moving it again. In the
+  tests, a chat that keeps growing past a 1024-token context moved its cut on 9 turns out of 10
+  before this, and on 2 out of 10 now.
 
 ggml is built with every ARM CPU variant as a separate library (armv8.0 to armv9.2); at start
 the best one this phone supports is picked (on an S24 FE, one with dot products and int8 matrix
@@ -117,7 +123,10 @@ real Qwen3.5 and Gemma 4 templates over their real vocabularies and streams repl
 parser. Runs under AddressSanitizer and UBSan. CI runs it on every push.
 
 It also checks drafting: with n-gram drafts and with an MTP head (a random model with one added
-by the test), greedy replies must be the same tokens as without drafting. And reading ahead: on
+by the test), greedy replies must be the same tokens as without drafting. And cutting a long
+conversation: the cut stays put while the rest fits (the memory of the last turn is used again),
+moves only every few turns, and lands where trying every place in turn would put it
+(`test_engine <models> <llama.cpp> --cut <model.gguf>` runs just that). And reading ahead: on
 the hybrid, sliding-window and plain models, the replies after reading ahead are the same tokens
 as without it, the memory still matches a fresh read of the whole conversation, reading ahead
 twice reads nothing new, writing the last reply again afterwards still works, and reading ahead

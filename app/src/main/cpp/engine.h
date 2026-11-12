@@ -300,6 +300,9 @@ private:
 
     bool collect(const ChatRequest & req, Rendered & r, std::string & err) const;
     bool fit(const ChatRequest & req, Rendered & r, std::string & err);
+    // The conversation without its oldest `drop` messages (after the system message), rendered
+    // and tokenized into `r`.
+    bool render(const ChatRequest & req, Rendered & r, size_t drop, std::string & err);
     static void cut_prompt(Prompt & p, size_t n);
     bool build_prompt(const std::string & text, const std::vector<Media> & media, Prompt & out, std::string & err);
     // `need_logits`: leave the last token's logits ready for sampling (false when reading ahead).
@@ -367,6 +370,12 @@ private:
     bool                  self_bg_   = false;
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
+    // Where the last conversation that did not fit was cut (messages left out after the system
+    // message), and a hash of its messages up to the first one kept. The next turn cuts at the
+    // same place while the conversation still starts that way and still fits: moving the cut
+    // changes everything after the system message, and the whole conversation is read again.
+    size_t                cut_     = 0;
+    uint64_t              cut_key_ = 0;
 
     static constexpr size_t kMaxSnapshots = 2;
 };

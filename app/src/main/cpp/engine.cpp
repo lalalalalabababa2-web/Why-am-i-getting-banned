@@ -240,6 +240,8 @@ void Engine::unload() {
     cache_.clear();
     cache_extra_cells_ = 0;
     snapshots_.clear();
+    cut_ = 0;
+    cut_key_ = 0;
     mm_vision_ = mm_audio_ = false;
     compute_bytes_ = 0;
     free_pools();
@@ -1312,31 +1314,106 @@ bool Engine::collect(const ChatRequest & req, Rendered & r, std::string & err) c
     return true;
 }
 
+bool Engine::render(const ChatRequest & req, Rendered & r, size_t drop, std::string & err) {
+    try {
+        r.session = std::make_unique<common_chat_session>(tmpls_, vocab_, inputs_for(r.all, r.first, drop, true, req));
+    } catch (const std::exception & e) {
+        err = std::string("The model's chat template failed: ") + e.what();
+        return false;
+    }
+    if (!build_prompt(r.session->prompt().str(), media_for(r.all_media, r.first, drop), r.prompt, err)) return false;
+    r.drop = drop;
+    return true;
+}
+
+// The first `n` messages as one number: equal for conversations that start the same way.
+static uint64_t head_key(const std::vector<common_chat_msg> & all, const std::vector<std::vector<Media>> & media, size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    auto add = [&h](const std::string & s) {
+        for (unsigned char c : s) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+        h ^= 0x1F;  // a separator, so ("ab", "c") and ("a", "bc") differ
+        h *= 1099511628211ULL;
+    };
+    for (size_t i = 0; i < n && i < all.size(); i++) {
+        add(all[i].role);
+        add(all[i].content);
+        add(all[i].reasoning_content);
+        for (const auto & m : media[i]) add(m.path);
+    }
+    return h;
+}
+
 // Renders the conversation through the model's template and tokenizes it, leaving out the
-// oldest exchanges until it fits the context with room to reply.
+// oldest exchanges when it does not fit the context with room to reply.
+//
+// Where it is cut matters as much as how much. Everything after the system message moves when
+// the cut moves, and then the whole conversation has to be read again: a minute or more on a
+// phone for a full context. So the cut stays where it was last time while the conversation
+// still starts the same way and still fits; and when it has to move, it leaves out enough to
+// free another quarter of the context, so that the next few turns fit without moving it again.
+// Each try renders the whole conversation, so the place is found by bisection.
 bool Engine::fit(const ChatRequest & req, Rendered & r, std::string & err) {
     const int n_ctx = (int) llama_n_ctx(ctx_);
-    const int reserve = std::min(1024, n_ctx / 4);
-    const auto & all = r.all;
-    size_t drop = 0;
-    while (true) {
-        try {
-            r.session = std::make_unique<common_chat_session>(tmpls_, vocab_, inputs_for(all, r.first, drop, true, req));
-        } catch (const std::exception & e) {
-            err = std::string("The model's chat template failed: ") + e.what();
-            return false;
-        }
-        if (!build_prompt(r.session->prompt().str(), media_for(r.all_media, r.first, drop), r.prompt, err)) return false;
-        const size_t remaining = all.size() - r.first - drop;
-        const int cells = (int) r.prompt.units.size() + r.prompt.extra_cells;
-        if (cells + reserve <= n_ctx || remaining <= 1) break;
-        // Leave out the oldest exchange: everything up to the next message of yours.
-        size_t next = r.first + drop + 1;
-        while (next < all.size() && all[next].role != "user") next++;
-        if (next >= all.size()) break;
-        drop = next - r.first;
+    const int reserve = std::min(1024, n_ctx / 4);  // room for the reply
+    const int limit = n_ctx - reserve;              // the most a prompt may fill
+    const int roomy = limit - n_ctx / 4;            // what a prompt cut anew may fill
+
+    // places to cut: nowhere, or right before any message of yours after the first
+    std::vector<size_t> cuts{0};
+    for (size_t i = r.first + 1; i < r.all.size(); i++) {
+        if (r.all[i].role == "user") cuts.push_back(i - r.first);
     }
-    r.drop = drop;
+    const size_t last = cuts.size() - 1;
+    auto key_at = [&](size_t drop) { return head_key(r.all, r.all_media, r.first + drop + 1); };
+
+    std::map<size_t, int> cells;  // prompt size by place, as rendered so far
+    auto measure = [&](size_t k) -> int {
+        if (!render(req, r, cuts[k], err)) return -1;
+        return cells[k] = (int) r.prompt.units.size() + r.prompt.extra_cells;
+    };
+    // the first place in [lo, hi] that leaves a prompt of at most `max` cells, or hi + 1
+    bool failed = false;
+    auto first_fitting = [&](size_t lo, size_t hi, int max) -> size_t {
+        size_t found = hi + 1;
+        while (lo <= hi && !failed) {
+            const size_t mid = lo + (hi - lo) / 2;
+            const auto it = cells.find(mid);
+            const int c = it != cells.end() ? it->second : measure(mid);
+            if (c < 0) {
+                failed = true;
+            } else if (c <= max) {
+                found = mid;
+                if (mid == lo) break;
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        return found;
+    };
+
+    // where it was cut last time, if this is still that conversation
+    size_t k = 0;
+    if (cut_ > 0) {
+        const auto it = std::find(cuts.begin(), cuts.end(), cut_);
+        if (it != cuts.end() && key_at(cut_) == cut_key_) k = (size_t) (it - cuts.begin());
+    }
+    const int c = measure(k);
+    if (c < 0) return false;
+    if (c > limit && k < last) {
+        size_t to = first_fitting(k + 1, last, roomy);
+        // nothing leaves that much room: the least cut that fits at all
+        if (to > last && !failed) to = first_fitting(k + 1, last, limit);
+        if (failed) return false;
+        // nothing fits at all: as short as it gets (the caller says the message is too long)
+        k = std::min(to, last);
+        if (r.drop != cuts[k] && !render(req, r, cuts[k], err)) return false;
+    }
+    cut_ = r.drop;
+    cut_key_ = cut_ > 0 ? key_at(cut_) : 0;
     return true;
 }
 
