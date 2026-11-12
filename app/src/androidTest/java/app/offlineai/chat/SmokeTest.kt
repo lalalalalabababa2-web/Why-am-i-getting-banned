@@ -302,6 +302,35 @@ class SmokeTest {
         return null
     }
 
+    /** The app's shortcuts (long-press its icon) are published, and New chat opens an empty chat. */
+    @Test
+    fun shortcuts() {
+        val sm = app.getSystemService(android.content.pm.ShortcutManager::class.java)
+        var ids = emptySet<String>()
+        val end = SystemClock.uptimeMillis() + 10_000  // read from the manifest after install, not at once
+        while (SystemClock.uptimeMillis() < end) {
+            ids = sm.manifestShortcuts.map { it.id }.toSet()
+            if (ids.containsAll(setOf("talk", "new_chat"))) break
+            Thread.sleep(250)
+        }
+        assertTrue("shortcuts: $ids", ids.containsAll(setOf("talk", "new_chat")))
+
+        var before = ""
+        onMain {
+            app.chat.conversation.messages.add(app.offlineai.chat.data.ChatMessage(role = "user", content = "an old message"))
+            before = app.chat.conversation.id
+        }
+        val intent = android.content.Intent(app, MainActivity::class.java).setAction(MainActivity.ACTION_NEW_CHAT)
+        ActivityScenario.launch<MainActivity>(intent).use { Thread.sleep(500) }
+        var after = ""
+        var empty = false
+        onMain {
+            after = app.chat.conversation.id
+            empty = app.chat.conversation.messages.isEmpty()
+        }
+        assertTrue("a new chat", after != before && empty)
+    }
+
     @Test
     fun screensOpen() {
         ActivityScenario.launch(ModelsActivity::class.java).use { Thread.sleep(1500) }

@@ -128,6 +128,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private var voiceStopped = false
     /** Whether the send button shows the microphone (a long press starts talking). */
     private var micShown = false
+    /** Talking was asked for (the app's shortcut) while the model was still loading: it starts once it has. */
+    private var talkWhenLoaded = false
 
     /** Speech turned into text in the message box, while listening; null otherwise. */
     private var dictation: Dictation? = null
@@ -293,7 +295,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             setPadding(dp(16), dp(8), dp(12), dp(2))
             visibility = View.GONE
         }
-        voiceState = text("", 14f, Palette.text2)
+        // read out by TalkBack as it changes
+        voiceState = text("", 14f, Palette.text2).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         voiceBar.addView(voiceState, lp(0, WRAP, 1f))
         voiceBar.addView(pill("End") { voice.stop() }, lp(WRAP, WRAP).apply { marginStart = dp(8) })
         root.addView(voiceBar, lp(MATCH, WRAP))
@@ -374,6 +377,26 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         app.loadLastModel()
         refreshDraft()
         refreshAll()
+        if (savedInstanceState == null) handleShortcut(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShortcut(intent)
+    }
+
+    /** The app's shortcuts (long-press its icon): a new chat, or a new chat to talk in. */
+    private fun handleShortcut(intent: Intent?) {
+        val action = intent?.action
+        if (action != ACTION_TALK && action != ACTION_NEW_CHAT) return
+        app.chat.newChat()
+        input.setText("")
+        if (action != ACTION_TALK) return
+        when {
+            !canDictate -> toast("Talking needs speech recognition that works offline, which phones have from Android 12 on.")
+            app.engine.loaded == null && app.engine.isLoading -> talkWhenLoaded = true
+            else -> startTalk()
+        }
     }
 
     // While a reply is on its way the header is redrawn every second: the time left keeps moving,
@@ -1062,11 +1085,19 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     override fun onEngineState() {
         refreshAll()
+        if (talkWhenLoaded && !app.engine.isLoading) {
+            talkWhenLoaded = false
+            if (app.engine.loaded != null) startTalk()
+        }
         // the write-again button depends on whether a model is loaded
         if (!app.chat.generating && adapter.itemCount > 0) adapter.notifyItemChanged(adapter.itemCount - 1)
     }
 
     companion object {
+        /** The app's shortcuts (res/xml/shortcuts.xml). */
+        const val ACTION_TALK = "app.offlineai.chat.action.TALK"
+        const val ACTION_NEW_CHAT = "app.offlineai.chat.action.NEW_CHAT"
+
         private val STARTERS = listOf(
             "Explain how a rainbow forms, simply",
             "Write a short poem about city lights at night",

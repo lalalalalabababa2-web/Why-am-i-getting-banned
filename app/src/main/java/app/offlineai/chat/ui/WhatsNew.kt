@@ -22,8 +22,9 @@ object WhatsNew {
         "In the chat" to "Read a reply aloud or share it, readable maths, things to try in a new chat, and switching " +
             "models by tapping the model's name at the top.",
         "Speak instead of typing" to "With the message box empty, the send button is a microphone: what you say is " +
-            "written into the box by the phone's own offline speech recognition (Android 12 and later). Hold it, or " +
-            "tap Talk in a new chat, to talk: each reply is read aloud, then it listens again.",
+            "written into the box by the phone's own offline speech recognition (Android 12 and later). Hold it, tap " +
+            "Talk in a new chat, or long-press the app's icon and pick Talk, to talk: each reply is read aloud, then " +
+            "it listens again.",
         "Settings" to "Ready-made styles for the system prompt, and an accent colour from your wallpaper.",
         "About" to "What the app promises, credits for everyone it is built on, and their licenses (Settings, About).",
     )

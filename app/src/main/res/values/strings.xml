@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Offline AI</string>
+    <!-- the app's shortcuts (long-press its icon) -->
+    <string name="shortcut_talk">Talk</string>
+    <string name="shortcut_talk_long">Talk with your voice</string>
+    <string name="shortcut_new">New chat</string>
+    <string name="shortcut_new_long">Start a new chat</string>
 </resources>
