@@ -8,7 +8,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.MemoryMode
+import app.offlineai.chat.data.Catalog
+import app.offlineai.chat.ui.AboutActivity
 import app.offlineai.chat.ui.ChatsActivity
+import app.offlineai.chat.ui.MathText
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.Markdown
 import app.offlineai.chat.ui.RenderOptions
@@ -275,6 +278,44 @@ class SmokeTest {
         ActivityScenario.launch(ModelsActivity::class.java).use { Thread.sleep(1500) }
         ActivityScenario.launch(SettingsActivity::class.java).use { Thread.sleep(1500) }
         ActivityScenario.launch(ChatsActivity::class.java).use { Thread.sleep(1000) }
+        ActivityScenario.launch(AboutActivity::class.java).use { Thread.sleep(1000) }
+    }
+
+    /** Every license the About screen lists is in the APK, and is the license it says it is. */
+    @Test
+    fun licensesShipWithTheApp() {
+        val expect = mapOf(
+            "llama.cpp.txt" to "MIT License", "nlohmann-json.txt" to "MIT License", "stb_image.txt" to "MIT License",
+            "miniaudio.txt" to "MIT No Attribution", "xxhash.txt" to "BSD 2-Clause", "rotate-bits.txt" to "MIT License",
+            "cpp-httplib.txt" to "MIT License", "public-domain.txt" to "public domain", "apache-2.0.txt" to "Apache License",
+        )
+        for ((file, mark) in expect) {
+            val text = app.assets.open("licenses/$file").use { it.readBytes().toString(Charsets.UTF_8) }
+            assertTrue("$file should say $mark", text.contains(mark))
+        }
+    }
+
+    /** Maths that models write as LaTeX reads as text; money stays money. */
+    @Test
+    fun mathIsReadable() {
+        assertEquals("The answer is 51.", MathText.pretty("The answer is \\boxed{51}."))
+        assertEquals("So 3/4 of it", MathText.pretty("So \$\\frac{3}{4}\$ of it"))
+        assertEquals("It costs \$5 and \$10", MathText.pretty("It costs \$5 and \$10"))
+    }
+
+    /** No two catalog entries share an id or a file name, and every size is filled in. */
+    @Test
+    fun catalogIsConsistent() {
+        val ids = Catalog.models.map { it.id }
+        val files = Catalog.models.map { it.file }
+        assertEquals("duplicate ids: $ids", ids.size, ids.toSet().size)
+        assertEquals("duplicate files: $files", files.size, files.toSet().size)
+        for (m in Catalog.models) {
+            assertTrue("${m.id} size", m.sizeBytes > 0)
+            m.pictures?.let { assertTrue("${m.id} picture file size", it.sizeBytes > 0) }
+            m.drafter?.let { assertTrue("${m.id} drafter size", it.sizeBytes > 0) }
+            assertTrue("${m.id} file name", m.file.endsWith(".gguf"))
+        }
     }
 
     companion object {
