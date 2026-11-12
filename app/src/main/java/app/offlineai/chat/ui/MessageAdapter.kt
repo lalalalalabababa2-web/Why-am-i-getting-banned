@@ -299,7 +299,8 @@ class MessageAdapter(
                 chevron.setImageDrawable(ContextCompat.getDrawable(ctx, if (open) R.drawable.ic_chevron_down else R.drawable.ic_chevron_right)
                     ?.mutate()?.apply { setTint(Palette.text3) })
                 if (open) {
-                    val r = m.reasoning
+                    // raw while it streams (each update only appends); readable maths once it is done
+                    val r = if (streaming) m.reasoning else MathText.pretty(m.reasoning)
                     val e = thinkBody.editableText
                     if (e != null && r != thinkingShown) {
                         if (r.startsWith(thinkingShown) && thinkingShown.isNotEmpty()) e.append(r, thinkingShown.length, r.length)

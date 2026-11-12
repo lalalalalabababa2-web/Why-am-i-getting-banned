@@ -64,7 +64,7 @@ object ReadAloud {
     }
 
     /** What a person would read out: no markdown marks, code blocks named, links by their text. */
-    internal fun spoken(md: String): String = md
+    internal fun spoken(md: String): String = MathText.pretty(md)
         .replace(Regex("```[\\s\\S]*?(```|$)"), "\n(a code block)\n")
         .replace(Regex("\\[([^\\]]*)\\]\\([^)]*\\)"), "$1")
         .replace(Regex("(?m)^\\s*#{1,6}\\s+"), "")
