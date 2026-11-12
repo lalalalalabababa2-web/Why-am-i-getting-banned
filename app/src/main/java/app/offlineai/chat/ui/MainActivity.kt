@@ -251,6 +251,16 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             minHeight = dp(44)
             maxLines = 6
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            // with "Enter sends" the keyboard shows a send key instead (see applyEnterKey)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
+                    // the key only sends; stopping a reply stays the button's job
+                    if (!app.chat.generating) onSendOrStop()
+                    true
+                } else {
+                    false
+                }
+            }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -503,6 +513,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             recreate()
             return
         }
+        applyEnterKey()
         val opts = renderOptions()
         if (opts != adapter.options) {
             adapter.options = opts
@@ -661,6 +672,22 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 emptyMore.visibility = View.GONE
             }
         }
+    }
+
+    /**
+     * Enter sends (a send key, the text still wrapping over several lines) or starts a new line,
+     * as Settings says.
+     */
+    private fun applyEnterKey() {
+        val sends = app.settings.enterSends
+        val type = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+            (if (sends) 0 else InputType.TYPE_TEXT_FLAG_MULTI_LINE)
+        if (input.inputType == type) return
+        input.inputType = type
+        input.imeOptions = if (sends) android.view.inputmethod.EditorInfo.IME_ACTION_SEND else android.view.inputmethod.EditorInfo.IME_ACTION_NONE
+        // without the multi-line flag a text field keeps to one line unless told otherwise
+        input.setHorizontallyScrolling(false)
+        input.maxLines = 6
     }
 
     /** The models on the phone, to switch to in one tap (the current one ticked), and the full list. */

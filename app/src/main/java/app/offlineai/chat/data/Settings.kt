@@ -203,6 +203,10 @@ class Settings(context: Context) {
     var autoFollow: Boolean
         get() = bool("auto_follow", true)
         set(v) = put("auto_follow", v)
+    /** The keyboard's Enter key sends the message instead of starting a new line. */
+    var enterSends: Boolean
+        get() = bool("enter_sends", false)
+        set(v) = put("enter_sends", v)
     var jumpButton: Boolean
         get() = bool("jump_button", true)
         set(v) = put("jump_button", v)

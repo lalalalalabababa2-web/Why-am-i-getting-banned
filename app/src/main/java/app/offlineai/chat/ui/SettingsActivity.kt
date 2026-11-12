@@ -260,6 +260,9 @@ class SettingsActivity : AppCompatActivity() {
         switch("Follow new text", "While you are at the bottom, the chat follows the reply. Scrolling up always stops it.",
             s.autoFollow) { s.autoFollow = it }
         switch("Jump-to-bottom button", "Shown while you are reading further up.", s.jumpButton) { s.jumpButton = it }
+        switch("Enter sends", "The keyboard's Enter key sends the message; off, it starts a new line.", s.enterSends) {
+            s.enterSends = it
+        }
         switch("Format replies", "Headings, lists, bold and code blocks. Off shows the raw text.", s.markdown) { s.markdown = it }
         switch("Colour code", "Syntax colours in code blocks.", s.syntaxHighlight) { s.syntaxHighlight = it }
         switch("Wrap long code lines", "Off scrolls code sideways instead.", s.codeWrap) { s.codeWrap = it }
