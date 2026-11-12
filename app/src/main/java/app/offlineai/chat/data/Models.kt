@@ -163,7 +163,8 @@ object Catalog {
         CatalogModel(
             "lfm25-vl-3b", "LFM2.5-VL 3B", "Liquid AI",
             "Liquid's bigger phone vision model: describes photos and video frames and reads text in pictures, quickly. " +
-                "Comes with a DSpark drafter for the drafting test.",
+                "Its DSpark drafter is an optional extra to try with the drafting test; on the ARM and x86 processors " +
+                "measured so far it made writing slower, not faster.",
             "LiquidAI/LFM2.5-VL-3B-GGUF", "LFM2.5-VL-3B-Q4_K_M.gguf", 1_674_455_072L, Family.LIQUID, true,
             pictures = ExtraFile("mmproj-LFM2.5-VL-3B-Q8_0.gguf", 583_109_984L, "LiquidAI/LFM2.5-VL-3B-GGUF"),
             drafter = ExtraFile("LFM2.5-VL-3B-DSpark-F16.gguf", 567_205_280L, "LiquidAI/LFM2.5-VL-3B-DSpark-GGUF"),

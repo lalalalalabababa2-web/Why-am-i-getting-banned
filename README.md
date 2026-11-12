@@ -147,7 +147,13 @@ real Qwen3.5 and Gemma 4 templates over their real vocabularies and streams repl
 parser. Runs under AddressSanitizer and UBSan. CI runs it on every push.
 
 It also checks drafting: with n-gram drafts and with an MTP head (a random model with one added
-by the test), greedy replies must be the same tokens as without drafting. And cutting a long
+by the test), greedy replies must be the same tokens as without drafting. And exactly the same
+again when the reply is replayed on the same engine without the drafter: the engine records each
+writing step (how many tokens it read, how many stayed), and the replay starts from a snapshot of
+the memory taken when the reply started and reads the same steps with the same kernels, so every
+pick has to come out bit for bit the same. Anything a drafter leaves behind in the model's memory
+shows up there, however small; differences between the kernels for steps of different sizes,
+which make near ties flip against a baseline that reads one token at a time, cannot. And cutting a long
 conversation: the cut stays put while the rest fits (the memory of the last turn is used again),
 moves only every few turns, and lands where trying every place in turn would put it
 (`test_engine <models> <llama.cpp> --cut <model.gguf>` runs just that). And reading ahead: on
@@ -175,12 +181,13 @@ for one layer at 8192 tokens), so it is not in the app.
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
 pictures and video frames through its projector, and both Bonsai models answering a question.
 Also Spark-X2.6 1.7B answering, reading a long message and thinking (the thinking and the answer
-must come apart; with a thinking budget of 8 tokens its 51 tokens of thinking are cut to 38,
-the line that ends them included, and the answer still comes, with no tags left in it), pictures and video frames with Qwen3-VL 2B and LFM2.5-VL 3B, and LFM2.5-VL 3B
-with its DSpark drafter at 1, 3 and 7 drafted tokens (every word must be the model's own pick).
-On this repository's x86 test machine (4 threads) DSpark wrote the same words but more slowly
-(12.2 tokens/s without it, 9.7 with 1 drafted, 6.7 with 7): fewer than half its guesses were
-kept, and checking extra tokens costs a CPU nearly as much as writing them. `test_engine` also
+must come apart; with a thinking budget of 8 tokens the thinking stops after 8 tokens, the line
+that ends it follows, and the answer still comes, with no tags left in it), pictures and video
+frames with Qwen3-VL 2B and LFM2.5-VL 3B, and LFM2.5-VL 3B with its DSpark drafter at 1, 3 and 7
+drafted tokens (every word must be the model's own pick). DSpark wrote the same words but more
+slowly: on the ARM runner 20.0 tokens/s without it, 13.2 with 1 drafted, 9.4 with 7; on this
+repository's x86 test machine 12.2, 9.7 and 6.7. Fewer than half its guesses were kept, and for
+this model a step that checks 2 tokens costs nearly twice one that writes 1. `test_engine` also
 runs one model at a time: `--answer <model> <label>`, `--think <model> <label>`,
 `--vision <model> <mmproj> <label>`, `--speed <model> <drafter or -> <label>`.
 Every model added to the catalog was run that way on its real file before it went in; for the

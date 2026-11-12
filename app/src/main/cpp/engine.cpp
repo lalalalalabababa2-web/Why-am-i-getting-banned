@@ -1206,6 +1206,45 @@ bool Engine::push_token(token t, std::string & err) {
     return true;
 }
 
+bool Engine::restore_reply_start() {
+    if (!ctx_ || reply_start_.data.empty()) return false;
+    llama_memory_seq_rm(llama_get_memory(ctx_), 0, -1, -1);
+    if (llama_state_seq_set_data(ctx_, reply_start_.data.data(), reply_start_.data.size(), 0) == 0) {
+        clear_memory();
+        return false;
+    }
+    cache_ = reply_start_.tokens;
+    cache_extra_cells_ = reply_start_.extra_cells;
+    return true;
+}
+
+bool Engine::push_step(const std::vector<token> & tokens, size_t keep, std::vector<std::vector<float>> & rows,
+                       std::string & err) {
+    rows.clear();
+    if (!ctx_ || tokens.empty() || keep == 0 || keep > tokens.size()) {
+        err = "Nothing to read.";
+        return false;
+    }
+    apply_threads();
+    const llama_pos pos = (llama_pos) cache_.size();
+    common_batch batch(ctx_);
+    for (size_t j = 0; j < tokens.size(); j++) batch.add(tokens[j], pos + (llama_pos) j, 0, true);
+    const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    if (ret != 0) {
+        clear_memory();
+        err = "The model failed while writing (error " + std::to_string(ret) + ").";
+        return false;
+    }
+    const int n_vocab = llama_vocab_n_tokens(vocab_);
+    for (size_t j = 0; j < tokens.size(); j++) {
+        const float * l = llama_get_logits_ith(ctx_, (int32_t) j);
+        rows.emplace_back(l, l + n_vocab);
+    }
+    if (keep < tokens.size()) llama_memory_seq_rm(llama_get_memory(ctx_), 0, pos + (llama_pos) keep, -1);
+    cache_.insert(cache_.end(), tokens.begin(), tokens.begin() + (long) keep);
+    return true;
+}
+
 token Engine::argmax() const {
     const float * logits = llama_get_logits_ith(ctx_, -1);
     const int n_vocab = llama_vocab_n_tokens(vocab_);
@@ -1715,6 +1754,16 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         }
     }
 
+    // tests: the memory as the reply starts, to replay the reply from
+    if (record_steps_) {
+        reply_start_ = Snapshot();
+        const size_t size = llama_state_seq_get_size(ctx_, 0);
+        reply_start_.data.resize(size);
+        reply_start_.data.resize(size ? llama_state_seq_get_data(ctx_, reply_start_.data.data(), size, 0) : 0);
+        reply_start_.tokens = cache_;
+        reply_start_.extra_cells = cache_extra_cells_;
+    }
+
     // drafting for this reply: as loaded, or capped for this request (the speed test)
     const bool spec_on = spec_ && req.spec_n_max != 0;
     const int spec_cap = req.spec_n_max > 0 ? std::min(req.spec_n_max, spec_n_out_ - 1)
@@ -1914,6 +1963,10 @@ ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb) {
         res.stats.n_drafted += (int) draft.size();
         res.stats.n_accepted += (int) accepted;
         res.stats.n_steps++;
+        if (record_steps_) {
+            res.stats.step_read.push_back((int) draft.size() + 1);
+            res.stats.step_kept.push_back((int) accepted + 1);
+        }
         pending = std::move(ids);
     }
     res.stats.t_gen_ms = ms_since(t_gen0);

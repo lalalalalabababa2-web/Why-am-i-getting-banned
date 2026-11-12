@@ -827,6 +827,57 @@ static int check_greedy(oa::Engine & ref, const std::vector<token> & seq, size_t
     return bad;
 }
 
+// The last reply again, step for step on the same engine with the drafter left out: each step reads
+// the same tokens as before (rejected drafts stand in as copies of the last kept token; no kept
+// token can see them) from the same memory with the same kernels, so every pick has to come out
+// the same, exactly. Anything a drafter leaves behind in the model's memory, however small, shows
+// up here; differences between kernels cannot. Returns the picks that differ, or -1 on error.
+static int replay_reply(oa::Engine & e, const oa::ChatStats & st, int * checked, std::string & err) {
+    const std::vector<token> seq = e.cached();
+    *checked = 0;
+    if (!e.restore_reply_start()) {
+        err = "the start of the reply was not kept";
+        return -1;
+    }
+    size_t p = e.cached().size();
+    if (p != (size_t) st.n_prompt || st.step_read.size() != st.step_kept.size()) {
+        err = "the reply did not start at the end of the prompt";
+        return -1;
+    }
+    int bad = 0;
+    std::vector<std::vector<float>> rows;
+    for (size_t s = 0; s < st.step_read.size(); s++) {
+        const size_t read = (size_t) st.step_read[s], kept = (size_t) st.step_kept[s];
+        if (kept == 0 || kept > read || p + kept > seq.size()) {
+            err = "the steps do not add up to the reply";
+            return -1;
+        }
+        std::vector<token> step(seq.begin() + (long) p, seq.begin() + (long) (p + kept));
+        step.resize(read, seq[p + kept - 1]);
+        if (!e.push_step(step, kept, rows, err)) return -1;
+        for (size_t j = 0; j < kept && p + j + 1 < seq.size(); j++) {
+            const auto & l = rows[j];
+            const token want = seq[p + j + 1];
+            int best = 0;
+            for (size_t k = 1; k < l.size(); k++) if (l[k] > l[best]) best = (int) k;
+            (*checked)++;
+            if (best != want) {
+                if (bad < 3) {
+                    std::printf("    replay, token %zu (step %zu of %zu tokens): wrote %d, the model picks %d (gap %.6f)\n",
+                                p + j + 1, s, read, want, best, l[best] - l[want]);
+                }
+                bad++;
+            }
+        }
+        p += kept;
+    }
+    if (p != seq.size()) {
+        err = "the replay ended somewhere else than the reply";
+        return -1;
+    }
+    return bad;
+}
+
 static void test_spec(const std::string & path, const char * label, int n_max, bool ngram, double temp = 0.0) {
     std::printf("== speculative: %s (%s, n_max %d, ngram %d, temp %.1f)\n", path.c_str(), label, n_max, ngram ? 1 : 0, temp);
     oa::LoadParams lp;
@@ -851,6 +902,7 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
                 info.memory.c_str(), e.compute_bytes() / 1e6);
     CHECK(!info.speculative.empty(), "%s: drafting was not set up", label);
     CHECK(ref.info().speculative.empty(), "%s: the reference must not draft", label);
+    e.set_record_steps(true);
 
     oa::ChatRequest req;
     req.now_ms = 1760000000000LL;
@@ -875,6 +927,12 @@ static void test_spec(const std::string & path, const char * label, int n_max, b
             const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties);
             std::printf("    checked %zu written tokens: %d differ, %d near ties\n", e.cached().size() - r.stats.n_prompt, bad, ties);
             CHECK(bad == 0, "%s turn %d: %d written tokens are not what the model picks", label, turn, bad);
+            int checked = 0;
+            const int diff = replay_reply(e, r.stats, &checked, err);
+            std::printf("    replayed without the drafter: %d checked, %d different%s%s\n", checked, diff, diff < 0 ? ": " : "",
+                        diff < 0 ? err.c_str() : "");
+            CHECK(diff == 0, "%s turn %d: the reply replayed without the drafter came out different (%d): %s", label, turn,
+                  diff, err.c_str());
         }
         if (turn > 0) CHECK(r.stats.n_reused > 0, "%s turn %d reused nothing", label, turn);
         req.messages.push_back({"assistant", r.content, r.reasoning});
@@ -979,7 +1037,15 @@ static void test_speed(const std::string & model, const char * label, const std:
             return;
         }
         CHECK(ref.info().speculative.empty(), "%s: drafting should be off (%s)", label, ref.info().speculative.c_str());
-        run(ref, 0, "drafting off");
+        // the replay itself, where there is nothing to find: it must come out the same
+        ref.set_record_steps(true);
+        auto r0 = run(ref, 0, "drafting off");
+        int checked = 0;
+        const int bad = replay_reply(ref, r0.stats, &checked, err);
+        std::printf("    drafting off, replayed: %d tokens checked, %d different%s%s\n", checked, bad, bad < 0 ? ": " : "",
+                    bad < 0 ? err.c_str() : "");
+        CHECK(bad == 0, "%s: the reply replayed with drafting off came out different (%d): %s", label, bad, err.c_str());
+        ref.set_record_steps(false);
     }
     oa::LoadParams lp;
     lp.n_ctx = 4096;
@@ -997,23 +1063,34 @@ static void test_speed(const std::string & model, const char * label, const std:
     }
     std::printf("  drafting with: %s\n", e.info().speculative.c_str());
     CHECK(!e.info().speculative.empty(), "%s: no drafting", label);
+    e.set_record_steps(true);
     for (int n : drafts) {
         char what[64];
         if (n < 0) std::snprintf(what, sizeof what, "%s", "copying on");
         else std::snprintf(what, sizeof what, "%d drafted", n);
         auto r = run(e, n, what);
         if (n == 0) continue;
-        // Every word written while drafting must be the reference's pick at that point. Steps of
-        // different sizes take different kernels, so near ties can flip and the reply then goes
-        // its own way (seen up to about 1.1 logits with Gemma 4 between ARM's 4-token and 1-token
-        // kernels); a mistake in the drafting itself would be wrong by far more, and often.
+        // Every word written while drafting must be the model's own pick at that point. Exactly,
+        // against the same steps replayed without the drafter (anything the drafting changed in the
+        // model's memory would show), and roughly, against the baseline reading one token at a
+        // time: steps of different sizes take different kernels, so near ties can flip there (seen
+        // up to about 1.1 logits with Gemma 4 between ARM's 4-token and 1-token kernels, and once
+        // 2.0 on an x86 runner). A broken kernel would be wrong by far more, and often.
         int ties = 0;
         float max_gap = 0.0f;
-        const int bad = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties, 1.5f, &max_gap);
-        std::printf("    %s: %zu written tokens checked, %d wrong, %d near ties (largest gap %.3f)\n", what,
-                    e.cached().size() - (size_t) r.stats.n_prompt, bad, ties, max_gap);
-        CHECK(bad == 0, "%s, %s: %d written tokens are not what the model picks", label, what, bad);
+        const size_t written = e.cached().size() - (size_t) r.stats.n_prompt;
+        const int far = check_greedy(ref, e.cached(), (size_t) r.stats.n_prompt, &ties, 1.5f, &max_gap);
+        int checked = 0;
+        const int bad = replay_reply(e, r.stats, &checked, err);
+        std::printf("    %s: %zu written tokens; replayed: %d checked, %d different%s%s; against the baseline: %d far off, "
+                    "%d near ties (largest gap %.3f)\n",
+                    what, written, checked, bad, bad < 0 ? ": " : "", bad < 0 ? err.c_str() : "", far, ties, max_gap);
+        CHECK(bad == 0, "%s, %s: the reply replayed without the drafter came out different (%d): %s", label, what, bad,
+              err.c_str());
+        CHECK(far <= 1 && max_gap <= 4.0f, "%s, %s: %d written tokens are not what the model picks (largest gap %.3f)",
+              label, what, far, max_gap);
     }
+    e.set_record_steps(false);
 }
 
 // Pictures and video frames through a model's projector: the colour must be seen, the next turn
@@ -1228,22 +1305,25 @@ static void test_thinking(const std::string & path, const char * label) {
     CHECK(r.content.find("<think>") == std::string::npos && r.content.find("</think>") == std::string::npos,
           "%s: thinking tags left in the answer: %s", label, r.content.c_str());
 
-    // a thinking budget far below what it thought just now: the thinking is cut off about there,
-    // with the line that says so, and the answer still comes
+    // a thinking budget below what it thought just now: the thinking is cut off there, the line
+    // that says so follows (it counts as thinking too, so a short thought can come out longer), and
+    // the answer still comes
     const size_t free_tokens = e.tokenize(r.reasoning, false).size();
-    req.sampling.thinking_budget = 8;
+    const int budget = 8;
+    req.sampling.thinking_budget = budget;
     auto rb = e.chat(req, cb);
-    const size_t budget_tokens = e.tokenize(rb.reasoning, false).size();
-    std::printf("  budget 8 (%zu tokens of thinking without): ok=%d thinking=%zu tokens [%s] answer=[%s]\n", free_tokens, rb.ok,
-                budget_tokens, rb.reasoning.c_str(), rb.content.c_str());
+    const size_t line = rb.reasoning.find("I have thought about this long enough");
+    const size_t before = line == std::string::npos ? 0 : e.tokenize(rb.reasoning.substr(0, line), false).size();
+    std::printf("  budget %d (%zu tokens of thinking without): ok=%d thinking=[%s] cut after %zu tokens, answer=[%s]\n", budget,
+                free_tokens, rb.ok, rb.reasoning.c_str(), before, rb.content.c_str());
     CHECK(rb.ok && !rb.content.empty(), "%s: no answer after the thinking budget ran out: %s", label, rb.error.c_str());
     CHECK(rb.content.find("</think>") == std::string::npos, "%s: thinking tags left in the answer after the budget: %s", label,
           rb.content.c_str());
-    if (free_tokens > 16) {
-        CHECK(rb.reasoning.find("time to give the answer") != std::string::npos,
-              "%s: the budget did not cut the thinking off", label);
-        CHECK(budget_tokens < free_tokens, "%s: the thinking was not shorter with a budget (%zu, %zu)", label, budget_tokens,
-              free_tokens);
+    if (free_tokens > (size_t) budget + 4) {
+        CHECK(line != std::string::npos, "%s: the budget did not cut the thinking off", label);
+        // the text may come out a token or two different when it is split into tokens again
+        CHECK(before <= (size_t) budget + 2, "%s: %zu tokens of thinking before the cut, with a budget of %d", label, before,
+              budget);
     }
 }
 

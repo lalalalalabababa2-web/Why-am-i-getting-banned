@@ -132,6 +132,9 @@ struct ChatStats {
     double      t_emit_ms      = 0;  //   ... handing the reply so far to the screen
     long        n_majflt       = 0;  // pages read back from storage during the turn (the model does not fit)
     std::string stop_reason;         // eos, length, context, stopped, error
+    // With Engine::set_record_steps: each writing step in order, the tokens it read (the last one
+    // and its drafts) and how many of them stayed, so a test can replay the reply step for step.
+    std::vector<int> step_read, step_kept;
 };
 
 struct ChatResult {
@@ -260,6 +263,14 @@ public:
     // Greedy pick from the current logits (tests only).
     token argmax() const;
     const std::vector<token> & cached() const { return cache_; }
+    // Tests: chat() keeps the memory as it was once the prompt was read, and records its steps.
+    void set_record_steps(bool on) { record_steps_ = on; }
+    // Puts the memory back as it was when the last reply started (false if nothing was kept).
+    bool restore_reply_start();
+    // One writing step the way chat() checks drafts: `tokens` read at once with the scores after
+    // each of them in `rows`, then only the first `keep` stay in memory. The drafter takes no part.
+    bool push_step(const std::vector<token> & tokens, size_t keep, std::vector<std::vector<float>> & rows,
+                   std::string & err);
     size_t n_snapshots() const { return snapshots_.size(); }
     bool rollback_supported() const { return can_rm_part_; }
     std::vector<float> last_logits() const;
@@ -360,6 +371,8 @@ private:
     std::vector<token>    cache_;
     int                   cache_extra_cells_ = 0;   // cells beyond one per position (pictures)
     std::vector<Snapshot> snapshots_;
+    bool                  record_steps_ = false;  // tests: see set_record_steps
+    Snapshot              reply_start_;           //   ... the memory when the last reply started
     bool                  can_rm_part_ = true;
     bool                  is_swa_      = false;
     bool                  prefer_even_ = false;  // 1-/2-bit weights: prompt steps of a multiple of 4 tokens
