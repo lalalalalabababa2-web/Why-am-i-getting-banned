@@ -59,6 +59,14 @@ data class CatalogModel(
 ) {
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     val page: String get() = "https://huggingface.co/$repo"
+
+    /** Thinks before answering: Qwen3.5 and everything built on it, Gemma 4, Spark-X2.6 (not Qwen3-VL Instruct). */
+    val thinks: Boolean
+        get() = family == Family.SPARK || (family == Family.GEMMA && "gemma4" in id) ||
+            (family == Family.QWEN && "qwen3vl" !in id)
+
+    /** A community copy with its refusals removed. */
+    val uncensored: Boolean get() = id.startsWith("abl-")
 }
 
 /** Hand-picked GGUF files that fit an 8 GB phone (sizes as published). Every architecture here is one this llama.cpp runs. */

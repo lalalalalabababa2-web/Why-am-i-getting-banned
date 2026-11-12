@@ -34,6 +34,12 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     private var importing: Pair<String, Int>? = null  // file name, percent
     private var importRow: TextView? = null
     private var knownLocal = emptySet<String>()
+    private lateinit var search: EditText
+    private lateinit var noMatch: TextView
+
+    /** A group of rows and the title and note above it, hidden together when a search leaves none. */
+    private class Section(val header: List<View>, val rows: List<Row>)
+    private val sections = mutableListOf<Section>()
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -55,6 +61,26 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             setBackgroundColor(Palette.bg)
         }
         root.addView(topBar("Models"), lp(MATCH, WRAP))
+        search = EditText(this).apply {
+            hint = "Search models: name, maker, pictures, code…"
+            setHintTextColor(Palette.text3)
+            setTextColor(Palette.text)
+            textSize = 15f * Palette.fontScale
+            isSingleLine = true
+            background = rounded(Palette.surface2, dp(20).toFloat(), dp(1), Palette.border)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                androidx.core.content.ContextCompat.getDrawable(context, app.offlineai.chat.R.drawable.ic_search)
+                    ?.mutate()?.apply { setTint(Palette.text3) }, null, null, null,
+            )
+            compoundDrawablePadding = dp(8)
+            setPaddingRelative(dp(12), dp(9), dp(14), dp(9))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) = applyFilter()
+            })
+        }
+        root.addView(search, lp(MATCH, WRAP).apply { setMargins(dp(16), dp(4), dp(16), dp(8)) })
         val scroll = ScrollView(this)
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -91,8 +117,14 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
     private fun build() {
         content.removeAllViews()
         rows.clear()
+        sections.clear()
         importRow = null
         content.addView(info)
+        noMatch = text("No model matches that.", 14f, Palette.text2).apply {
+            setPadding(dp(20), dp(16), dp(20), dp(8))
+            visibility = View.GONE
+        }
+        content.addView(noMatch)
 
         // the catalog, grouped by what you would pick it for
         val byId = Catalog.models.associateBy { it.id }
@@ -101,9 +133,10 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             val ms = ids.mapNotNull { byId[it] }
             placed += ids
             if (ms.isEmpty()) return
-            content.addView(sectionTitle(title))
-            if (note != null) content.addView(text(note, 13f, Palette.text2).apply { setPadding(dp(20), 0, dp(20), dp(6)) })
-            ms.forEach { m -> addRow(Row(m.file, m, m.name, m.maker, m.blurb)) }
+            val header = mutableListOf<View>(sectionTitle(title))
+            if (note != null) header += text(note, 13f, Palette.text2).apply { setPadding(dp(20), 0, dp(20), dp(6)) }
+            header.forEach { content.addView(it) }
+            sections += Section(header, ms.map { m -> Row(m.file, m, m.name, m.maker, m.blurb).also { addRow(it) } })
         }
         group("Best for this phone", null, listOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b"))
         group("New: Spark-X2.6",
@@ -135,8 +168,11 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         knownLocal = local.map { it.file.name }.toSet()
         val others = local.filter { it.catalog == null }
         if (others.isNotEmpty() || importing != null) {
-            content.addView(sectionTitle("Your files"))
-            others.forEach { f -> addRow(Row(f.file.name, null, f.displayName, "Added by you", null)) }
+            val header = sectionTitle("Your files")
+            content.addView(header)
+            sections += Section(listOf(header), others.map { f ->
+                Row(f.file.name, null, f.displayName, "Added by you", null).also { addRow(it) }
+            })
         }
         importing?.let { (name, pct) ->
             importRow = text("Copying $name… $pct%", 14f, Palette.text2).apply { setPadding(dp(20), dp(8), dp(20), dp(8)) }
@@ -156,7 +192,28 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             12f, Palette.text3,
         ).apply { setPadding(0, dp(12), 0, 0) }, lp(MATCH, WRAP))
         content.addView(add, lp(MATCH, WRAP))
+        applyFilter()
         refresh()
+    }
+
+    /** Shows the rows whose name, maker, description or abilities hold every word searched for. */
+    private fun applyFilter() {
+        if (!::noMatch.isInitialized) return
+        val words = search.text.toString().lowercase().split(' ').filter { it.isNotBlank() }
+        var shown = 0
+        for (sec in sections) {
+            var any = false
+            for (r in sec.rows) {
+                val show = words.all { it in r.searchText }
+                r.view.visibility = if (show) View.VISIBLE else View.GONE
+                if (show) {
+                    any = true
+                    shown++
+                }
+            }
+            sec.header.forEach { it.visibility = if (any) View.VISIBLE else View.GONE }
+        }
+        noMatch.visibility = if (words.isNotEmpty() && shown == 0) View.VISIBLE else View.GONE
     }
 
     private fun addRow(r: Row) {
@@ -177,11 +234,12 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             return
         }
         val free = app.models.freeBytes()
+        val freeRam = app.availableRam()
         info.text = "Models are kept in this app's own folder and never leave the phone. " +
             (if (free >= 0) "${ModelStore.formatBytes(free)} of storage free. " else "") +
-            "Memory: ${ModelStore.formatBytes(app.availableRam())} free of ${ModelStore.formatBytes(app.totalRam)}." +
+            "Memory: ${ModelStore.formatBytes(freeRam)} free of ${ModelStore.formatBytes(app.totalRam)}." +
             (if (app.settings.offlineOnly) "\nOffline only is on (Settings), so downloads are off." else "")
-        rows.forEach { it.update(downloads, local) }
+        rows.forEach { it.update(downloads, local, freeRam) }
         importing?.let { (name, pct) -> importRow?.text = "Copying $name… $pct%" }
     }
 
@@ -193,6 +251,20 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         blurb: String?,
     ) {
         val view = card()
+        private val abilities = buildList {
+            val c = catalog
+            if (c != null) {
+                if (c.thinks) add("Thinks")
+                if (c.pictures != null) add("Pictures & video")
+                if (c.hears) add("Sound")
+                if (c.mtp || c.drafter != null) add("Drafting")
+                if (c.uncensored) add("Uncensored")
+                if (c.large) add("Big")
+            }
+        }
+        /** What a search looks through, in lower case. */
+        val searchText = listOf(title, tag, blurb ?: "", fileName, catalog?.family?.name ?: "", abilities.joinToString(" "))
+            .joinToString(" ").lowercase()
         private val status = text("", 13f, Palette.text2)
         private val extra = text("", 12f, Palette.text3)
         private val bar = ProgressBar(this@ModelsActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -213,11 +285,19 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                 setPadding(0, dp(2), 0, 0)
             })
             if (blurb != null) view.addView(text(blurb, 14f, Palette.text2).apply { setPadding(0, dp(8), 0, 0) })
-            val can = mutableListOf<String>()
-            if (catalog?.pictures != null) can += if (catalog?.hears == true) "pictures and sound" else "pictures"
-            if (catalog?.mtp == true || catalog?.drafter != null) can += "drafting test (Settings)"
-            if (can.isNotEmpty()) {
-                view.addView(text("Can do: " + can.joinToString(" · "), 12f, Palette.text3).apply { setPadding(0, dp(6), 0, 0) })
+            if (abilities.isNotEmpty()) {
+                val chips = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                for (a in abilities) {
+                    chips.addView(text(a, 11f, if (a == "Uncensored" || a == "Big") Palette.text2 else Palette.accent, bold = true).apply {
+                        background = rounded(Palette.surface2, dp(10).toFloat(), dp(1), Palette.border)
+                        setPadding(dp(8), dp(2), dp(8), dp(2))
+                    }, lp(WRAP, WRAP).apply { marginEnd = dp(6) })
+                }
+                val strip = android.widget.HorizontalScrollView(this@ModelsActivity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(chips)
+                }
+                view.addView(strip, lp(MATCH, WRAP).apply { topMargin = dp(8) })
             }
             view.addView(bar, lp(MATCH, dp(4)).apply { topMargin = dp(10) })
             view.addView(status, lp(MATCH, WRAP).apply { topMargin = dp(6) })
@@ -256,7 +336,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             return lines.joinToString("\n") to keyParts.joinToString(",")
         }
 
-        fun update(downloads: Map<String, DownloadState>, localByName: Map<String, LocalModel>) {
+        fun update(downloads: Map<String, DownloadState>, localByName: Map<String, LocalModel>, freeRam: Long) {
             val d = downloads[fileName]
             val e = app.engine
             val local = localByName[fileName]
@@ -321,6 +401,13 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     if (failure != null) {
                         status.setTextColor(Palette.danger)
                         status.text = failure
+                    } else if (catalog != null) {
+                        // whether it would fit before it is downloaded, from the memory free right now
+                        val need = app.estimatedRam(catalog)
+                        val fits = need <= freeRam
+                        status.setTextColor(if (fits) Palette.text2 else Palette.caution)
+                        status.text = "Not downloaded · needs about ${ModelStore.formatBytes(need)} of memory, " +
+                            (if (fits) "fits in what is free now" else "more than is free now (close other apps first)")
                     } else {
                         status.text = "Not downloaded"
                     }

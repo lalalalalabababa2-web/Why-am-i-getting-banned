@@ -131,6 +131,18 @@ class App : Application() {
         return weights + ctxBytes + drafter + 300_000_000L
     }
 
+    /** The same estimate for a catalog model before it is downloaded (its drafter not counted). */
+    fun estimatedRam(c: app.offlineai.chat.data.CatalogModel): Long {
+        val weights = if (c.ple) (c.sizeBytes * 0.5).toLong() else c.sizeBytes
+        val low = when (settings.memoryMode) {
+            MemoryMode.FAST -> false
+            MemoryMode.LOW -> true
+            MemoryMode.AUTO -> !c.ple && c.sizeBytes > totalRam * 0.45
+        }
+        val kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO)
+        return weights + settings.contextSize.toLong() * (if (kvQ8) 20_000L else 40_000L) + 300_000_000L
+    }
+
     /** Extra memory while pictures or sound are being read. */
     fun picturesRam(model: LocalModel): Long = if (model.hasPictures) model.picturesFile.length() + 150_000_000L else 0L
 
