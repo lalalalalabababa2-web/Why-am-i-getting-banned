@@ -18,7 +18,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 ## What it does
 
-- **Models screen**: 39 models from 270M to 27B that fit 8 GB of memory, grouped by what they
+- **Models screen**: 41 models from 270M to 27B that fit 8 GB of memory, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
@@ -66,14 +66,14 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 | Group | Models |
 |---|---|
-| Best for this phone | Gemma 4 E4B, Qwen3.5 4B, Ternary Bonsai 2 9B, Gemma 4 E2B |
+| Best for this phone | Gemma 4 E4B, Nemotron 3.5 Bolt E4B (NVIDIA, on Gemma 4 E4B; pictures, sound, a DFlash drafter), Qwen3.5 4B, Ternary Bonsai 2 9B, Gemma 4 E2B |
 | New: Spark-X2.6 | Spark-X2.6 4B and 1.7B: iFlytek's on-device models from October 2026, for agent-style work (plans, tools, code); they think before answering |
 | Pictures and video | Qwen3-VL 2B, 4B and 8B, LFM2.5-VL 3B (with a DSpark drafter); photos, screenshots, documents, and videos as frames with their times |
 | Small and fast | Qwen3.5 2B and 0.8B, LFM2.5-VL 1.6B, LFM2.5 1.2B, Llama 3.2 1B, Gemma 3 270M |
 | More 3-4B models | Llama 3.2 3B, Ministral 3 3B, Granite 4.1 3B, Phi-4-mini |
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
 | Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Qwen3-VL 8B, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed; Spark-X2.6 4B by FrostWolfAI |
-| Bigger | LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
+| Bigger | Ornith 1.5 9B (Qwen3.5 9B trained further for code and agents), LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
 Bonsai) to fit. The community ones are fine-tunes by individuals; their makers' benchmark claims
@@ -179,6 +179,11 @@ On this repository's x86 test machine (4 threads) DSpark wrote the same words bu
 kept, and checking extra tokens costs a CPU nearly as much as writing them. `test_engine` also
 runs one model at a time: `--answer <model> <label>`, `--think <model> <label>`,
 `--vision <model> <mmproj> <label>`, `--speed <model> <drafter or -> <label>`.
+Every model added to the catalog was run that way on its real file before it went in; for the
+latest, Nemotron 3.5 Bolt E4B (answers, reads a long message, thinks when a question needs it and
+stops at its budget, pictures and video frames, its DFlash drafter writing the same words) and
+Ornith 1.5 9B (the same, without a drafter). `OA_THINK_PROMPT` gives `--think` a harder question
+for models that answer an easy one without thinking.
 The speeds it prints are for those runners, not for a phone. From GitHub's ARM runner (4 server-class ARM
 cores; tokens per second while writing, greedy, the same words in every column):
 

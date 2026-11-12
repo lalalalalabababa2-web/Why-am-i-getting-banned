@@ -138,7 +138,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             header.forEach { content.addView(it) }
             sections += Section(header, ms.map { m -> Row(m.file, m, m.name, m.maker, m.blurb).also { addRow(it) } })
         }
-        group("Best for this phone", null, listOf("gemma4-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b"))
+        group("Best for this phone", null, listOf("gemma4-e4b", "nemotron35-bolt-e4b", "qwen35-4b", "bonsai2-9b", "gemma4-e2b"))
         group("New: Spark-X2.6",
             "iFlytek's on-device models from October 2026, made for agent-style work: planning, tools, long instructions " +
                 "and code. They think before answering.",
@@ -160,7 +160,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("Bigger models",
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
-            listOf("lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
+            listOf("ornith15-9b", "lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
         // anything in the catalog not placed above still shows
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 

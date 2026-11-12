@@ -60,9 +60,9 @@ data class CatalogModel(
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     val page: String get() = "https://huggingface.co/$repo"
 
-    /** Thinks before answering: Qwen3.5 and everything built on it, Gemma 4, Spark-X2.6 (not Qwen3-VL Instruct). */
+    /** Thinks before answering: Qwen3.5 and everything built on it, Gemma 4 and Nemotron Bolt, Spark-X2.6 (not Qwen3-VL Instruct). */
     val thinks: Boolean
-        get() = family == Family.SPARK || (family == Family.GEMMA && "gemma4" in id) ||
+        get() = family == Family.SPARK || (family == Family.GEMMA && ("gemma4" in id || "bolt" in id)) ||
             (family == Family.QWEN && "qwen3vl" !in id)
 
     /** A community copy with its refusals removed. */
@@ -89,6 +89,18 @@ object Catalog {
             "unsloth/gemma-4-E2B-it-GGUF", "gemma-4-E2B-it-Q4_K_M.gguf", 3_106_738_272L, Family.GEMMA, true, ple = true,
             pictures = ExtraFile("mmproj-F16.gguf", 986_000_000L, "unsloth/gemma-4-E2B-it-GGUF"), hears = true,
             drafter = ExtraFile("mtp-gemma-4-E2B-it.gguf", 97_800_000L, "unsloth/gemma-4-E2B-it-GGUF"),
+        ),
+        // ---- NVIDIA: Nemotron 3.5 Bolt, built on Gemma 4 E4B (October 2026)
+        CatalogModel(
+            "nemotron35-bolt-e4b", "Nemotron 3.5 Bolt E4B", "NVIDIA",
+            "NVIDIA's phone-sized model, built on Gemma 4 E4B: careful reasoning (it thinks when a question needs it), " +
+                "30+ languages, and light on memory for what it knows. Sees pictures and hears sound once its support " +
+                "is added; has a DFlash drafter for the drafting test.",
+            "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf", 5_060_482_240L,
+            Family.GEMMA, true, ple = true,
+            pictures = ExtraFile("mmproj-Q8_0.gguf", 559_875_776L, "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF"), hears = true,
+            drafter = ExtraFile("dflash-NVIDIA-Nemotron-3.5-Bolt-E4B-Q8_0.gguf", 398_892_256L,
+                "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF"),
         ),
         CatalogModel(
             "gemma3-270m", "Gemma 3 270M", "Google",
@@ -322,6 +334,13 @@ object Catalog {
                 "free memory. Uses low-memory mode automatically.",
             "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q3_K_M.gguf", 4_670_000_000L, Family.QWEN, true, large = true,
             pictures = qwenPictures("9B", 918_000_000L),
+        ),
+        CatalogModel(
+            "ornith15-9b", "Ornith 1.5 9B", "Ornith AI",
+            "Qwen3.5 9B grown further by training on its own work: far stronger at code and agent tasks than Qwen3.5 9B " +
+                "in its makers' tests. Squeezed to about 3.7 bits to fit; slow, so close other apps first. Sees pictures.",
+            "mradermacher/Ornith-1.5-9B-i1-GGUF", "Ornith-1.5-9B.i1-IQ3_M.gguf", 4_415_382_784L, Family.QWEN, true, large = true,
+            pictures = ExtraFile("Ornith-1.5-9B.mmproj-Q8_0.gguf", 624_229_472L, "mradermacher/Ornith-1.5-9B-GGUF"),
         ),
         CatalogModel(
             "bonsai-27b", "Bonsai 27B (1-bit)", "PrismML",

@@ -1213,14 +1213,16 @@ static void test_thinking(const std::string & path, const char * label) {
     req.sampling.temp = 0.0f;
     req.sampling.top_k = 1;
     req.sampling.max_tokens = 1536;
-    req.messages.push_back({"user", "What is 17 times 3? Work it out, then answer with just the number.", ""});
+    // OA_THINK_PROMPT: another question (some models answer an easy one without thinking)
+    const char * question = std::getenv("OA_THINK_PROMPT");
+    req.messages.push_back({"user", question ? question : "What is 17 times 3? Work it out, then answer with just the number.", ""});
     oa::ChatCallbacks cb;
     auto r = e.chat(req, cb);
     std::printf("  ok=%d reason=%s thinking=%zu chars answer=[%s] err=%s\n", r.ok, r.stats.stop_reason.c_str(),
                 r.reasoning.size(), r.content.c_str(), r.error.c_str());
     CHECK(r.ok, "%s: reply failed: %s", label, r.error.c_str());
     CHECK(!r.reasoning.empty(), "%s: no thinking came back with thinking on", label);
-    CHECK(r.content.find("51") != std::string::npos, "%s: wrong or missing answer: %s", label, r.content.c_str());
+    if (!question) CHECK(r.content.find("51") != std::string::npos, "%s: wrong or missing answer: %s", label, r.content.c_str());
     CHECK(r.content.find("<think>") == std::string::npos && r.content.find("</think>") == std::string::npos,
           "%s: thinking tags left in the answer: %s", label, r.content.c_str());
 
