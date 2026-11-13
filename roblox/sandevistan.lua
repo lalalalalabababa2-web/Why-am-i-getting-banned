@@ -12,6 +12,14 @@
       actually walked and hand back to the real characters. Nothing here touches
       server time, other players' movement, hitboxes or damage.
 
+    RUNNING IT ON A PHONE
+      Pasting a file this size through a phone clipboard often cuts it short, and a
+      cut-off script fails silently. Run loader.lua (next to this file) instead: it
+      downloads this script and shows any error on screen. This script itself makes
+      no HTTP requests either way.
+      When it starts you get a "Sandevistan - Loaded" notification and a small panel
+      at the top centre of the screen. If start-up fails you get a red error box.
+
     CONTROLS
       Panel (drag it by the title bar):
         ACTIVATE button ... start / stop. Shows time left, then cooldown.
@@ -20,7 +28,8 @@
         DURATION .......... seconds per use, far left = no limit (testing)
         COOLDOWN .......... seconds between uses, far left = off (testing)
         QUALITY ........... LOW / MED / HIGH
-        "-" ............... minimise to just the title bar and the button
+        "-" / "+" ......... collapse to the title bar and button / open the settings
+                            (starts collapsed on small screens)
         "X" ............... tap twice to unload the script completely
       Keyboard (if you have one): CONFIG.ToggleKey, default Q.
       From another script: getgenv().__SANDEVISTAN.Toggle() / .Cleanup()
@@ -134,6 +143,7 @@ local VERSION      = "1.0.0"
 local ENV_KEY      = "__SANDEVISTAN"
 local NAME_GUI     = "SandevistanUI"
 local NAME_OVERLAY = "SandevistanOverlay"
+local NAME_ERROR   = "SandevistanError"
 local NAME_FOLDER  = "SandevistanFX"
 local NAME_RENDER  = "SandevistanRenderStep"
 local POST_NAMES   = { "SandevistanCC", "SandevistanBloom", "SandevistanBlur" }
@@ -932,7 +942,9 @@ function Overlay.build(host)
         Name = NAME_OVERLAY, ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 8990,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Enabled = false,
     })
-    safeSet(gui, "ScreenInsets", Enum.ScreenInsets.None) -- cover the notch area too
+    pcall(function()
+        gui.ScreenInsets = Enum.ScreenInsets.None -- cover the notch area too
+    end)
     Overlay.gui = gui
 
     local function edge(name, color, anchor, position, size, horizontal, fromFarSide)
@@ -2567,7 +2579,17 @@ local THEME = {
     red    = RED,
     redDim = Color3.fromRGB(112, 22, 34),
 }
-local FONT, FONT_BOLD = Enum.Font.GothamMedium, Enum.Font.GothamBold
+local function enumItem(enumType, name, fallback)
+    local ok, item = pcall(function()
+        return enumType[name]
+    end)
+    if ok and item then
+        return item
+    end
+    return fallback
+end
+local FONT = enumItem(Enum.Font, "GothamMedium", Enum.Font.SourceSans)
+local FONT_BOLD = enumItem(Enum.Font, "GothamBold", Enum.Font.SourceSansBold)
 local PANEL_W, HEADER_H, PAD, TOGGLE_H, ROW_H, GAP = 208, 28, 8, 40, 28, 3
 local ROWS = 5
 local SETTINGS_Y = HEADER_H + PAD + TOGGLE_H + GAP + 2
@@ -2610,8 +2632,9 @@ end
 function UI.setPanelPosition(x, y)
     local panel, gui = UI.panel, UI.gui
     local screen = gui.AbsoluteSize
+    local size = panel.AbsoluteSize
     if screen.X > 0 and screen.Y > 0 then
-        x = clamp(x, 0, max(0, screen.X - PANEL_W))
+        x = clamp(x, 0, max(0, screen.X - size.X))
         y = clamp(y, 0, max(0, screen.Y - HEADER_H))
     end
     panel.Position = UDim2.fromOffset(floor(x), floor(y))
@@ -2767,10 +2790,20 @@ function UI.build(host)
     if Workspace.CurrentCamera then
         viewport = Workspace.CurrentCamera.ViewportSize
     end
+    -- Phones report a small logical screen (about 800 x 370), so the panel is
+    -- scaled down there and starts collapsed; "+" opens the settings.
+    local scale = clamp(viewport.Y / 480, 0.7, 1)
+    local startHeight = FULL_H
+    UI.minimized = viewport.Y < 500
+    if UI.minimized then
+        startHeight = MINI_H
+    end
     local panel = new("Frame", {
         Name = "Panel", Active = true, BackgroundColor3 = THEME.panel, BorderSizePixel = 0, ClipsDescendants = true,
-        Position = UDim2.fromOffset(max(8, viewport.X - PANEL_W - 12), 8), Size = UDim2.fromOffset(PANEL_W, FULL_H),
+        Position = UDim2.fromOffset(max(8, floor((viewport.X - PANEL_W * scale) * 0.5)), 6),
+        Size = UDim2.fromOffset(PANEL_W, startHeight),
     }, gui)
+    new("UIScale", { Scale = scale }, panel)
     corner(panel, 4)
     new("UIStroke", { Color = THEME.line, Thickness = 1 }, panel)
     UI.panel = panel
@@ -2947,7 +2980,18 @@ function UI.build(host)
         UI.setPanelPosition(panel.Position.X.Offset, panel.Position.Y.Offset)
     end)
 
+    if UI.minimized then
+        minimize.Text = "+"
+        settings.Visible = false
+    end
+
     gui.Parent = host
+    -- Once the screen size is known, make sure the panel really is on screen.
+    task.defer(function()
+        if not destroyed and UI.gui == gui then
+            UI.setPanelPosition(panel.Position.X.Offset, panel.Position.Y.Offset)
+        end
+    end)
 end
 
 --------------------------------------------------------------------------------
@@ -3003,7 +3047,7 @@ local function sweepLeftovers(host)
         hosts[2] = playerGui
     end
     for _, parent in ipairs(hosts) do
-        for _, name in ipairs({ NAME_GUI, NAME_OVERLAY }) do
+        for _, name in ipairs({ NAME_GUI, NAME_OVERLAY, NAME_ERROR }) do
             local old = parent:FindFirstChild(name)
             while old do
                 old:Destroy()
@@ -3033,74 +3077,128 @@ local function sweepLeftovers(host)
     end
 end
 
-local host = guiHost()
-sweepLeftovers(host)
-Overlay.build(host)
-UI.build(host)
-
-track(UserInputService.InputChanged:Connect(function(input)
-    local onMove
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        onMove = Pointer.active.mouse
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        onMove = Pointer.active[input]
-    end
-    if onMove then
-        onMove(input.Position)
-    end
-end))
-
-track(UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        Pointer.active.mouse = nil
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        Pointer.active[input] = nil
-    end
-end))
-
-track(UserInputService.InputBegan:Connect(function(input, processed)
-    if not processed and CONFIG.ToggleKey and input.KeyCode == CONFIG.ToggleKey then
-        Ability.toggle()
-    end
-end))
-
-track(RunService.Heartbeat:Connect(function(dt)
-    if destroyed then
-        return
-    end
-    local ok, err = pcall(heartbeatBody, dt)
-    if not ok then
-        warn("[Sandevistan] update error, resetting: " .. tostring(err))
-        Ability.stop("error", true)
-        hardReset()
-    end
-end))
-
-track(player.CharacterAdded:Connect(bindCharacter))
-
-track(player.CharacterRemoving:Connect(function(model)
-    if Char.model == model then
-        Ability.stop("character removed", true)
-        Rig.destroy()
-        Ghosts.reset()
-        bindCharacter(nil)
-    end
-end))
-
-if player.Character then
-    bindCharacter(player.Character)
+-- If start-up fails, say so on screen: on a phone nobody is watching the console.
+local function showFatal(message)
+    warn("[Sandevistan] failed to start: " .. message)
+    pcall(function()
+        local parent
+        local ok, hidden = pcall(function()
+            return gethui()
+        end)
+        if ok and typeof(hidden) == "Instance" then
+            parent = hidden
+        else
+            parent = player:FindFirstChildOfClass("PlayerGui")
+        end
+        local gui = Instance.new("ScreenGui")
+        gui.Name = NAME_ERROR
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 9999
+        local box = Instance.new("TextButton")
+        box.AutoButtonColor = false
+        box.BackgroundColor3 = Color3.fromRGB(27, 27, 30)
+        box.BorderSizePixel = 0
+        box.Position = UDim2.new(0.1, 0, 0.08, 0)
+        box.Size = UDim2.new(0.8, 0, 0.5, 0)
+        box.Font = Enum.Font.Code
+        box.TextSize = 12
+        box.TextWrapped = true
+        box.TextXAlignment = Enum.TextXAlignment.Left
+        box.TextYAlignment = Enum.TextYAlignment.Top
+        box.TextColor3 = Color3.fromRGB(255, 96, 104)
+        box.Text = "SANDEVISTAN failed to start. Screenshot this, then tap to close.\n\n" .. message
+        box.Parent = gui
+        box.Activated:Connect(function()
+            gui:Destroy()
+        end)
+        gui.Parent = parent
+    end)
 end
 
-runtime.Cleanup = cleanup
-runtime.Toggle = Ability.toggle
-runtime.IsActive = function()
-    return Ability.active
+local function notify(text)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", { Title = "Sandevistan", Text = text, Duration = 6 })
+    end)
 end
-sharedEnv[ENV_KEY] = runtime
 
-UI.refresh()
-local keyName = "no key bound"
-if CONFIG.ToggleKey then
-    keyName = "key " .. CONFIG.ToggleKey.Name
+local function init()
+    local host = guiHost()
+    sweepLeftovers(host)
+    guard("screen overlay", Overlay.build, host)
+    UI.build(host)
+
+    track(UserInputService.InputChanged:Connect(function(input)
+        local onMove
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            onMove = Pointer.active.mouse
+        elseif input.UserInputType == Enum.UserInputType.Touch then
+            onMove = Pointer.active[input]
+        end
+        if onMove then
+            onMove(input.Position)
+        end
+    end))
+
+    track(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            Pointer.active.mouse = nil
+        elseif input.UserInputType == Enum.UserInputType.Touch then
+            Pointer.active[input] = nil
+        end
+    end))
+
+    track(UserInputService.InputBegan:Connect(function(input, processed)
+        if not processed and CONFIG.ToggleKey and input.KeyCode == CONFIG.ToggleKey then
+            Ability.toggle()
+        end
+    end))
+
+    track(RunService.Heartbeat:Connect(function(dt)
+        if destroyed then
+            return
+        end
+        local ok, err = pcall(heartbeatBody, dt)
+        if not ok then
+            warn("[Sandevistan] update error, resetting: " .. tostring(err))
+            Ability.stop("error", true)
+            hardReset()
+        end
+    end))
+
+    track(player.CharacterAdded:Connect(bindCharacter))
+
+    track(player.CharacterRemoving:Connect(function(model)
+        if Char.model == model then
+            Ability.stop("character removed", true)
+            Rig.destroy()
+            Ghosts.reset()
+            bindCharacter(nil)
+        end
+    end))
+
+    if player.Character then
+        bindCharacter(player.Character)
+    end
+
+    runtime.Cleanup = cleanup
+    runtime.Toggle = Ability.toggle
+    runtime.IsActive = function()
+        return Ability.active
+    end
+    sharedEnv[ENV_KEY] = runtime
+
+    UI.refresh()
 end
-print(string.format("[Sandevistan] v%s loaded - tap ACTIVATE (%s).", VERSION, keyName))
+
+local started, startError = xpcall(init, debug.traceback)
+if started then
+    local keyName = "no key bound"
+    if CONFIG.ToggleKey then
+        keyName = "key " .. CONFIG.ToggleKey.Name
+    end
+    print(string.format("[Sandevistan] v%s loaded - tap ACTIVATE (%s).", VERSION, keyName))
+    notify("Loaded. The panel is at the top of the screen.")
+else
+    pcall(cleanup)
+    showFatal(tostring(startError))
+end
