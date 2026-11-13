@@ -40,7 +40,8 @@ object Markdown {
     sealed class Block(val start: Int, val src: String) {
         class Text(start: Int, src: String) : Block(start, src)
         class Code(start: Int, src: String, val lang: String, val code: String, val closed: Boolean) : Block(start, src)
-        class Table(start: Int, src: String, val text: String) : Block(start, src)
+        /** [text]: the table lined up in plain text (for copying); [rows]: its cells as written, the header first. */
+        class Table(start: Int, src: String, val text: String, val rows: List<List<String>>) : Block(start, src)
     }
 
     /** Keyed by message and block; whether a long code block is folded. */
@@ -107,7 +108,7 @@ object Markdown {
                     rows += l
                     p = next(p)
                 }
-                out += Block.Table(start, src.substring(start, p), formatTable(rows))
+                out += Block.Table(start, src.substring(start, p), formatTable(rows), tableCells(rows))
                 pos = p
                 continue
             }
@@ -140,6 +141,11 @@ object Markdown {
         t = CELL_LINK.replace(t) { it.groupValues[1] }
         return MathText.pretty(t).replace("**", "").replace("__", "").replace("~~", "").replace("`", "").trim()
     }
+
+    /** The cells of a table as written (markdown and all), without the rule under the header. */
+    private fun tableCells(rows: List<String>): List<List<String>> = rows.map { r ->
+        r.trim().removePrefix("|").removeSuffix("|").replace("\\|", "\u0000").split('|').map { it.replace('\u0000', '|').trim() }
+    }.filterNot { row -> row.all { c -> c.isNotEmpty() && c.all { it == '-' || it == ':' } } }
 
     /** Pads table cells so the columns line up in a monospaced font. */
     private fun formatTable(rows: List<String>): String {
@@ -181,7 +187,8 @@ object Markdown {
             val existing = if (k < container.childCount) container.getChildAt(k) else null
             val fits = when (b) {
                 is Block.Text -> existing is TextView
-                is Block.Code, is Block.Table -> existing is CodeBlockView
+                is Block.Code -> existing is CodeBlockView
+                is Block.Table -> existing is TableView
             }
             if (existing != null && !fits) {
                 // the shape changed from here on (rare while streaming): rebuild the rest
@@ -190,6 +197,7 @@ object Markdown {
             val view = if (existing != null && fits) existing else {
                 val v = when (b) {
                     is Block.Text -> paragraphView(ctx, textColor)
+                    is Block.Table -> TableView(ctx)
                     else -> CodeBlockView(ctx, options)
                 }
                 container.addView(v, lp(MATCH, WRAP).apply { if (k > 0) topMargin = ctx.dp(if (b is Block.Text) 8 else 10) })
@@ -204,7 +212,7 @@ object Markdown {
                     }
                 }
                 is Block.Code -> (view as CodeBlockView).bind(k, b.lang.ifEmpty { "code" }, b.code, b.closed, host)
-                is Block.Table -> (view as CodeBlockView).bind(k, "table", b.text, true, host)
+                is Block.Table -> (view as TableView).bind(b, host) { cell -> safeParagraph(ctx, cell) }
             }
             k++
         }
@@ -212,6 +220,46 @@ object Markdown {
     }
 
     private val TAG_SRC = app.offlineai.chat.R.id.tag_src
+
+    /**
+     * A table drawn as a table: a rounded card with a tinted header row and hairlines between
+     * rows, its columns lined up, scrolling sideways when it is wider than the screen. A long
+     * press copies it as text.
+     */
+    class TableView(ctx: Context) : android.widget.HorizontalScrollView(ctx) {
+        private val table = android.widget.TableLayout(ctx)
+        private var shown: String? = null
+
+        init {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            background = rounded(Palette.surface1, ctx.dp(14).toFloat(), ctx.dp(1), Palette.border)
+            clipToOutline = true
+            addView(table, android.widget.FrameLayout.LayoutParams(WRAP, WRAP))
+        }
+
+        fun bind(b: Block.Table, host: Host, style: (String) -> CharSequence) {
+            if (shown == b.src) return
+            shown = b.src
+            table.removeAllViews()
+            val ctx = context
+            val maxCell = (resources.displayMetrics.widthPixels * 0.6f).toInt()
+            b.rows.forEachIndexed { r, row ->
+                if (r > 0) table.addView(View(ctx).apply { setBackgroundColor(Palette.border) }, android.widget.TableLayout.LayoutParams(MATCH, 1))
+                val tr = android.widget.TableRow(ctx)
+                if (r == 0) tr.setBackgroundColor(Palette.surface2)
+                for (cell in row) {
+                    tr.addView(ctx.text(style(cell), 14f, if (r == 0) Palette.text else Palette.text, bold = r == 0).apply {
+                        setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
+                        maxWidth = maxCell
+                    })
+                }
+                table.addView(tr)
+            }
+            setOnLongClickListener { host.copy("table", b.text); true }
+            table.setOnLongClickListener { host.copy("table", b.text); true }
+        }
+    }
 
     private fun paragraphView(ctx: Context, color: Int): TextView = ctx.text(color = color).apply {
         // Not selectable on purpose: a selectable text view scrolls the chat to its cursor

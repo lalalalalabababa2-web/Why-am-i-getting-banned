@@ -85,7 +85,17 @@ class Sheet(private val activity: Activity, title: String? = null, subtitle: Str
         window?.let { w ->
             w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             w.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND or WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS or
+                WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
+            // behind the status and navigation bars too, drawing them itself (see-through)
+            w.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
+            w.attributes = w.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                w.isStatusBarContrastEnforced = false
+                w.isNavigationBarContrastEnforced = false
+            }
             w.statusBarColor = Color.TRANSPARENT
             w.navigationBarColor = Color.TRANSPARENT
             WindowCompat.setDecorFitsSystemWindows(w, false)
