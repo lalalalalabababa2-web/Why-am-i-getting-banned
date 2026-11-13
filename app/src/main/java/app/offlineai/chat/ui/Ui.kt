@@ -92,8 +92,8 @@ object Palette {
         this.dark = dark
         this.fontScale = fontScale
         if (dark) {
-            bg = 0xFF131415.toInt(); surface1 = 0xFF1B1C1E.toInt(); surface2 = 0xFF242629.toInt(); surface3 = 0xFF2E3034.toInt()
-            border = 0xFF2D2F33.toInt(); borderStrong = 0xFF3E4146.toInt()
+            bg = 0xFF0E0F11.toInt(); surface1 = 0xFF17181B.toInt(); surface2 = 0xFF1F2124.toInt(); surface3 = 0xFF2A2C31.toInt()
+            border = 0xFF26282C.toInt(); borderStrong = 0xFF3A3D43.toInt()
             text = 0xFFE6E7E9.toInt(); text2 = 0xFFA4A7AC.toInt(); text3 = 0xFF70747A.toInt()
             this.accent = system?.first ?: accent.dark; onAccent = 0xFF101418.toInt()
             positive = 0xFF7FB08A.toInt(); caution = 0xFFD4A24C.toInt(); danger = 0xFFD4706C.toInt()
@@ -176,6 +176,7 @@ fun Context.iconButton(icon: Int, description: String, tint: Int = Palette.text2
         scaleType = android.widget.ImageView.ScaleType.CENTER
         layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
         setOnClickListener { onClick() }
+        pressable(0.88f)
     }
 
 /** A pill-shaped button. Primary ones are filled with the accent. */
@@ -186,15 +187,16 @@ fun Context.pill(label: String, primary: Boolean = false, danger: Boolean = fals
         else -> Palette.text
     }, bold = true).apply {
         gravity = Gravity.CENTER
-        val r = dp(18).toFloat()
+        val r = dp(20).toFloat()
         background = ripple(
-            if (primary) rounded(Palette.accent, r) else rounded(Palette.surface2, r, dp(1), Palette.borderStrong), r,
+            if (primary) rounded(Palette.accent, r) else rounded(Palette.surface2, r, dp(1), Palette.border), r,
         )
-        setPadding(dp(16), dp(8), dp(16), dp(8))
-        minHeight = dp(36)
+        setPadding(dp(18), dp(9), dp(18), dp(9))
+        minHeight = dp(40)
         isClickable = true
         isFocusable = true
         setOnClickListener { onClick() }
+        pressable()
     }
 
 fun Context.divider(): View = View(this).apply {
@@ -248,7 +250,7 @@ fun Activity.topBar(title: String): LinearLayout = LinearLayout(this).apply {
     gravity = Gravity.CENTER_VERTICAL
     setPadding(dp(4), dp(4), dp(12), dp(4))
     addView(iconButton(R.drawable.ic_back, "Back") { finish() })
-    addView(text(title, 18f, bold = true).apply { setPadding(dp(4), 0, 0, 0) }, lp(0, WRAP, 1f))
+    addView(text(title, 22f, bold = true).apply { setPadding(dp(4), 0, 0, 0); letterSpacing = -0.01f }, lp(0, WRAP, 1f))
 }
 
 fun Context.sectionTitle(s: String): TextView = text(s.uppercase(), 12f, Palette.text3, bold = true).apply {
@@ -258,7 +260,7 @@ fun Context.sectionTitle(s: String): TextView = text(s.uppercase(), 12f, Palette
 
 fun Context.card(): LinearLayout = LinearLayout(this).apply {
     orientation = LinearLayout.VERTICAL
-    background = rounded(Palette.surface1, dp(12).toFloat(), dp(1), Palette.border)
-    setPadding(dp(16), dp(14), dp(16), dp(14))
-    layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(12), dp(4), dp(12), dp(4)) }
+    background = rounded(Palette.surface1, dp(20).toFloat(), dp(1), Palette.border)
+    setPadding(dp(18), dp(16), dp(18), dp(16))
+    layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(14), dp(6), dp(14), dp(6)) }
 }

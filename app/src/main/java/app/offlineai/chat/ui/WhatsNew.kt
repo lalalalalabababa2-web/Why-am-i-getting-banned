@@ -1,9 +1,6 @@
 package app.offlineai.chat.ui
 
 import android.app.Activity
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import androidx.appcompat.app.AlertDialog
 
 /**
  * What changed, shown once after an update brings a new list (never on a first install, where
@@ -47,19 +44,8 @@ object WhatsNew {
 
     /** The list, whenever asked for (About has a row for it). */
     fun show(activity: Activity) {
-        val box = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(activity.dp(24), activity.dp(8), activity.dp(24), activity.dp(8))
-        }
-        for ((title, body) in ITEMS) {
-            box.addView(activity.text(title, 15f, bold = true).apply { setPadding(0, activity.dp(10), 0, 0) })
-            box.addView(activity.text(body, 14f, Palette.text2))
-        }
-        val scroll = ScrollView(activity).apply { addView(box) }
-        AlertDialog.Builder(activity)
-            .setTitle("What's new")
-            .setView(scroll)
-            .setPositiveButton("Got it", null)
-            .show()
+        val sheet = Sheet(activity, "What's new")
+        for ((title, body) in ITEMS) sheet.view(activity.sheetParagraph(title, body))
+        sheet.button("Got it") {}.show()
     }
 }

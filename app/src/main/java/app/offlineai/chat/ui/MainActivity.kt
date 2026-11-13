@@ -19,7 +19,6 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -139,6 +138,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private val canDictate by lazy { Dictation.available(this) }
     /** The send button's colour as last set (accent, or the listening colour). */
     private var sendListening: Boolean? = null
+    /** The icon the send button shows; a change makes it pop. */
+    private var sendIcon = 0
 
     /** Theme, accent and text size this screen was built with; a change rebuilds it. */
     private var look = ""
@@ -242,9 +243,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             gravity = Gravity.CENTER
             setPadding(dp(32), 0, dp(32), dp(48))
         }
-        empty.addView(text("✦", 34f, Palette.accent).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
-        empty.addView(text("Offline AI", 22f, bold = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(8)) }, lp(MATCH, WRAP))
-        emptyText = text("", 14f, Palette.text2).apply { gravity = Gravity.CENTER }
+        empty.addView(Orb(this), lp(dp(88), dp(88)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        empty.addView(text("Offline AI", 28f, bold = true).apply {
+            gravity = Gravity.CENTER
+            letterSpacing = -0.02f
+            setPadding(0, dp(14), 0, dp(6))
+        }, lp(MATCH, WRAP))
+        emptyText = text("", 15f, Palette.text2).apply { gravity = Gravity.CENTER }
         empty.addView(emptyText, lp(MATCH, WRAP))
         emptyAction = { startActivity(Intent(this, ModelsActivity::class.java)) }
         emptyButton = pill("Choose a model", primary = true) { emptyAction() }
@@ -305,8 +310,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val composer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
-            setPadding(dp(4), dp(8), dp(8), dp(10))
-            setBackgroundColor(Palette.bg)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = rounded(Palette.surface1, dp(28).toFloat(), dp(1), Palette.border)
+            elevation = dp(3).toFloat()
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
         composer.addView(attach, lp(dp(44), dp(44)))
@@ -315,8 +321,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             setHintTextColor(Palette.text3)
             setTextColor(Palette.text)
             textSize = 15f * Palette.fontScale
-            background = rounded(Palette.surface2, dp(22).toFloat(), dp(1), Palette.border)
-            setPadding(dp(16), dp(11), dp(16), dp(11))
+            background = null
+            setPadding(dp(6), dp(11), dp(8), dp(11))
             minHeight = dp(44)
             maxLines = 6
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -353,8 +359,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 true
             }
         }
-        composer.addView(send, lp(dp(44), dp(44)).apply { marginStart = dp(8) })
-        root.addView(composer, lp(MATCH, WRAP))
+        send.pressable(0.86f)
+        composer.addView(send, lp(dp(44), dp(44)).apply { marginStart = dp(4) })
+        root.addView(composer, lp(MATCH, WRAP).apply { setMargins(dp(10), dp(6), dp(10), dp(10)) })
 
         setContentView(root)
         edgeToEdge(root)
@@ -459,39 +466,38 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         val sees = loaded.info.vision
         val hears = loaded.info.audio
-        val pm = PopupMenu(this, anchor)
+        val sheet = Sheet(this, "Add to your message")
+        val mic = {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                record()
+            } else {
+                askMic.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
         if (sees) {
-            pm.menu.add(0, 1, 0, "Photo")
-            pm.menu.add(0, 2, 1, "Video")
+            sheet.item("Photo", R.drawable.ic_image, "Up to four pictures") {
+                pickPictures.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+            sheet.item("Video", R.drawable.ic_video, "Sent as a few frames with their times") {
+                pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+            }
         }
         if (hears) {
-            pm.menu.add(0, 3, 2, "Record sound")
-            pm.menu.add(0, 4, 3, "Sound file")
+            sheet.item("Record sound", R.drawable.ic_mic) { mic() }
+            sheet.item("Sound file", R.drawable.ic_audio) { pickSound.launch(arrayOf("audio/*")) }
         }
         if (!sees && !hears) {
             val extra = local.catalog?.pictures
             if (extra != null && !local.hasPictures) {
-                pm.menu.add(0, 5, 0, "Add picture support (${ModelStore.formatBytes(extra.sizeBytes)})…")
-            } else {
-                pm.menu.add(0, 6, 0, "${local.displayName} cannot see pictures").isEnabled = false
-                pm.menu.add(0, 5, 1, "Models that can…")
-            }
-        }
-        pm.setOnMenuItemClickListener {
-            when (it.itemId) {
-                1 -> pickPictures.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                2 -> pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
-                3 -> if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    record()
-                } else {
-                    askMic.launch(Manifest.permission.RECORD_AUDIO)
+                sheet.item("Add picture support", R.drawable.ic_image, "A ${ModelStore.formatBytes(extra.sizeBytes)} download for ${local.displayName}") {
+                    startActivity(Intent(this, ModelsActivity::class.java))
                 }
-                4 -> pickSound.launch(arrayOf("audio/*"))
-                5 -> startActivity(Intent(this, ModelsActivity::class.java))
+            } else {
+                sheet.item("${local.displayName} cannot see pictures", R.drawable.ic_image, enabled = false)
+                sheet.item("Models that can", R.drawable.ic_spark) { startActivity(Intent(this, ModelsActivity::class.java)) }
             }
-            true
         }
-        pm.show()
+        sheet.show()
     }
 
     /** Copies picked files into the chat's own storage (pictures shrunk, videos turned into frames, sound into WAV). */
@@ -833,6 +839,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             else -> R.drawable.ic_send
         }
         send.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
+        if (sendIcon != icon) {
+            if (sendIcon != 0) Motion.pop(send)
+            sendIcon = icon
+        }
         send.contentDescription = when {
             generating -> "Stop"
             listening -> "Stop listening"
@@ -964,19 +974,25 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             return
         }
         val current = app.engine.loaded?.key
-        val pm = PopupMenu(this, anchor)
-        local.forEachIndexed { i, m ->
-            pm.menu.add(0, i + 1, i, (if (m.file.name == current) "✓ " else "") + m.displayName)
+        val sheet = Sheet(this, "Model")
+        for (m in local) {
+            val size = ModelStore.formatBytes(m.sizeBytes)
+            sheet.item(m.displayName, icon = R.drawable.ic_spark, detail = m.catalog?.maker?.let { "$it · $size" } ?: size,
+                checked = m.file.name == current) { pick(m, current) }
         }
-        pm.menu.add(0, 0, local.size, "All models…")
         val team = TeamDialog.summary(app)
-        pm.menu.add(0, TEAM_ITEM, local.size + 1, if (team.isEmpty()) "Work together…" else "Work together: $team…")
-        pm.setOnMenuItemClickListener { item ->
-            val m = local.getOrNull(item.itemId - 1)
+        sheet.divider()
+            .item("Work together", detail = if (team.isEmpty()) "Several answers, then a review" else team) {
+                TeamDialog.show(this, app) { refreshAll() }
+            }
+            .item("All models", detail = "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
+            .show()
+    }
+
+    private fun pick(m: app.offlineai.chat.data.LocalModel, current: String?) {
+        run {
             when {
-                item.itemId == TEAM_ITEM -> TeamDialog.show(this, app) { refreshAll() }
-                item.itemId == 0 -> startActivity(Intent(this, ModelsActivity::class.java))
-                m != null && m.file.name != current -> {
+                m.file.name != current -> {
                     val go = {
                         app.loadModel(m)
                         toast("Loading ${m.displayName}…")
@@ -998,9 +1014,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                     }
                 }
             }
-            true
         }
-        pm.show()
     }
 
     /** The empty screen's one-tap start: the suggested model downloads, then loads by itself. */
@@ -1108,8 +1122,6 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     }
 
     companion object {
-        /** The model menu's item for working together. */
-        private const val TEAM_ITEM = 10_000
 
         /** The app's shortcuts (res/xml/shortcuts.xml). */
         const val ACTION_TALK = "app.offlineai.chat.action.TALK"

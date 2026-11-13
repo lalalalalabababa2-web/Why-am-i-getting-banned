@@ -5,7 +5,6 @@ import android.content.res.ColorStateList
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.ScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import app.offlineai.chat.App
@@ -58,10 +57,9 @@ object TeamDialog {
         partnerChoice(current >= 2)
         sizes.setOnCheckedChangeListener { _, id -> partnerChoice(id - SIZE_IDS >= 2) }
 
-        AlertDialog.Builder(activity)
-            .setTitle("Work together")
-            .setView(ScrollView(activity).apply { addView(box) })
-            .setPositiveButton("OK") { _, _ ->
+        Sheet(activity, "Work together")
+            .view(box, 0)
+            .button("Done") {
                 val n = (sizes.checkedRadioButtonId - SIZE_IDS).let { if (it >= 2) it else 0 }
                 val partner = others.getOrNull(partners.checkedRadioButtonId - PARTNER_IDS)
                 val apply = {
@@ -94,7 +92,6 @@ object TeamDialog {
                     apply()
                 }
             }
-            .setNegativeButton("Cancel", null)
             .show()
     }
 

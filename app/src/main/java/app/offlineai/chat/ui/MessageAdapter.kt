@@ -6,7 +6,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
@@ -71,8 +70,17 @@ class MessageAdapter(
         diff.dispatchUpdatesTo(this)
     }
 
+    /** Messages already on screen once: only ones that come after arrive with motion. */
+    private val arrived = HashSet<String>()
+
+    private fun arrive(view: View, m: ChatMessage) {
+        if (arrived.add(m.id)) Motion.enter(view)
+    }
+
     /** A different conversation: everything is new. */
     fun reset() {
+        arrived.clear()
+        messages.forEach { arrived.add(it.id) }
         shown = messages.map { it.id to fingerprint(it) }
         notifyDataSetChanged()
     }
@@ -95,6 +103,7 @@ class MessageAdapter(
             is UserHolder -> holder.bind(m, position == messages.indexOfLast { it.role == "user" })
             is ReplyHolder -> holder.bind(m, position == messages.size - 1)
         }
+        arrive(holder.itemView, m)
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
@@ -109,8 +118,12 @@ class MessageAdapter(
             gravity = Gravity.END
         }
         private val bubble = ctx.text().apply {
-            background = rounded(Palette.surface3, ctx.dp(18).toFloat())
-            setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
+            val r = ctx.dp(22).toFloat()
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(androidx.core.graphics.ColorUtils.blendARGB(Palette.surface2, Palette.accent, if (Palette.dark) 0.22f else 0.14f))
+                cornerRadii = floatArrayOf(r, r, r, r, ctx.dp(6).toFloat(), ctx.dp(6).toFloat(), r, r)
+            }
+            setPadding(ctx.dp(16), ctx.dp(11), ctx.dp(16), ctx.dp(11))
             maxWidth = (ctx.resources.displayMetrics.widthPixels * 0.82).toInt()
         }
         private var mediaShown: List<app.offlineai.chat.data.Attachment>? = null
@@ -146,21 +159,15 @@ class MessageAdapter(
             bubble.visibility = if (m.content.isBlank()) View.GONE else View.VISIBLE
             bubble.text = m.content
             val menu = View.OnClickListener { v ->
-                val pm = PopupMenu(v.context, v)
-                pm.menu.add(0, 1, 0, "Copy")
-                pm.menu.add(0, 4, 1, "Select text")
-                if (isLastUser && !app.chat.generating) pm.menu.add(0, 2, 2, "Edit and send again")
-                if (!app.chat.generating) pm.menu.add(0, 3, 3, "Delete")
-                pm.setOnMenuItemClickListener {
-                    when (it.itemId) {
-                        1 -> v.context.copyText("message", m.content)
-                        2 -> app.chat.takeBackLast()?.let(actions::editLast)
-                        3 -> app.chat.delete(m)
-                        4 -> actions.selectText(m.content)
-                    }
-                    true
+                val act = v.context as? android.app.Activity ?: return@OnClickListener
+                val sheet = Sheet(act)
+                    .item("Copy", R.drawable.ic_copy) { v.context.copyText("message", m.content) }
+                    .item("Select text") { actions.selectText(m.content) }
+                if (isLastUser && !app.chat.generating) {
+                    sheet.item("Edit and send again", R.drawable.ic_refresh) { app.chat.takeBackLast()?.let(actions::editLast) }
                 }
-                pm.show()
+                if (!app.chat.generating) sheet.item("Delete", R.drawable.ic_close, danger = true) { app.chat.delete(m) }
+                sheet.show()
             }
             bubble.setOnClickListener(menu)
             bubble.setOnLongClickListener { menu.onClick(it); true }
@@ -178,6 +185,7 @@ class MessageAdapter(
         private val thinkWrap = LinearLayout(ctx)
         private val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         private val waiting = ctx.text("", 14f, Palette.text3)
+        private val dots = TypingDots(ctx)
         private val errorText = ctx.text("", 14f, Palette.danger)
         private val stats = ctx.text("", 12f, Palette.text3)
         private val copy = ctx.iconButton(R.drawable.ic_copy, "Copy reply", Palette.text3) {}
@@ -207,6 +215,7 @@ class MessageAdapter(
             thinkWrap.addView(thinkBody, lp(0, WRAP, 1f).apply { marginStart = ctx.dp(10) })
             col.addView(thinkWrap, lp(MATCH, WRAP).apply { setMargins(ctx.dp(8), ctx.dp(2), 0, ctx.dp(8)) })
 
+            col.addView(dots, lp(ctx.dp(44), ctx.dp(24)))
             col.addView(waiting)
             col.addView(content, lp(MATCH, WRAP))
             col.addView(errorText)
@@ -238,35 +247,29 @@ class MessageAdapter(
 
         private fun showMenu(v: View) {
             val m = message ?: return
-            val pm = PopupMenu(v.context, v)
-            pm.menu.add(0, 1, 0, "Copy")
-            pm.menu.add(0, 2, 1, "Select text")
+            val act = v.context as? android.app.Activity ?: return
+            val sheet = Sheet(act)
+                .item("Copy", R.drawable.ic_copy) { v.context.copyText("reply", m.content) }
+                .item("Select text") { actions.selectText(m.content) }
             val readable = !m.error && m.content.isNotBlank() && app.chat.streaming !== m
             if (readable) {
-                pm.menu.add(0, 4, 2, if (ReadAloud.isReading(m.id)) "Stop reading" else "Read aloud")
-                pm.menu.add(0, 5, 3, "Share")
-            }
-            if (!app.chat.generating) pm.menu.add(0, 3, 4, "Delete")
-            pm.setOnMenuItemClickListener {
-                when (it.itemId) {
-                    1 -> v.context.copyText("reply", m.content)
-                    2 -> actions.selectText(m.content)
-                    3 -> {
-                        if (ReadAloud.isReading(m.id)) ReadAloud.stop()
-                        app.chat.delete(m)
-                    }
-                    4 -> if (ReadAloud.isReading(m.id)) ReadAloud.stop() else ReadAloud.read(v.context, m.id, m.content)
-                    5 -> {
-                        // to another app on the phone (messages, notes, mail): nothing goes online from here
-                        val send = android.content.Intent(android.content.Intent.ACTION_SEND)
-                            .setType("text/plain")
-                            .putExtra(android.content.Intent.EXTRA_TEXT, m.content)
-                        runCatching { v.context.startActivity(android.content.Intent.createChooser(send, "Share the reply")) }
-                    }
+                sheet.item(if (ReadAloud.isReading(m.id)) "Stop reading" else "Read aloud", R.drawable.ic_audio) {
+                    if (ReadAloud.isReading(m.id)) ReadAloud.stop() else ReadAloud.read(v.context, m.id, m.content)
                 }
-                true
+                sheet.item("Share", R.drawable.ic_arrow_down, "To another app on this phone") {
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(android.content.Intent.EXTRA_TEXT, m.content)
+                    runCatching { v.context.startActivity(android.content.Intent.createChooser(send, "Share the reply")) }
+                }
             }
-            pm.show()
+            if (!app.chat.generating) {
+                sheet.item("Delete", R.drawable.ic_close, danger = true) {
+                    if (ReadAloud.isReading(m.id)) ReadAloud.stop()
+                    app.chat.delete(m)
+                }
+            }
+            sheet.show()
         }
 
         fun bind(m: ChatMessage, isLast: Boolean) {
@@ -331,15 +334,14 @@ class MessageAdapter(
             }
 
             if (streaming && m.content.isBlank() && !hasThinking) {
-                waiting.visibility = View.VISIBLE
                 val c = app.chat
-                waiting.text = if (c.promptTotal > 0 && c.promptDone < c.promptTotal) {
-                    "Reading… ${c.promptDone * 100 / c.promptTotal}%${c.promptEtaLabel()}"
-                } else {
-                    "…"
-                }
+                val reading = c.promptTotal > 0 && c.promptDone < c.promptTotal
+                waiting.visibility = if (reading) View.VISIBLE else View.GONE
+                dots.visibility = if (reading) View.GONE else View.VISIBLE
+                if (reading) waiting.text = "Reading… ${c.promptDone * 100 / c.promptTotal}%${c.promptEtaLabel()}"
             } else {
                 waiting.visibility = View.GONE
+                dots.visibility = View.GONE
             }
 
             if (streaming) {
