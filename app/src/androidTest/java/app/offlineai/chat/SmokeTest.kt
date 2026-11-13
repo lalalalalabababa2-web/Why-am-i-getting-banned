@@ -24,7 +24,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -38,6 +40,10 @@ import java.util.concurrent.TimeUnit
  */
 @RunWith(AndroidJUnit4::class)
 class SmokeTest {
+    /** One test that hangs fails on its own instead of using up the whole run. */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(600)
+
     private val inst = InstrumentationRegistry.getInstrumentation()
     private val app = inst.targetContext.applicationContext as App
 
@@ -117,7 +123,7 @@ class SmokeTest {
         app.settings.threads = 2
         ActivityScenario.launch(MainActivity::class.java).use {
             for (asset in listOf("test-qwen35.gguf", "test-llama.gguf")) {
-                val file = installModel(asset)
+                val file = installed(asset)
                 load(file)
                 onMain { app.chat.newChat() }
                 turn("Hello there, how are you?")
@@ -147,7 +153,7 @@ class SmokeTest {
     @Test
     fun speedTestAndLiveThreads() {
         app.settings.contextSize = 2048
-        val file = installModel("test-qwen35.gguf")
+        val file = installed("test-qwen35.gguf")
         load(file)
         val latch = CountDownLatch(1)
         var rows = 0
@@ -173,7 +179,7 @@ class SmokeTest {
         app.settings.memoryMode = MemoryMode.LOW
         app.settings.kvQ8 = true
         try {
-            val file = installModel("test-llama.gguf")
+            val file = installed("test-llama.gguf")
             load(file)
             assertTrue(app.engine.loaded!!.config.lowMemory)
             onMain { app.chat.newChat() }
@@ -235,7 +241,7 @@ class SmokeTest {
     fun attachmentGoesWithTheMessage() {
         app.settings.contextSize = 2048
         app.settings.maxTokens = 32
-        val file = installModel("test-llama.gguf")
+        val file = installed("test-llama.gguf")
         load(file)
         onMain { app.chat.newChat() }
         val dir = app.chats.mediaDir(app.chat.conversation.id)
@@ -301,7 +307,10 @@ class SmokeTest {
         return null
     }
 
-    /** A model file from the test assets, copied in only if it is not there yet (never over a mapped one). */
+    /**
+     * A model file from the test assets, copied in only if it is not there yet: writing over a
+     * file the engine has mapped can stall or crash it, and the content is the same anyway.
+     */
     private fun installed(asset: String): File {
         val have = File(app.models.dir, asset)
         return if (have.isFile && have.length() > 0) have else installModel(asset)
@@ -357,7 +366,33 @@ class SmokeTest {
         } finally {
             app.settings.teamSize = 0
             app.settings.teamPartner = null
-            onMain { app.applyTeamPartner() }
+            onMain {
+                app.applyTeamPartner()
+                app.chat.newChat()
+            }
+        }
+    }
+
+    /**
+     * A chat shorter than the screen is still once shown: the list used to try to line its last
+     * message up with a bottom it could not reach, and redrew itself frame after frame (the main
+     * thread never idle; on a phone, a busy CPU for as long as the chat was open).
+     */
+    @Test(timeout = 90_000)
+    fun shortChatSettles() {
+        onMain {
+            app.chat.newChat()
+            app.chat.conversation.messages.add(ChatMessage(role = "user", content = "Hi"))
+            app.chat.conversation.messages.add(ChatMessage(role = "assistant", content = "Hello! How can I help?"))
+        }
+        try {
+            // launching waits for the main thread to go idle, which it never did
+            ActivityScenario.launch(MainActivity::class.java).use {
+                Thread.sleep(1000)
+                inst.waitForIdleSync()
+            }
+        } finally {
+            onMain { app.chat.newChat() }
         }
     }
 

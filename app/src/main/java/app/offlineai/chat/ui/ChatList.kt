@@ -111,8 +111,11 @@ class ChatScroller(
         pendingJump = 0
         val dy = lm.getDecoratedBottom(last) - (list.height - list.paddingBottom)
         // dy < 0 when the last message ends above the bottom: show more of what is above it,
-        // as far as there is any (the list cannot be pulled past its top)
-        if (dy != 0) list.scrollBy(0, dy)
+        // as far as there is any. Only when the list can move that way: RecyclerView redraws
+        // after every scrollBy, even one that moves nothing, and this runs before every frame,
+        // so a chat shorter than the screen would otherwise redraw itself frame after frame
+        // (a busy main thread and a warm phone, for as long as the chat is open).
+        if ((dy > 0 && list.canScrollVertically(1)) || (dy < 0 && list.canScrollVertically(-1))) list.scrollBy(0, dy)
         return true
     }
 
