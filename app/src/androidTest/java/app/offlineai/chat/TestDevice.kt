@@ -6,7 +6,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 
 /** The emulator itself: kept awake and unlocked, and asked what is on screen when a touch goes astray. */
 object TestDevice {
-    private fun shell(cmd: String): String = try {
+    /** Runs a shell command on the device as adb would, and returns what it printed. */
+    fun shell(cmd: String): String = try {
         val pfd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(cmd)
         ParcelFileDescriptor.AutoCloseInputStream(pfd).bufferedReader().use { it.readText() }
     } catch (e: Exception) {
