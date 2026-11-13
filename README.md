@@ -53,7 +53,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   left out a step. Its reply sometimes mentions the separate answers; asking it to write its
   checking first and the reply after a "Reply:" line was tried, and the 0.8B model then often left
   the line out and got no more right than alone (8 of 12), so the review writes its reply directly.
-  A model that thinks does its checking in its thinking, which goes in the fold.
+  A model that thinks does its checking in its thinking, which goes in the fold. On GitHub's ARM
+  runner (closer to a phone), on the first six of those problems: 6 of 6 right as a team of two
+  against 4 of 6 alone (20.5 s a reply against 5.6 s), and also 6 of 6 with LFM2.5 1.2B writing
+  the second answer, in 15.6 s a reply since it writes faster.
 - **Pictures, video and sound**: attach photos (up to four), a video (sent as a few frames with
   their times) or a sound file or recording (decoded to 16 kHz mono) to models that can take them.
 - **Writing faster**: drafting ahead (speculative decoding), where the model checks several
