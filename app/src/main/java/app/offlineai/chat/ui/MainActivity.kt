@@ -177,7 +177,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             background = ripple(null, dp(10).toFloat())
             setOnClickListener { v -> switchModel(v) }
         }
-        title = text("Offline AI", 16f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        title = text("Nyx", 16f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         subtitle = text("", 12f, Palette.text3).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         titleBox.addView(title)
         titleBox.addView(subtitle)
@@ -244,7 +244,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             setPadding(dp(32), 0, dp(32), dp(48))
         }
         empty.addView(Orb(this), lp(dp(88), dp(88)).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        empty.addView(text("Offline AI", 28f, bold = true).apply {
+        empty.addView(text("Nyx", 28f, bold = true).apply {
             gravity = Gravity.CENTER
             letterSpacing = -0.02f
             setPadding(0, dp(14), 0, dp(6))
@@ -286,6 +286,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         middle.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(middle, lp(MATCH, 0, 1f))
 
+        // The message box floats over the end of the chat: the conversation scrolls on under it and
+        // shows through, frosted, instead of stopping at a hard edge above it.
+        val dock = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        middle.addView(dock, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        val glass = { a: Int -> androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, a) }
+
         // attachments waiting to go with the next message
         draftRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -296,7 +302,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             visibility = View.GONE
             addView(draftRow)
         }
-        root.addView(draftScroll, lp(MATCH, WRAP))
+        draftScroll.background = rounded(glass(0xE6), dp(18).toFloat())
+        dock.addView(draftScroll, lp(MATCH, WRAP).apply { setMargins(dp(10), 0, dp(10), dp(4)) })
 
         // while talking: what is happening, and a way out
         voiceBar = LinearLayout(this).apply {
@@ -309,15 +316,17 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         voiceState = text("", 14f, Palette.text2).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         voiceBar.addView(voiceState, lp(0, WRAP, 1f))
         voiceBar.addView(pill("End") { voice.stop() }, lp(WRAP, WRAP).apply { marginStart = dp(8) })
-        root.addView(voiceBar, lp(MATCH, WRAP))
+        voiceBar.background = rounded(glass(0xE6), dp(18).toFloat())
+        dock.addView(voiceBar, lp(MATCH, WRAP).apply { setMargins(dp(10), 0, dp(10), dp(4)) })
 
         // composer
         val composer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
             setPadding(dp(4), dp(4), dp(4), dp(4))
-            background = rounded(Palette.surface1, dp(28).toFloat(), dp(1), Palette.border)
-            elevation = dp(3).toFloat()
+            // translucent: what is behind shows through, blurred by the backdrop under it
+            background = rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.surface1, if (Palette.dark) 0xB8 else 0xC4),
+                dp(26).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x90))
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
         composer.addView(attach, lp(dp(44), dp(44)))
@@ -366,7 +375,27 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         send.pressable(0.86f)
         composer.addView(send, lp(dp(44), dp(44)).apply { marginStart = dp(4) })
-        root.addView(composer, lp(MATCH, WRAP).apply { setMargins(dp(10), dp(6), dp(10), dp(10)) })
+        val capsule = FrameLayout(this).apply {
+            elevation = dp(4).toFloat()
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) =
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(26).toFloat())
+            }
+            clipToOutline = true
+        }
+        capsule.addView(Backdrop(this, list), FrameLayout.LayoutParams(MATCH, MATCH))
+        capsule.addView(composer, FrameLayout.LayoutParams(MATCH, WRAP))
+        dock.addView(capsule, lp(MATCH, WRAP).apply { setMargins(dp(10), dp(6), dp(10), dp(10)) })
+        // the end of the chat stays reachable above the box, however tall the box grows
+        dock.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val h = bottom - top
+            if (h == oldBottom - oldTop) return@addOnLayoutChangeListener
+            val wasFollowing = scroller.following
+            list.setPadding(0, 0, 0, h + dp(12))
+            (jump.layoutParams as FrameLayout.LayoutParams).bottomMargin = h + dp(8)
+            jump.requestLayout()
+            if (wasFollowing) list.post { scroller.jumpToBottom(smooth = false) }
+        }
 
         setContentView(root)
         edgeToEdge(root)
@@ -831,9 +860,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val name = app.engine.loaded?.displayName
         return when {
             dictation != null -> "Listening…"
+            // short, so it never wraps: the model's name is at the top already
             name == null -> "Message"
-            app.chat.teamSize() > 0 -> "Message $name and team"
-            else -> "Message $name"
+            app.chat.teamSize() > 0 -> "Message the team"
+            else -> "Message"
         }
     }
 
@@ -1057,7 +1087,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val e = app.engine
         val c = app.chat
         val loaded = e.loaded
-        title.text = loaded?.displayName ?: e.loadingName ?: "Offline AI"
+        title.text = loaded?.displayName ?: e.loadingName ?: "Nyx"
         subtitle.setTextColor(Palette.text3)
         val heat = app.currentThermal()
         val hot = (if (heat >= PowerManager.THERMAL_STATUS_MODERATE) " · phone ${Device.thermalLabel(heat)}, slowed down" else "") +

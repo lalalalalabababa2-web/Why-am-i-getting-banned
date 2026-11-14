@@ -107,7 +107,7 @@ class GenerationService : Service() {
         )
         val app = App.of(this)
         val c = app.chat
-        val name = app.engine.loaded?.displayName ?: "Offline AI"
+        val name = app.engine.loaded?.displayName ?: "Nyx"
         val reading = c.promptTotal > 0 && c.promptDone < c.promptTotal
         val gentle = !app.inFront && app.settings.backgroundSpeed == BackgroundSpeed.GENTLE
         val title = when {

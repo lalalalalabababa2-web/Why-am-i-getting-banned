@@ -298,7 +298,7 @@ class ChatsActivity : AppCompatActivity() {
                     ?: throw IllegalStateException("could not open the file")
                 "Imported ${app.chats.importJson(text)} chats"
             } catch (e: Exception) {
-                "Could not import: this does not look like an Offline AI chat export (${e.message})"
+                "Could not import: this does not look like an Nyx chat export (${e.message})"
             }
             main.post {
                 Toast.makeText(this, result, Toast.LENGTH_LONG).show()

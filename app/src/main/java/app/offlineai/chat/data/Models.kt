@@ -440,7 +440,7 @@ class ModelStore(private val context: Context) {
         File(dir, "$fileName.part").apply { parentFile?.mkdirs() }.delete()
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle(title)
-            .setDescription("Model for Offline AI")
+            .setDescription("Model for Nyx")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalFilesDir(context, "models", "$fileName.part")
             .setAllowedOverMetered(true)

@@ -52,7 +52,7 @@ class AboutActivity : AppCompatActivity() {
             setPadding(dp(24), dp(16), dp(24), dp(8))
         }
         hero.addView(text("✦", 40f, Palette.accent).apply { gravity = Gravity.CENTER })
-        hero.addView(text("Offline AI", 26f, bold = true).apply {
+        hero.addView(text("Nyx", 26f, bold = true).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(4), 0, dp(2))
         })
@@ -145,7 +145,7 @@ class AboutActivity : AppCompatActivity() {
         content.addView(sectionTitle("Source"))
         val source = card()
         source.addView(text(
-            "Offline AI is open source: everything above, and how it is built and tested, is in its repository. " +
+            "Nyx is open source: everything above, and how it is built and tested, is in its repository. " +
                 "Written with Claude Code.",
             14f, Palette.text2,
         ))

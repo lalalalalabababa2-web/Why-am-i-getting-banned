@@ -504,7 +504,7 @@ class PicturesActivity : AppCompatActivity() {
         val sheet = Sheet(this)
         sheet.view(view)
         sheet.item("Share", R.drawable.ic_arrow_down, "To another app") { share(p) }
-        sheet.item("Save to photos", R.drawable.ic_image, "Pictures/Offline AI on this phone") { saveToPhotos(p) }
+        sheet.item("Save to photos", R.drawable.ic_image, "Pictures/Nyx on this phone") { saveToPhotos(p) }
         sheet.item("Make it again, differently", R.drawable.ic_refresh, "Same words, a new seed") {
             prompt.setText(p.prompt)
             start(null)

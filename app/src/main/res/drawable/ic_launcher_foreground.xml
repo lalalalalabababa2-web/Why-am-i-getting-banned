@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A four-pointed spark, with a smaller one beside it. -->
+<!-- A crescent moon with a small star beside it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#8FA9C7"
-        android:pathData="M52,30 C53.6,45 59,50.4 74,52 C59,53.6 53.6,59 52,74 C50.4,59 45,53.6 30,52 C45,50.4 50.4,45 52,30 Z" />
-    <path android:fillColor="#C9D6E5"
-        android:pathData="M70,32 C70.6,37.4 72.6,39.4 78,40 C72.6,40.6 70.6,42.6 70,48 C69.4,42.6 67.4,40.6 62,40 C67.4,39.4 69.4,37.4 70,32 Z" />
+    <!-- a soft glow behind the moon -->
+    <path android:pathData="M54,54m-30,0a30,30 0,1 1,60 0a30,30 0,1 1,-60 0">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="radial" android:centerX="50" android:centerY="56" android:gradientRadius="30"
+                android:startColor="#40B9A8FF" android:endColor="#00B9A8FF" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M51.88,30.09 A24,24 0 1,0 76.86,61.32 A20,20 0 1,1 51.88,30.09 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="34" android:startY="36" android:endX="72" android:endY="78"
+                android:startColor="#FFFFFF" android:endColor="#B9A8FF" />
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#E6DEFF"
+        android:pathData="M74,30 C74.5,34.6 76.4,36.5 81,37 C76.4,37.5 74.5,39.4 74,44 C73.5,39.4 71.6,37.5 67,37 C71.6,36.5 73.5,34.6 74,30 Z" />
 </vector>

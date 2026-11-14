@@ -311,12 +311,12 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         section("About")
-        row("About Offline AI", "What it promises, what it is made with, credits and open-source licenses.") {
+        row("About Nyx", "What it promises, what it is made with, credits and open-source licenses.") {
             startActivity(Intent(this, AboutActivity::class.java))
         }
         val loaded = app.engine.loaded
         group.addView(note(
-            "Offline AI ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
+            "Nyx ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
                 (loaded?.let { m ->
                     "\n\nLoaded: ${m.displayName} (${m.info.desc}), ${m.nCtx} context, ${if (m.config.lowMemory) "low-memory" else "fast"} mode, " +
                         "loaded in ${String.format(Locale.US, "%.1f", m.loadMs / 1000.0)}s."

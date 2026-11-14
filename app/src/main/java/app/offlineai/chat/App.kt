@@ -292,7 +292,7 @@ class App : Application() {
                 val sw = StringWriter()
                 error.printStackTrace(PrintWriter(sw))
                 val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-                crashFile.writeText("Offline AI ${BuildConfig.VERSION_NAME}, $stamp, thread ${thread.name}\n\n$sw")
+                crashFile.writeText("Nyx ${BuildConfig.VERSION_NAME}, $stamp, thread ${thread.name}\n\n$sw")
             } catch (e: Exception) {
             }
             previous?.uncaughtException(thread, error)
@@ -346,20 +346,20 @@ class App : Application() {
             settings.lastModelFile = null
         }
         val (title, message) = when {
-            javaCrash != null -> "Offline AI crashed" to
+            javaCrash != null -> "Nyx crashed" to
                 "Something in the app went wrong${doing?.let { " while $it" } ?: ""}. The details below say where; send them to whoever builds the app."
             reason == ApplicationExitInfo.REASON_LOW_MEMORY || reason == ApplicationExitInfo.REASON_SIGNALED ->
-                "Android closed Offline AI to free memory" to
+                "Android closed Nyx to free memory" to
                     "It happened while ${doing ?: "the app was open"}. Close other apps, use a smaller context size or low-memory mode " +
                     "(Settings), or a smaller model." + (if (activity?.startsWith("loading:") == true) " That model won't load by itself next time." else "")
             reason == ApplicationExitInfo.REASON_CRASH_NATIVE -> "The AI engine crashed" to
                 "It happened while ${doing ?: "the app was open"}." + (if (activity?.startsWith("loading:") == true) " That model won't load by itself next time." else "")
-            reason == ApplicationExitInfo.REASON_ANR -> "Offline AI stopped responding" to
+            reason == ApplicationExitInfo.REASON_ANR -> "Nyx stopped responding" to
                 "It happened while ${doing ?: "the app was open"}."
-            else -> "Offline AI closed unexpectedly" to "It happened while ${doing ?: "the app was open"}."
+            else -> "Nyx closed unexpectedly" to "It happened while ${doing ?: "the app was open"}."
         }
         val details = buildString {
-            append("Offline AI ${BuildConfig.VERSION_NAME}\n")
+            append("Nyx ${BuildConfig.VERSION_NAME}\n")
             info?.let {
                 append("Android's record: reason ${it.reason}, status ${it.status}, ${it.description ?: ""}\n")
                 append("memory at exit: ${it.pss / 1024} MB PSS, ${it.rss / 1024} MB RSS\n")

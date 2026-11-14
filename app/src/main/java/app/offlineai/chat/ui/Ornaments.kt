@@ -112,3 +112,52 @@ class TypingDots(context: Context) : Animated(context, 1100) {
         }
     }
 }
+
+/**
+ * Frosted glass: draws whatever of [source] is behind it, blurred (Android 12 and later; on older
+ * phones it stays empty and the translucent surface on top does the work alone). It is redrawn
+ * only when [source] changed, so a still screen stays idle.
+ */
+class Backdrop(context: Context, private val source: View, radiusDp: Int = 22) : View(context) {
+    private val node: android.graphics.RenderNode? =
+        if (android.os.Build.VERSION.SDK_INT >= 31) android.graphics.RenderNode("backdrop").apply {
+            val r = dp(radiusDp).toFloat()
+            setRenderEffect(android.graphics.RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP))
+        } else null
+    private val here = IntArray(2)
+    private val there = IntArray(2)
+    private var broken = false
+    private val watch = android.view.ViewTreeObserver.OnPreDrawListener {
+        if (source.isDirty) invalidate()
+        true
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (node != null) source.viewTreeObserver.addOnPreDrawListener(watch)
+    }
+
+    override fun onDetachedFromWindow() {
+        source.viewTreeObserver.removeOnPreDrawListener(watch)
+        super.onDetachedFromWindow()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val n = node ?: return
+        if (broken || width == 0 || height == 0 || !canvas.isHardwareAccelerated || android.os.Build.VERSION.SDK_INT < 31) return
+        try {
+            getLocationInWindow(here)
+            source.getLocationInWindow(there)
+            n.setPosition(0, 0, width, height)
+            val rc = n.beginRecording(width, height)
+            rc.drawColor(Palette.bg)
+            rc.translate((there[0] - here[0]).toFloat(), (there[1] - here[1]).toFloat())
+            source.draw(rc)
+            n.endRecording()
+            canvas.drawRenderNode(n)
+        } catch (e: Exception) {
+            // never worth a crash: the surface on top is translucent enough on its own
+            broken = true
+        }
+    }
+}
