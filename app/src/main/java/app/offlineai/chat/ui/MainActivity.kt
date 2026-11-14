@@ -56,6 +56,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var jump: ImageButton
     private lateinit var progress: ProgressBar
     private lateinit var empty: LinearLayout
+    /** What scrolls [empty]; shown and hidden with it (hidden, it must not take the chat's touches). */
+    private lateinit var emptyScroll: android.widget.ScrollView
     private lateinit var emptyText: TextView
     private lateinit var emptyButton: TextView
     private lateinit var emptyMore: TextView
@@ -241,7 +243,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(32), 0, dp(32), dp(48))
+            setPadding(dp(32), dp(16), dp(32), dp(48))
         }
         empty.addView(Orb(this), lp(dp(88), dp(88)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(text("Nyx", 28f, bold = true).apply {
@@ -283,7 +285,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             background = ripple(null, dp(14).toFloat())
             setOnClickListener { startActivity(Intent(this@MainActivity, AboutActivity::class.java)) }
         }, lp(WRAP, WRAP).apply { topMargin = dp(18); gravity = Gravity.CENTER_HORIZONTAL })
-        middle.addView(empty, FrameLayout.LayoutParams(MATCH, MATCH))
+        // scrolls when it is taller than the screen (big fonts), centred when it is not
+        emptyScroll = android.widget.ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            addView(empty, FrameLayout.LayoutParams(MATCH, WRAP))
+        }
+        middle.addView(emptyScroll, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(middle, lp(MATCH, 0, 1f))
 
         // The message box floats over the end of the chat: the conversation scrolls on under it and
@@ -952,6 +960,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private fun refreshEmpty() {
         val noMessages = app.chat.conversation.messages.isEmpty()
         empty.visibility = if (noMessages) View.VISIBLE else View.GONE
+        emptyScroll.visibility = empty.visibility
         val loaded = app.engine.loaded
         starters.visibility = if (loaded != null && app.nativeError == null && !app.engine.isLoading) View.VISIBLE else View.GONE
         talk.visibility = if (starters.visibility == View.VISIBLE && canDictate && !voice.on) View.VISIBLE else View.GONE
