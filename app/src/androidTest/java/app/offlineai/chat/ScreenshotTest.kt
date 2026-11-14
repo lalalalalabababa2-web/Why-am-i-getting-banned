@@ -22,7 +22,6 @@ import app.offlineai.chat.ui.WhatsNew
 import org.json.JSONArray
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -47,10 +46,12 @@ class ScreenshotTest {
     private val out = "/sdcard/Download/oa-shots"
     private var prefix = ""
 
+    /** Asked for with the instrumentation argument shots=1; an ordinary run passes without doing anything. */
+    private val wanted = InstrumentationRegistry.getArguments().getString("shots") == "1"
+
     @Before
-    fun onlyWhenAskedFor() {
-        assumeTrue(InstrumentationRegistry.getArguments().getString("shots") == "1")
-        TestDevice.wake()
+    fun wake() {
+        if (wanted) TestDevice.wake()
     }
 
     private fun onMain(block: () -> Unit) = inst.runOnMainSync { block() }
@@ -162,6 +163,7 @@ class ScreenshotTest {
 
     @Test
     fun everyScreen() {
+        if (!wanted) return
         TestDevice.shell("mkdir -p $out")
         TestDevice.shell("settings put secure show_ime_with_hard_keyboard 1")
         app.settings.whatsNewSeen = WhatsNew.VERSION
