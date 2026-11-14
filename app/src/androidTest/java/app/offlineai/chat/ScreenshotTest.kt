@@ -16,6 +16,8 @@ import app.offlineai.chat.ui.AboutActivity
 import app.offlineai.chat.ui.ChatsActivity
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.ModelsActivity
+import app.offlineai.chat.ui.PicturesActivity
+import app.offlineai.chat.ui.PongActivity
 import app.offlineai.chat.ui.SettingsActivity
 import app.offlineai.chat.ui.TeamDialog
 import app.offlineai.chat.ui.WhatsNew
@@ -254,6 +256,13 @@ class ScreenshotTest {
                 shot("19-about")
                 swipeUp()
                 shot("20-about-2")
+            }
+            ActivityScenario.launch(PicturesActivity::class.java).use { shot("21-pictures") }
+            ActivityScenario.launch(PongActivity::class.java).use {
+                shot("22-game")
+                TestDevice.shell("input tap 540 1200")
+                settle(900)
+                shot("23-game-playing")
             }
         }
         onMain { app.settings.theme = ThemeMode.DARK }
