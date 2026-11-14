@@ -504,7 +504,10 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val s = seed ?: Random.nextLong(1, Int.MAX_VALUE.toLong())
         lastSeed = s
         val queued = making
-        jobs.add(words, style.name, m, w, h, stepsFor(m), s)
+        if (jobs.add(words, style.name, m, w, h, stepsFor(m), s) == null) {
+            toast("Not making that: nothing sexual with children.")
+            return
+        }
         hideKeyboard()
         grid.smoothScrollToPosition(0)
         if (queued) toast("Next up: it starts when the picture being made is done.")

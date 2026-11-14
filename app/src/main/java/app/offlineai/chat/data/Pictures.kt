@@ -116,6 +116,35 @@ object PictureCatalog {
     fun byId(id: String?): PictureModel? = models.firstOrNull { it.id == id }
 }
 
+/**
+ * The one line the picture maker holds: nothing sexual with children. A prompt that puts sexual
+ * words together with words for children or young teenagers is refused, and a sexual prompt
+ * otherwise gets children kept out of the picture (its negative prompt), so a model never drifts
+ * young. Nothing else is filtered.
+ */
+object PictureLine {
+    private val sexual = Regex(
+        "\\b(nude|naked|nsfw|sex|sexy|sexual|porn\\w*|erotic\\w*|lewd|topless|bottomless|nipples?|genitals?|" +
+            "penis|vagina|breasts?|boobs?|lingerie|undress\\w*|explicit|hentai|orgasm\\w*|fetish\\w*|seductive|aroused)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+    private val young = Regex(
+        "\\b(child|children|kid|kids|minor|minors|underage|under\\s*age|loli\\w*|shota\\w*|toddler\\w*|baby|babies|" +
+            "infant\\w*|preteen\\w*|pre-teen\\w*|tween\\w*|teen|teens|teenager\\w*|schoolgirl\\w*|schoolboy\\w*|" +
+            "little girl|little boy|young girl|young boy|elementary|middle school|junior high|" +
+            "(?:[1-9]|1[0-7])\\s*(?:yo|y/o|years?\\s*old))\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun isSexual(prompt: String): Boolean = sexual.containsMatchIn(prompt)
+
+    /** True when the prompt must not be made. */
+    fun refuses(prompt: String): Boolean = isSexual(prompt) && young.containsMatchIn(prompt)
+
+    /** Kept out of every sexual picture. */
+    const val KEEP_OUT = "child, children, kid, teen, teenager, young, minor, underage"
+}
+
 /** A style: words added to the prompt, and words to keep out. */
 data class PictureStyle(val name: String, val suffix: String, val negative: String = "")
 

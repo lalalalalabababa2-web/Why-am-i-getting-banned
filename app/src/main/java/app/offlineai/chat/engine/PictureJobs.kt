@@ -5,6 +5,7 @@ import app.offlineai.chat.App
 import app.offlineai.chat.PictureService
 import app.offlineai.chat.data.Picture
 import app.offlineai.chat.data.PictureCatalog
+import app.offlineai.chat.data.PictureLine
 import app.offlineai.chat.data.PictureModel
 import app.offlineai.chat.data.PictureStyles
 import java.io.File
@@ -79,7 +80,9 @@ class PictureJobs(private val app: App) {
 
     fun ready(m: PictureModel): Boolean = modelFile(m).isFile && (decoderFile(m)?.isFile ?: true)
 
-    fun add(prompt: String, style: String, model: PictureModel, width: Int, height: Int, steps: Int, seed: Long): Job {
+    /** Queues a picture; refused (null) when the prompt crosses [PictureLine]. */
+    fun add(prompt: String, style: String, model: PictureModel, width: Int, height: Int, steps: Int, seed: Long): Job? {
+        if (PictureLine.refuses(prompt)) return null
         val j = Job(System.nanoTime(), prompt, style, model, width, height, steps.coerceIn(1, PictureCatalog.MAX_STEPS), seed)
         queue.addLast(j)
         if (current == null) next() else changed()
@@ -111,7 +114,10 @@ class PictureJobs(private val app: App) {
         val st = PictureStyles.byName(j.style)
         val request = PictureEngine.Request(
             prompt = j.prompt + st.suffix,
-            negative = listOf(j.model.negative, st.negative).filter { it.isNotEmpty() }.joinToString(", "),
+            negative = listOfNotNull(
+                j.model.negative, st.negative,
+                PictureLine.KEEP_OUT.takeIf { PictureLine.isSexual(j.prompt) },
+            ).filter { it.isNotEmpty() }.joinToString(", "),
             width = j.width, height = j.height,
             steps = j.steps, cfg = j.model.cfg, seed = j.seed, sampler = j.model.sampler, scheduler = j.model.scheduler,
         )

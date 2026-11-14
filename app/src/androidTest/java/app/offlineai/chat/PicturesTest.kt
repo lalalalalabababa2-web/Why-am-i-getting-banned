@@ -14,6 +14,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.offlineai.chat.data.Disguise
 import app.offlineai.chat.data.PictureCatalog
+import app.offlineai.chat.data.PictureLine
 import app.offlineai.chat.engine.PictureEngine
 import app.offlineai.chat.ui.MainActivity
 import app.offlineai.chat.ui.PicturesActivity
@@ -163,6 +164,24 @@ class PicturesTest {
         assertEquals(before + 2, app.pictures.all().size)
         assertEquals("the steps asked for are kept", setOf(1, 2), made.map { it.steps }.toSet())
         made.forEach { app.pictures.delete(it) }
+    }
+
+    /** The one line: nothing sexual with children; everything else goes through. */
+    @Test
+    fun pictureLine() {
+        assertTrue(PictureLine.refuses("nude teen on a beach"))
+        assertTrue(PictureLine.refuses("sexy 15 year old"))
+        assertTrue(PictureLine.refuses("NSFW schoolgirl"))
+        assertFalse(PictureLine.refuses("nude woman on a beach, oil painting"))
+        assertFalse(PictureLine.refuses("a child flying a kite in a park"))
+        assertFalse(PictureLine.refuses("a dragon over a castle at night"))
+        assertTrue(PictureLine.isSexual("lingerie photoshoot"))
+        assertFalse(PictureLine.isSexual("a red apple on a table"))
+        inst.runOnMainSync {
+            val m = PictureCatalog.models.first()
+            assertNull(app.pictureJobs.add("naked kids", "None", m, 512, 512, 1, 1))
+            assertEquals(0, app.pictureJobs.waiting)
+        }
     }
 
     @Test
