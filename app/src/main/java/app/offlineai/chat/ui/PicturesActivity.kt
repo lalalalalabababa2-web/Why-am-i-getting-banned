@@ -88,7 +88,12 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val root = FrameLayout(this).apply { setBackgroundColor(Palette.bg) }
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val bar0 = topBar("Pictures")
-        modelChip = chip("") { pickModel() }
+        modelChip = chip("") { pickModel() }.apply {
+            // never more than about half the bar, however long the model's name and big the font
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = resources.displayMetrics.widthPixels * 55 / 100
+        }
         bar0.addView(modelChip, lp(WRAP, WRAP))
         column.addView(bar0, lp(MATCH, WRAP))
 
@@ -218,16 +223,13 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
             ).apply { setColors(intArrayOf(Palette.bg, Palette.bg, androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0)), floatArrayOf(0f, 0.72f, 1f)) }
             setPadding(dp(10), dp(28), dp(10), dp(10))
         }
-        val chips = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(4), 0, dp(4), dp(8))
-        }
+        val chips = FlowLayout(this).apply { setPadding(dp(4), 0, dp(4), dp(8)) }
         styleChip = chip("") { pickStyle() }
         shapeChip = chip("") { pickShape() }
         stepsChip = chip("") { pickSteps() }
-        chips.addView(styleChip, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
-        chips.addView(shapeChip, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
-        chips.addView(stepsChip, lp(WRAP, WRAP))
+        chips.addView(styleChip)
+        chips.addView(shapeChip)
+        chips.addView(stepsChip)
         wrap.addView(chips, lp(MATCH, WRAP))
 
         val box = LinearLayout(this).apply {

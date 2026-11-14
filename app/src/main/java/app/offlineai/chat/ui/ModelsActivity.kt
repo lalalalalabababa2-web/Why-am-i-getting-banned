@@ -65,7 +65,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         }
         root.addView(topBar("Models"), lp(MATCH, WRAP))
         search = EditText(this).apply {
-            hint = "Search models: name, maker, pictures, code…"
+            hint = "Search models"
+            isSingleLine = true
             setHintTextColor(Palette.text3)
             setTextColor(Palette.text)
             textSize = 15f * Palette.fontScale
@@ -292,7 +293,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             progressTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
             progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Palette.surface3)
         }
-        private val actions = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+        // the row's buttons, going on to the next line when they do not fit side by side
+        private val actions = FlowLayout(this@ModelsActivity)
         private var actionsKey = ""
 
         // download speed: bytes per millisecond, smoothed over the last few refreshes
@@ -311,18 +313,14 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             })
             if (blurb != null) view.addView(text(blurb, 14f, Palette.text2).apply { setPadding(0, dp(8), 0, 0) })
             if (abilities.isNotEmpty()) {
-                val chips = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                val chips = FlowLayout(this@ModelsActivity, 6)
                 for (a in abilities) {
                     chips.addView(text(a, 11f, if (a == "Uncensored" || a == "Big") Palette.text2 else Palette.accent, bold = true).apply {
                         background = rounded(Palette.surface2, dp(10).toFloat(), dp(1), Palette.border)
                         setPadding(dp(8), dp(2), dp(8), dp(2))
-                    }, lp(WRAP, WRAP).apply { marginEnd = dp(6) })
+                    })
                 }
-                val strip = android.widget.HorizontalScrollView(this@ModelsActivity).apply {
-                    isHorizontalScrollBarEnabled = false
-                    addView(chips)
-                }
-                view.addView(strip, lp(MATCH, WRAP).apply { topMargin = dp(8) })
+                view.addView(chips, lp(MATCH, WRAP).apply { topMargin = dp(8) })
             }
             view.addView(bar, lp(MATCH, dp(4)).apply { topMargin = dp(10) })
             view.addView(status, lp(MATCH, WRAP).apply { topMargin = dp(6) })
@@ -463,13 +461,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             if (fullKey != actionsKey) {
                 actionsKey = fullKey
                 actions.removeAllViews()
-                val row1 = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
-                val row2 = LinearLayout(this@ModelsActivity).apply { orientation = LinearLayout.HORIZONTAL }
-                actions.orientation = LinearLayout.VERTICAL
-                actions.addView(row1)
-                actions.addView(row2, lp(WRAP, WRAP).apply { topMargin = dp(8) })
-                fun add(v: View, second: Boolean = false) =
-                    (if (second) row2 else row1).addView(v, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
+                @Suppress("UNUSED_PARAMETER")
+                fun add(v: View, second: Boolean = false) = actions.addView(v)
                 when (key) {
                     "loaded" -> add(pill("Unload") { app.engine.unload() })
                     "loading" -> add(pill("Cancel") { app.engine.cancelLoading() })
@@ -502,7 +495,6 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                         }, true)
                     }
                 }
-                row2.visibility = if (row2.childCount > 0) View.VISIBLE else View.GONE
             }
         }
     }

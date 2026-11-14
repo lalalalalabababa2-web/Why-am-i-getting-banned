@@ -276,7 +276,13 @@ fun Activity.topBar(title: String): LinearLayout = LinearLayout(this).apply {
     gravity = Gravity.CENTER_VERTICAL
     setPadding(dp(4), dp(4), dp(12), dp(4))
     addView(iconButton(R.drawable.ic_back, "Back") { finish() })
-    addView(text(title, 22f, bold = true).apply { setPadding(dp(4), 0, 0, 0); letterSpacing = -0.01f }, lp(0, WRAP, 1f))
+    addView(text(title, 22f, bold = true).apply {
+        setPadding(dp(4), 0, 0, 0)
+        letterSpacing = -0.01f
+        // one line whatever shares the bar with it (squeezed, it would wrap letter by letter)
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+    }, lp(0, WRAP, 1f))
 }
 
 fun Context.sectionTitle(s: String): TextView = text(s.uppercase(), 12f, Palette.text3, bold = true).apply {
@@ -289,4 +295,64 @@ fun Context.card(): LinearLayout = LinearLayout(this).apply {
     background = rounded(Palette.surface1, dp(20).toFloat(), dp(1), Palette.border)
     setPadding(dp(18), dp(16), dp(18), dp(16))
     layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { setMargins(dp(14), dp(6), dp(14), dp(6)) }
+}
+
+/**
+ * Buttons and chips side by side that go on to the next line when they do not fit (a wide font, a
+ * big font size, a narrow screen). In a plain row the last one was squeezed to a sliver many
+ * lines tall, which stretched its whole card. No child is ever wider than the row.
+ */
+class FlowLayout(context: Context, gapDp: Int = 8) : ViewGroup(context) {
+    private val gap = context.dp(gapDp)
+
+    override fun generateDefaultLayoutParams(): LayoutParams = LayoutParams(WRAP, WRAP)
+    override fun generateLayoutParams(p: LayoutParams): LayoutParams = LayoutParams(p)
+    override fun checkLayoutParams(p: LayoutParams?): Boolean = p != null
+
+    /** Places the children line by line; returns the height used. [place] false only measures. */
+    private fun flow(width: Int, place: Boolean): Int {
+        val right = width - paddingRight
+        var x = paddingLeft
+        var y = paddingTop
+        var line = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == GONE) continue
+            if (x > paddingLeft && x + c.measuredWidth > right) {
+                x = paddingLeft
+                y += line + gap
+                line = 0
+            }
+            if (place) c.layout(x, y, x + c.measuredWidth, y + c.measuredHeight)
+            x += c.measuredWidth + gap
+            line = maxOf(line, c.measuredHeight)
+        }
+        return y + line + paddingBottom
+    }
+
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        val unlimited = MeasureSpec.getMode(widthSpec) == MeasureSpec.UNSPECIFIED
+        val avail = if (unlimited) Int.MAX_VALUE / 4 else (MeasureSpec.getSize(widthSpec) - paddingLeft - paddingRight).coerceAtLeast(0)
+        val childW = if (unlimited) MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED) else MeasureSpec.makeMeasureSpec(avail, MeasureSpec.AT_MOST)
+        val childH = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+        var widest = 0
+        var total = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == GONE) continue
+            c.measure(childW, childH)
+            widest = maxOf(widest, c.measuredWidth)
+            total += c.measuredWidth + gap
+        }
+        val width = when (MeasureSpec.getMode(widthSpec)) {
+            MeasureSpec.EXACTLY -> MeasureSpec.getSize(widthSpec)
+            MeasureSpec.AT_MOST -> minOf(MeasureSpec.getSize(widthSpec), (total - gap).coerceAtLeast(widest) + paddingLeft + paddingRight)
+            else -> (total - gap).coerceAtLeast(0) + paddingLeft + paddingRight
+        }
+        setMeasuredDimension(width, resolveSize(flow(width, false), heightSpec))
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        flow(r - l, true)
+    }
 }

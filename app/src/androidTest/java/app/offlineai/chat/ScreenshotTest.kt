@@ -269,7 +269,7 @@ class ScreenshotTest {
 
         // Big text, as many phones are set up: the screens must still line up
         prefix = "big"
-        TestDevice.shell("settings put system font_scale 1.3")
+        TestDevice.shell("settings put system font_scale 1.5")
         settle(1500)
         try {
             onMain { app.chat.newChat() }
@@ -291,6 +291,24 @@ class ScreenshotTest {
             onMain { app.chat.newChat() }
             ActivityScenario.launch(PicturesActivity::class.java).use { shot("21-pictures") }
             ActivityScenario.launch(SettingsActivity::class.java).use { shot("14-settings") }
+            // the models on the phone are at the end of the list, with all their buttons
+            ActivityScenario.launch(ModelsActivity::class.java).use { sc ->
+                shot("11-models")
+                // a model that is on the phone, with all its buttons (use, delete, add picture support…)
+                sc.view { it is EditText }?.let {
+                    tap(it)
+                    settle(900)
+                    TestDevice.shell("input text 0.8B")
+                    settle(700)
+                    back()
+                    shot("12-models-local")
+                    swipeUp()
+                    shot("13-models-local-2")
+                }
+            }
+            ActivityScenario.launch(ChatsActivity::class.java).use { shot("18-chats") }
+            ActivityScenario.launch(AboutActivity::class.java).use { shot("19-about") }
+            ActivityScenario.launch(PongActivity::class.java).use { shot("22-game") }
         } finally {
             TestDevice.shell("settings put system font_scale 1.0")
         }
