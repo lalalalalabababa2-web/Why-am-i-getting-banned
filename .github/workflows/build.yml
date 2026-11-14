@@ -364,13 +364,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<NOTES
-          A preview of Offline AI, built from ${GITHUB_SHA::7} on the \`${GITHUB_REF_NAME}\` branch (run ${GITHUB_RUN_NUMBER}). Published as soon as it was built, before its on-device tests finished: the tested build is the one at offline-ai-latest.
+          A preview of Nyx (Offline AI), built from ${GITHUB_SHA::7} on the \`${GITHUB_REF_NAME}\` branch (run ${GITHUB_RUN_NUMBER}). Published as soon as it was built, before its on-device tests finished: the tested build is the one at offline-ai-latest.
 
           Install: open OfflineAI.apk on the phone and allow installs from your browser when Android asks. It installs over the other builds and keeps your models and chats.
           NOTES
-          gh release delete offline-ai-preview --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
-          gh release create offline-ai-preview OfflineAI.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Offline AI preview (run ${GITHUB_RUN_NUMBER})" --notes-file notes.md --prerelease --latest=false
+          # The file in the release is replaced in place (never deleted first), so a failed
+          # publish leaves the previous build downloadable instead of a dead link. GitHub's API
+          # sometimes refuses a call for a moment: each step is tried a few times.
+          R=(--repo "$GITHUB_REPOSITORY")
+          try() { for i in 1 2 3 4; do "$@" && return 0; echo "attempt $i failed, retrying"; sleep $((15 * i)); done; return 1; }
+          if gh release view offline-ai-preview "${R[@]}" > /dev/null 2>&1; then
+            try gh release upload offline-ai-preview OfflineAI.apk --clobber "${R[@]}"
+            try gh release edit offline-ai-preview --title "Nyx preview (run ${GITHUB_RUN_NUMBER})" --notes-file notes.md "${R[@]}"
+          else
+            try gh release create offline-ai-preview OfflineAI.apk --target "$GITHUB_SHA" "${R[@]}" \
+              --title "Nyx preview (run ${GITHUB_RUN_NUMBER})" --notes-file notes.md --prerelease --latest=false
+          fi
 
   # Pictures of every screen, dark and light, from the emulator: for looking at the interface after
   # changing it. Started by hand with only=screens; builds only what the emulator needs and runs
