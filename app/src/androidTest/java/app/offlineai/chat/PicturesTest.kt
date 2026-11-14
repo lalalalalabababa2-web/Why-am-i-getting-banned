@@ -249,6 +249,13 @@ class PicturesTest {
                 }
             }
             assertTrue(why, ok)
+            // and the screen settles: no layout that keeps asking for another (0.1.53 did, every frame)
+            var layouts = 0
+            val count = android.view.ViewTreeObserver.OnGlobalLayoutListener { layouts++ }
+            sc.onActivity { a -> a.window.decorView.viewTreeObserver.addOnGlobalLayoutListener(count) }
+            Thread.sleep(2000)
+            sc.onActivity { a -> a.window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(count) }
+            assertTrue("the chat screen laid itself out $layouts times in 2 s while idle", layouts < 5)
         }
     }
 }

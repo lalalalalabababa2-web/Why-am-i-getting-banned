@@ -368,7 +368,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         composer.addView(input, lp(0, WRAP, 1f))
         input.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             val want = if (input.lineCount > 1) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
-            if (composer.gravity != want) composer.post { composer.gravity = want }
+            // only the vertical part: LinearLayout adds a horizontal gravity of its own, so
+            // comparing the whole value never matched and every layout asked for another one
+            if ((composer.gravity and Gravity.VERTICAL_GRAVITY_MASK) != want) {
+                composer.post { composer.gravity = want }
+            }
         }
         send = ImageButton(this).apply {
             scaleType = android.widget.ImageView.ScaleType.CENTER
