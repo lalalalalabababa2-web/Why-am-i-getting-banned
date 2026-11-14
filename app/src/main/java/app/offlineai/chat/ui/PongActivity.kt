@@ -375,7 +375,8 @@ class PongView(context: Context, private var player: String, private var level: 
                 c.drawText("PING PONG", w / 2, mid - 70 * density, big)
                 c.drawText("Tap to serve · drag to move", w / 2, mid - 36 * density, small)
             }
-            serving -> c.drawText("Tap to serve", w / 2, mid - 20 * density, small)
+            // above your paddle, clear of the big scores in the middle
+            serving -> c.drawText("Tap to serve", w / 2, bottom - 56 * density, small)
         }
     }
 
