@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+struct llama_batch_ext;
 struct llama_model;
 struct llama_context;
 struct llama_vocab;
@@ -402,6 +403,14 @@ private:
     int                   pool_fg_n_ = 0;
     int                   pool_bg_n_ = 0;
     bool                  self_bg_   = false;
+    // performance hints for the foreground pool (see run_step)
+    std::vector<int32_t>  pool_tids_;
+    void *                hint_      = nullptr;
+    int                   hint_tid_  = 0;
+    // a step time no model reaches, so the phone keeps the clocks up for the whole reply
+    static constexpr int64_t kHintTargetNs = 1'000'000;
+    void close_hints();
+    int  run_step(::llama_batch_ext * batch);
     std::vector<int>      fast_cpus_;
     size_t                compute_bytes_ = 0;
     // Where the last conversation that did not fit was cut (messages left out after the system

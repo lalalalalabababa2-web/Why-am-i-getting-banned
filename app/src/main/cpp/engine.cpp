@@ -15,6 +15,9 @@
 #include <chrono>
 #include <cstdio>
 #include <sched.h>
+#include <dirent.h>
+#include <dlfcn.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -149,6 +152,63 @@ std::vector<int> fastest_cpus(int n) {
 }
 
 int current_tid() { return (int) syscall(SYS_gettid); }
+
+// Android's performance hints (ADPF): a session over the threads that compute, told how long each
+// step took. Without it the phone sets its clocks from how busy the cores look, so a reply runs
+// fast while the screen is being touched (touch boost) and at half speed when it is not, and the
+// cores' clocks ramp up and down between steps. Each step is reported as slower than wanted, so
+// the clocks stay up for as long as the reply runs. Looked up at run time (Android 13 and later).
+struct Hints {
+    using get_t    = void * (*)();
+    using create_t = void * (*)(void *, const int32_t *, size_t, int64_t);
+    using report_t = int (*)(void *, int64_t);
+    using close_t  = void (*)(void *);
+    get_t    get    = nullptr;
+    create_t create = nullptr;
+    report_t report = nullptr;
+    close_t  close  = nullptr;
+
+    static const Hints & fns() {
+        static Hints h = [] {
+            Hints f;
+#ifdef __ANDROID__
+            if (void * lib = dlopen("libandroid.so", RTLD_NOW)) {
+                f.get    = (get_t) dlsym(lib, "APerformanceHint_getManager");
+                f.create = (create_t) dlsym(lib, "APerformanceHint_createSession");
+                f.report = (report_t) dlsym(lib, "APerformanceHint_reportActualWorkDuration");
+                f.close  = (close_t) dlsym(lib, "APerformanceHint_closeSession");
+                if (!f.get || !f.create || !f.report || !f.close) f = Hints();
+            }
+#endif
+            return f;
+        }();
+        return h;
+    }
+};
+
+// What the pool's threads are called while it is made: new threads take the name of the thread
+// that starts them, which is how they are found again afterwards.
+constexpr const char * kPoolName = "oa-compute";
+
+std::vector<int32_t> threads_named(const char * name) {
+    std::vector<int32_t> out;
+    DIR * d = opendir("/proc/self/task");
+    if (!d) return out;
+    while (dirent * e = readdir(d)) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        const std::string path = std::string("/proc/self/task/") + e->d_name + "/comm";
+        char buf[32] = {0};
+        if (FILE * f = std::fopen(path.c_str(), "r")) {
+            if (std::fgets(buf, sizeof buf, f)) {
+                buf[strcspn(buf, "\n")] = 0;
+                if (std::strcmp(buf, name) == 0) out.push_back((int32_t) std::atoi(e->d_name));
+            }
+            std::fclose(f);
+        }
+    }
+    closedir(d);
+    return out;
+}
 
 // The calling thread computes along with the pool's threads, so it gets the same treatment.
 void place_this_thread(const std::vector<int> & cpus, bool background) {
@@ -623,11 +683,45 @@ void Engine::make_fg_pool(int n) {
     for (int c : fast_cpus_) if (c >= 0 && c < GGML_MAX_N_THREADS) p.cpumask[c] = true;
     p.strict_cpu = false;  // free to move between the fast cores
     p.poll = 50;           // spin briefly between steps instead of sleeping
+    char name[17] = {0};
+    prctl(PR_GET_NAME, name);
+    prctl(PR_SET_NAME, kPoolName);
     pool_fg_ = fns.make(&p);
+    prctl(PR_SET_NAME, name);
     if (pool_fg_) pool_fg_n_ = n;
+    pool_tids_ = threads_named(kPoolName);
+    close_hints();
+}
+
+void Engine::close_hints() {
+    if (hint_ && Hints::fns().close) Hints::fns().close(hint_);
+    hint_ = nullptr;
+    hint_tid_ = 0;
+}
+
+int Engine::run_step(::llama_batch_ext * batch) {
+    const auto & h = Hints::fns();
+    const bool hint = h.report && !background_.load() && pool_cur_ == pool_fg_ && pool_fg_ != nullptr;
+    if (hint && hint_tid_ != current_tid()) {
+        // a session for the pool's threads and this one (replies may run on different threads)
+        close_hints();
+        std::vector<int32_t> tids = pool_tids_;
+        tids.push_back(current_tid());
+        if (void * mgr = h.get()) hint_ = h.create(mgr, tids.data(), tids.size(), kHintTargetNs);
+        hint_tid_ = current_tid();
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch);
+    if (hint && hint_) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        if (ns > 0) h.report(hint_, (int64_t) ns);
+    }
+    return ret;
 }
 
 void Engine::free_pools() {
+    close_hints();
+    pool_tids_.clear();
     attach_pool(nullptr);
     const auto & fns = pool_fns();
     if (fns.free) {
@@ -768,7 +862,7 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
         for (size_t j = 0; j < n; j++) {
             batch.add(tokens[i + j], (llama_pos) (i + j), 0, logits_last && i + j == to - 1);
         }
-        const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        const int ret = run_step(batch.get());
         if (ret != 0) {
             if (can_rm_part_) {
                 const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
@@ -1187,7 +1281,7 @@ bool Engine::push_token(token t, std::string & err) {
     apply_threads();
     common_batch batch(ctx_);
     batch.add(t, (llama_pos) cache_.size(), 0, true);
-    const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    const int ret = run_step(batch.get());
     if (ret != 0) {
         if (!can_rm_part_) {
             clear_memory();
@@ -1229,7 +1323,7 @@ bool Engine::push_step(const std::vector<token> & tokens, size_t keep, std::vect
     const llama_pos pos = (llama_pos) cache_.size();
     common_batch batch(ctx_);
     for (size_t j = 0; j < tokens.size(); j++) batch.add(tokens[j], pos + (llama_pos) j, 0, true);
-    const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    const int ret = run_step(batch.get());
     if (ret != 0) {
         clear_memory();
         err = "The model failed while writing (error " + std::to_string(ret) + ").";
@@ -2048,7 +2142,7 @@ ChatResult Engine::chat_one(const ChatRequest & req, const ChatCallbacks & cb) {
         batch.add(last, pos, 0, true);
         for (size_t i = 0; i < draft.size(); i++) batch.add(draft[i], pos + 1 + (llama_pos) i, 0, true);
         const auto t_v = std::chrono::steady_clock::now();
-        const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+        const int ret = run_step(batch.get());
         res.stats.t_verify_ms += ms_since(t_v);
         if (ret != 0) {
             const size_t before = cache_.size();
