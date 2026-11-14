@@ -391,12 +391,15 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             val h = bottom - top
             if (h == oldBottom - oldTop) return@addOnLayoutChangeListener
             val wasFollowing = scroller.following
-            list.setPadding(0, 0, 0, h + dp(12))
-            // the empty screen's buttons stay above the box too
-            empty.setPadding(empty.paddingLeft, empty.paddingTop, empty.paddingRight, h + dp(16))
-            (jump.layoutParams as FrameLayout.LayoutParams).bottomMargin = h + dp(8)
-            jump.requestLayout()
-            if (wasFollowing) list.post { scroller.jumpToBottom(smooth = false) }
+            // after this layout pass, not during it
+            list.post {
+                list.setPadding(0, 0, 0, h + dp(12))
+                // the empty screen's buttons stay above the box too
+                empty.setPadding(empty.paddingLeft, empty.paddingTop, empty.paddingRight, h + dp(16))
+                (jump.layoutParams as FrameLayout.LayoutParams).bottomMargin = h + dp(8)
+                jump.requestLayout()
+                if (wasFollowing) scroller.jumpToBottom(smooth = false)
+            }
         }
 
         setContentView(root)
