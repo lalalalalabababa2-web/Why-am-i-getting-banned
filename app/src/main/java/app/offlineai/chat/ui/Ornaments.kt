@@ -132,6 +132,14 @@ class Backdrop(context: Context, private val source: View, radiusDp: Int = 22) :
         true
     }
 
+    // Never asks for space of its own: it only fills what its parent ends up with. (Asked to
+    // match a parent that wraps its content, a plain View takes all the room there is, which
+    // stretched the message box over the whole screen.)
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        fun exact(spec: Int) = if (MeasureSpec.getMode(spec) == MeasureSpec.EXACTLY) MeasureSpec.getSize(spec) else 0
+        setMeasuredDimension(exact(widthSpec), exact(heightSpec))
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         if (node != null) source.viewTreeObserver.addOnPreDrawListener(watch)
