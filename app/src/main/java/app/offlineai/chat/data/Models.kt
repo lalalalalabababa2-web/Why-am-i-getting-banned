@@ -520,7 +520,12 @@ class ModelStore(private val context: Context) {
     private fun finish(fileName: String, localUri: String?, serverSize: Long) {
         val part = localUri?.let { Uri.parse(it).path }?.let { File(it) } ?: File(dir, "$fileName.part")
         // The size the server announced is the reference; a file cut short is caught here.
-        val problem = checkGguf(part, if (serverSize > 0) serverSize else null)
+        // the pictures' tiny decoder is not a GGUF file: only its size is checked
+        val problem = if (fileName.endsWith(".safetensors")) {
+            if (serverSize > 0 && part.length() != serverSize) "The download is incomplete. Try again." else null
+        } else {
+            checkGguf(part, if (serverSize > 0) serverSize else null)
+        }
         if (problem != null) {
             part.delete()
             failures[fileName] = problem

@@ -191,6 +191,18 @@ class Settings(context: Context) {
         get() = prefs.getString("team_partner", null)
         set(v) = put("team_partner", v)
 
+    // ---- pictures
+    var pictureModel: String
+        get() = str("picture_model", "")
+        set(v) = put("picture_model", v)
+    var pictureStyle: String
+        get() = str("picture_style", "None")
+        set(v) = put("picture_style", v)
+    /** 0 square, 1 portrait, 2 landscape. */
+    var pictureShape: Int
+        get() = int("picture_shape", 0)
+        set(v) = put("picture_shape", v)
+
     // ---- sampling
     var useRecommendedSampling: Boolean
         get() = bool("recommended_sampling", true)

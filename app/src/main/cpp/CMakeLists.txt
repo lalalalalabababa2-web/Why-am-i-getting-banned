@@ -41,11 +41,27 @@ if(NOT OA_PATCH_RESULT EQUAL 0)
     message(FATAL_ERROR "third_party/patches/apply.sh failed")
 endif()
 
+# stable-diffusion.cpp (pictures) shares llama.cpp's ggml, and its tensor names are longer than
+# ggml's default limit of 64 characters: everything is compiled with the same longer limit, so
+# all parts agree on the size of a tensor
+add_compile_definitions(GGML_MAX_NAME=160)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 add_subdirectory(${LLAMA_SRC} llama-build)
+
+set(SD_SRC ${CMAKE_CURRENT_LIST_DIR}/../../../../third_party/stable-diffusion.cpp)
+set(SD_USE_UPSTREAM_GGML ON CACHE BOOL "" FORCE)
+set(SD_GGML_SOURCE_DIR ${LLAMA_SRC}/ggml CACHE PATH "" FORCE)
+set(SD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SD_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(SD_WEBP OFF CACHE BOOL "" FORCE)
+set(SD_WEBM OFF CACHE BOOL "" FORCE)
+add_subdirectory(${SD_SRC} sd-build)
 
 add_library(offlineai SHARED
         jni_bridge.cpp
-        engine.cpp)
+        engine.cpp
+        pictures.cpp)
 
 target_include_directories(offlineai PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
@@ -54,11 +70,13 @@ target_include_directories(offlineai PRIVATE
         ${LLAMA_SRC}/ggml/include
         ${LLAMA_SRC}/src
         ${LLAMA_SRC}/tools/mtmd
-        ${LLAMA_SRC}/vendor)
+        ${LLAMA_SRC}/vendor
+        ${SD_SRC}/include)
 
 target_link_libraries(offlineai
         llama
         llama-common
         mtmd
+        stable-diffusion
         android
         log)

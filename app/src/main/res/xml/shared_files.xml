@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the app can hand to another app when sharing: the pictures it made. -->
+<paths>
+    <files-path name="pictures" path="pictures/" />
+</paths>

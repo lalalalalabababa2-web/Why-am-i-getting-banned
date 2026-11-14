@@ -272,6 +272,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty.addView(starters, lp(MATCH, WRAP).apply { topMargin = dp(12) })
         talk = pill("Talk instead of typing") { startTalk() }.apply { visibility = View.GONE }
         empty.addView(talk, lp(WRAP, WRAP).apply { topMargin = dp(16); gravity = Gravity.CENTER_HORIZONTAL })
+        empty.addView(pill("Make a picture") { openPictures() }.apply {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_image)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
+            compoundDrawablePadding = dp(8)
+        }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(text("About & credits", 13f, Palette.text3).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -450,6 +455,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     // ---------------------------------------------------------------- attachments
 
+    /** The Pictures screen, with what is in the message box as the picture's description. */
+    private fun openPictures() {
+        val words = input.text?.toString()?.trim().orEmpty()
+        startActivity(Intent(this, PicturesActivity::class.java).putExtra(PicturesActivity.EXTRA_PROMPT, words))
+    }
+
     private fun showAttachMenu(anchor: View) {
         // picture support may have finished downloading since the model was loaded
         runCatching { app.models.poll() }
@@ -467,6 +478,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val sees = loaded.info.vision
         val hears = loaded.info.audio
         val sheet = Sheet(this, "Add to your message")
+        sheet.item("Make a picture", R.drawable.ic_spark, "From what you have typed, here on the phone") { openPictures() }
         val mic = {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 record()
@@ -986,6 +998,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 TeamDialog.show(this, app) { refreshAll() }
             }
             .item("All models", detail = "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
+            .item("Pictures", R.drawable.ic_image, "Make pictures from words") { openPictures() }
             .show()
     }
 

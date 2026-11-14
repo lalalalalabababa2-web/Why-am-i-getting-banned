@@ -5,6 +5,7 @@ import android.app.Application
 import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.PowerManager
+import app.offlineai.chat.data.PictureStore
 import app.offlineai.chat.data.ChatStore
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.BackgroundSpeed
@@ -35,6 +36,9 @@ class App : Application() {
         private set
     lateinit var chat: ChatController
         private set
+
+    /** The pictures made on this phone. */
+    val pictures by lazy { PictureStore(this) }
 
     /** Set when the native engine could not start; the app then explains instead of crashing. */
     var nativeError: String? = null

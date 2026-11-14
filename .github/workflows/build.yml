@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator.'
+        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator. "images": only the picture models, on an ARM machine.'
         required: false
         default: ''
 
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   engine-tests:
     name: Engine tests (desktop, tiny random models)
-    if: inputs.only != 'screens'
+    if: inputs.only != 'screens' && inputs.only != 'images'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -54,7 +54,7 @@ jobs:
   # models. Once on an x86 runner and once on an ARM one (closer to a phone, still not a phone).
   real-models:
     name: Real models (${{ matrix.cpu }})
-    if: inputs.only != 'screens'
+    if: inputs.only != 'screens' && inputs.only != 'images'
     strategy:
       fail-fast: false
       matrix:
@@ -229,7 +229,7 @@ jobs:
 
   apk:
     name: Build the APK
-    if: inputs.only != 'screens'
+    if: inputs.only != 'screens' && inputs.only != 'images'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -458,5 +458,65 @@ jobs:
             shots
             logcat.txt
             app/build/outputs/androidTest-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The picture maker (stable-diffusion.cpp on llama.cpp's ggml, as in the app) with the real
+  # picture models, on an ARM machine: how long each takes, and the pictures to look at.
+  images:
+    name: Picture models (arm64)
+    if: inputs.only == 'images'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build python3-pil
+
+      - name: Build
+        run: |
+          cmake -S tools/image-test -B build/image-test -G Ninja -DCMAKE_BUILD_TYPE=Release > configure.log 2>&1 || { tail -50 configure.log; exit 1; }
+          cmake --build build/image-test --target sdtest > build.log 2>&1 || { grep -E "error" build.log | head -60; exit 1; }
+
+      - name: Models
+        run: |
+          mkdir -p m && cd m
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$1" "https://huggingface.co/$2/resolve/main/$3"; ls -la "$1"; }
+          get sdxs.gguf concedo/sdxs-512-tinySDdistilled-GGUF sdxs-512-tinySDdistilled_Q8_0.gguf
+          get turbo.gguf Green-Sky/SD-Turbo-GGUF sd_turbo-f16-q8_0.gguf
+          get lcm.gguf stduhpf/dreamshaper-8LCM-im-GGUF-sdcpp dreamshaper_8LCM-iq4_nl.gguf
+          get dmd2.gguf mrfatso/DMD2-dreamshaper-v1-5-GGUF DMD2-dreamshaper-v1-5-q4_0.gguf
+          get taesd.safetensors madebyollin/taesd diffusion_pytorch_model.safetensors
+
+      - name: Make pictures
+        run: |
+          mkdir -p pictures
+          T=build/image-test/sdtest
+          P="a photograph of an orange tabby cat sitting on a windowsill, soft morning light"
+          for spec in "sdxs 1 euler_a -" "turbo 2 euler_a tae" "lcm 4 lcm tae" "dmd2 4 lcm tae"; do
+            set -- $spec
+            D=""; [ "$4" = tae ] && D=m/taesd.safetensors
+            for threads in 4 8; do
+              echo "== $1, $threads threads"
+              $T m/$1.gguf "$P" pictures/$1-$threads.ppm 512 512 $2 1 42 $threads $3 $D 2>&1 | grep -E "generated|failed" || true
+            done
+          done
+          python3 -c "
+          import glob
+          from PIL import Image
+          for f in glob.glob('pictures/*.ppm'): Image.open(f).save(f[:-4] + '.png')
+          "
+          rm -f pictures/*.ppm
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pictures
+          path: |
+            pictures
+            build.log
           if-no-files-found: ignore
           retention-days: 14
