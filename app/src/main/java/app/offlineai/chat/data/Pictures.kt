@@ -9,7 +9,8 @@ import java.io.File
 /**
  * A model that makes pictures. Each was tried on real prompts before going in the list; the
  * settings are the ones it was made for (few steps, no guidance), so a picture takes seconds to
- * a minute on a phone's CPU instead of many minutes.
+ * a minute on a phone's CPU instead of many minutes. Times in the blurbs: 512 x 512 on four ARM
+ * server cores (CI), 4 threads: SDXS 7.4 s, SD-Turbo 29.5 s, DMD2 56 s, DreamShaper LCM 60 s.
  */
 data class PictureModel(
     val id: String,
@@ -40,7 +41,7 @@ object PictureCatalog {
     val models = listOf(
         PictureModel(
             id = "sdxs", name = "SDXS 512", maker = "IDKiro (distilled from Stable Diffusion)",
-            blurb = "The quickest: a picture in one step, a few seconds on a phone. Good for ideas and sketches; " +
+            blurb = "The quickest: a picture in one step, about 8 seconds. Good for ideas and sketches; " +
                 "less detail than the others.",
             repo = "concedo/sdxs-512-tinySDdistilled-GGUF", file = "sdxs-512-tinySDdistilled_Q8_0.gguf",
             sizeBytes = 682_847_200L, steps = 1, sampler = "euler_a", tinyDecoder = false,
@@ -49,21 +50,21 @@ object PictureCatalog {
         PictureModel(
             id = "sd-turbo", name = "SD-Turbo", maker = "Stability AI",
             blurb = "The best looking here: photos, people and animals with real detail in two steps. " +
-                "About half a minute on a fast phone.",
+                "About half a minute.",
             repo = "Green-Sky/SD-Turbo-GGUF", file = "sd_turbo-f16-q8_0.gguf",
             sizeBytes = 2_023_745_376L, steps = 2, sampler = "euler_a", tinyDecoder = true,
             license = "Stability AI Community License (non-commercial)",
         ),
         PictureModel(
             id = "dreamshaper-lcm", name = "DreamShaper 8 LCM", maker = "Lykon",
-            blurb = "Artistic: paintings, fantasy and illustration in four steps. Warm, rich colour.",
+            blurb = "Artistic: paintings, fantasy and illustration in four steps, about a minute. Warm, rich colour.",
             repo = "stduhpf/dreamshaper-8LCM-im-GGUF-sdcpp", file = "dreamshaper_8LCM-iq4_nl.gguf",
             sizeBytes = 1_570_742_432L, steps = 4, sampler = "lcm", tinyDecoder = true,
             license = "CreativeML OpenRAIL-M",
         ),
         PictureModel(
             id = "dmd2", name = "DreamShaper DMD2", maker = "Lykon, distilled with DMD2",
-            blurb = "Moody and cinematic: strong light and shadow in four steps.",
+            blurb = "Moody and cinematic: strong light and shadow in four steps, about a minute.",
             repo = "mrfatso/DMD2-dreamshaper-v1-5-GGUF", file = "DMD2-dreamshaper-v1-5-q4_0.gguf",
             sizeBytes = 1_575_490_304L, steps = 4, sampler = "lcm", tinyDecoder = true,
             license = "CreativeML OpenRAIL-M",

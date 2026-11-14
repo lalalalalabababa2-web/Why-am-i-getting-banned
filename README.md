@@ -1,4 +1,4 @@
-# Offline AI
+# Nyx (Offline AI)
 
 An Android app that runs AI models on the phone itself. Pick a model, it downloads once, and
 from then on every chat happens on the phone's CPU with no internet and nothing sent anywhere.
@@ -11,12 +11,25 @@ browser when Android asks. New builds install over old ones and keep models and 
 | | |
 |---|---|
 | Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp) release b11700, as a submodule in `third_party/llama.cpp` |
+| Pictures | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (pinned, `third_party/stable-diffusion.cpp`) on llama.cpp's ggml |
 | Model format | GGUF, any architecture llama.cpp supports (Gemma 4, Qwen3.5 and its fine-tunes, Qwen3-VL, Spark-X2.6, Llama, Mistral, …) |
 | Platform | Android 11+ (API 30), arm64-v8a |
 | Language | Kotlin (UI) and C++ (engine) |
 | Toolchain | Gradle 9.7.1, AGP 9.4.0, Kotlin 2.4.20, NDK r29, CMake 3.31.6 |
 
 ## What it does
+
+- **Pictures**: words in, a picture out, on the phone. Four picture models, each tried on real
+  prompts (512 x 512 on four ARM cores in CI, 4 threads): SDXS 512 (683 MB, 1 step, 7.4 s),
+  SD-Turbo (2.0 GB, 2 steps, 29.5 s, the best looking), DreamShaper DMD2 (1.6 GB, 4 steps,
+  56 s) and DreamShaper 8 LCM (1.6 GB, 4 steps, 60 s). The bigger three decode with TAESD,
+  which halves the time with no visible change. The picture comes together step by step on
+  screen; styles, shapes, share, save to photos, make again with the same or a new seed.
+- **Hide as a game** (Settings, Privacy): the launcher shows "Ping Pong", a real game; a secret
+  code typed as the player name in its settings opens the app. It locks again a minute after
+  leaving or when the screen goes off; notifications and recent apps say Ping Pong.
+- **Steady speed**: replies ask Android (performance hints, Android 13+) to keep the CPU clocks
+  up for the whole reply, instead of running fast only while the screen is touched.
 
 - **First start**: the empty chat suggests one model for the phone's memory (Gemma 4 E4B on an
   8 GB phone, smaller ones on phones with less), downloads it in one tap with its progress shown,
@@ -266,8 +279,7 @@ git submodule update --init
   newer llama.cpp than b11700; the app offers neither until that update.
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
-- Making pictures: the plan is stable-diffusion.cpp built on the same ggml as llama.cpp, with
-  one-step SDXS-512 models (a few hundred MB, one pass per picture). Not started: it needs that
-  library added to the build, which has not been approved yet.
+- Making pictures has run on desktop and ARM CPUs (tools/image-test, the "images" CI run), not
+  yet inside the app on a phone: memory use next to a loaded chat model is untested.
 - Dictation and talking have only run where the emulator has no on-device speech recognizer, so
   the listening itself is untested; the order of a spoken conversation is tested on its own.
