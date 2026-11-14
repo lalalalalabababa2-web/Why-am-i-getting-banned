@@ -29,6 +29,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import app.offlineai.chat.App
 import app.offlineai.chat.R
+import app.offlineai.chat.data.Disguise
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Picture
 import app.offlineai.chat.data.PictureCatalog
@@ -91,7 +92,8 @@ class PicturesActivity : AppCompatActivity() {
             clipToPadding = false
             setPadding(dp(10), 0, dp(10), dp(150))
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            itemAnimator?.changeDuration = 0
+            // the studio card is one view, kept: never cross-faded into a second copy of itself
+            (itemAnimator as? androidx.recyclerview.widget.SimpleItemAnimator)?.supportsChangeAnimations = false
         }
         val glm = GridLayoutManager(this, 2)
         glm.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
@@ -271,6 +273,10 @@ class PicturesActivity : AppCompatActivity() {
         modelFile(m).isFile && (!m.tinyDecoder || decoderFile().isFile)
 
     private fun download(m: PictureModel) {
+        if (app.settings.offlineOnly) {
+            toast("Offline only is on (Settings), so downloads are off.")
+            return
+        }
         val free = app.models.freeBytes()
         if (free in 0 until m.sizeBytes + 200_000_000L) {
             toast("Not enough free space: ${m.name} needs ${ModelStore.formatBytes(m.sizeBytes)}.")
@@ -392,6 +398,10 @@ class PicturesActivity : AppCompatActivity() {
 
     private fun start(seed: Long?) {
         val words = prompt.text.toString().trim()
+        app.nativeError?.let {
+            toast(it)
+            return
+        }
         if (words.isEmpty()) {
             toast("Describe the picture first.")
             return
@@ -468,8 +478,7 @@ class PicturesActivity : AppCompatActivity() {
                     val saved = app.pictures.save(picture, words, style.name, m.name, s, millis)
                     status.text = "${m.name} · ${"%.1f".format(millis / 1000.0)} s · seed $s"
                     reload()
-                    adapter.notifyItemInserted(1)
-                    canvasFrame.setOnClickListener { open(saved) }
+                    canvasFrame.setOnClickListener { if (saved.file.isFile) open(saved) }
                 }
             },
         )
@@ -504,7 +513,7 @@ class PicturesActivity : AppCompatActivity() {
         val sheet = Sheet(this)
         sheet.view(view)
         sheet.item("Share", R.drawable.ic_arrow_down, "To another app") { share(p) }
-        sheet.item("Save to photos", R.drawable.ic_image, "Pictures/Nyx on this phone") { saveToPhotos(p) }
+        sheet.item("Save to photos", R.drawable.ic_image, "Pictures/${photosFolder()} on this phone") { saveToPhotos(p) }
         sheet.item("Make it again, differently", R.drawable.ic_refresh, "Same words, a new seed") {
             prompt.setText(p.prompt)
             start(null)
@@ -515,6 +524,13 @@ class PicturesActivity : AppCompatActivity() {
         }
         sheet.item("Delete", R.drawable.ic_close, danger = true) {
             app.pictures.delete(p)
+            if (status.text.contains("seed ${p.seed}")) {
+                // the picture in the studio card is the one deleted
+                canvas.setImageDrawable(null)
+                canvasFrame.setOnClickListener(null)
+                status.text = ""
+                showIdle()
+            }
             reload()
         }
         sheet.show()
@@ -531,11 +547,15 @@ class PicturesActivity : AppCompatActivity() {
         runCatching { startActivity(Intent.createChooser(send, "Share the picture")) }
     }
 
+    private fun photosFolder(): String = if (app.settings.disguised) Disguise.GAME_NAME else getString(R.string.app_name)
+
     private fun saveToPhotos(p: Picture) {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, p.file.name)
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/" + getString(R.string.app_name))
+            // hidden as a game, the folder does not give the app away either
+            val folder = photosFolder()
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/$folder")
         }
         val ok = runCatching {
             val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("no uri")

@@ -52,6 +52,12 @@ class PongActivity : AppCompatActivity() {
         })
         setContentView(root)
         edgeToEdge(root)
+        // the table is dark in both themes: light status bar icons on it
+        androidx.core.view.WindowCompat.getInsetsController(window, root).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF07070D.toInt()))
     }
 
     override fun onResume() {

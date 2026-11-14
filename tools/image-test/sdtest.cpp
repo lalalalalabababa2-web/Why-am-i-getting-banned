@@ -13,6 +13,15 @@ static void log_cb(enum sd_log_level_t level, const char * text, void *) {
 static void progress_cb(int step, int steps, float t, void *) {
     std::fprintf(stderr, "  step %d/%d %.2fs\n", step, steps, t);
 }
+// the same callbacks the app uses (app/src/main/cpp/pictures.cpp): stages and step previews
+static int n_previews = 0;
+static void gen_progress_cb(const sd_generation_progress_t * p, void *) {
+    std::printf("  stage %s %lld/%lld\n", p->stage ? p->stage : "?", (long long) p->completed, (long long) p->total);
+}
+static void preview_cb(int step, int frame_count, sd_image_t * frames, bool, void *) {
+    n_previews++;
+    if (frame_count > 0 && frames) std::printf("  preview step %d: %ux%u x%u\n", step, frames[0].width, frames[0].height, frames[0].channel);
+}
 
 int main(int argc, char ** argv) {
     if (argc < 4) return 2;
@@ -45,6 +54,8 @@ int main(int argc, char ** argv) {
     gp.sample_params.sample_steps = steps;
     gp.sample_params.guidance.txt_cfg = cfg;
     if (argc > 10 && argv[10][0]) gp.sample_params.sample_method = str_to_sample_method(argv[10]);
+    sd_set_generation_progress_callback(ctx, gen_progress_cb, nullptr);
+    sd_set_preview_callback(preview_cb, PREVIEW_PROJ, 1, true, false, nullptr);
     t0 = std::chrono::steady_clock::now();
     sd_image_generation_result_t * res = nullptr;
     const bool ok = generate_image(ctx, &gp, &res);
@@ -62,6 +73,7 @@ int main(int argc, char ** argv) {
     mean /= n;
     for (size_t i = 0; i < n; i++) var += (im.data[i] - mean) * (im.data[i] - mean);
     std::printf("pixels: mean %.1f, std %.1f\n", mean, std::sqrt(var / n));
+    std::printf("previews: %d\n", n_previews);
     free_sd_image_generation_result(res);
     free_sd_ctx(ctx);
     return 0;

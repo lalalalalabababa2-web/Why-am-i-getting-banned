@@ -184,6 +184,20 @@ jobs:
           USE_CCACHE: '1'
         run: ci/gradle.sh :app:assembleDebug :app:assembleDebugAndroidTest -PtestAbi=x86_64
 
+      # SDXS (683 MB) for the test that makes a real picture through the app's own native bridge
+      - name: Picture model for the tests (kept)
+        uses: actions/cache@v4
+        with:
+          path: test-pictures
+          key: test-pictures-sdxs-512-q8-v1
+
+      - name: Picture model for the tests
+        run: |
+          mkdir -p test-pictures
+          [ -s test-pictures/sdxs.gguf ] || curl -fsSL --retry 4 --retry-delay 10 -o test-pictures/sdxs.gguf \
+            "https://huggingface.co/concedo/sdxs-512-tinySDdistilled-GGUF/resolve/main/sdxs-512-tinySDdistilled_Q8_0.gguf"
+          ls -la test-pictures
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -208,6 +222,7 @@ jobs:
             adb shell input keyevent KEYCODE_WAKEUP || true
             adb shell wm dismiss-keyguard || true
             adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS > /dev/null || true
+            adb push test-pictures/sdxs.gguf /sdcard/Download/oa-sdxs.gguf > /dev/null || true
             adb logcat -c
             ./gradlew --no-daemon --console=plain :app:connectedDebugAndroidTest -PtestAbi=x86_64 || touch tests-failed
             adb logcat -d > logcat.txt

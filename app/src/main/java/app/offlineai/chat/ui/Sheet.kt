@@ -100,6 +100,9 @@ class Sheet(private val activity: Activity, title: String? = null, subtitle: Str
             w.navigationBarColor = Color.TRANSPARENT
             WindowCompat.setDecorFitsSystemWindows(w, false)
             w.setWindowAnimations(0)
+            // with a text field in the sheet, the keyboard pushes the sheet up (by the insets
+            // below) instead of the system panning the whole window as well
+            w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
             if (Build.VERSION.SDK_INT >= 31) {
                 // what is behind goes soft, on phones that can afford it (ignored elsewhere)
                 w.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
@@ -116,6 +119,7 @@ class Sheet(private val activity: Activity, title: String? = null, subtitle: Str
             panel.setPadding(bars.left, 0, bars.right, bars.bottom)
             // never taller than the screen below the status bar, with a little of what is behind showing
             (panel.layoutParams as FrameLayout.LayoutParams).topMargin = bars.top + activity.dp(24)
+            panel.requestLayout()
             WindowInsetsCompat.CONSUMED
         }
     }
@@ -186,12 +190,17 @@ class Sheet(private val activity: Activity, title: String? = null, subtitle: Str
     override fun show() {
         if (activity.isFinishing || activity.isDestroyed) return
         super.show()
-        panel.post {
-            slide.snap(panel.height.toFloat())
-            slide.animateTo(0f)
-        }
-        // until it is measured it stays out of sight
+        // out of sight until it is measured; then it rises from just below the screen
         panel.translationY = 10_000f
+        panel.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (panel.height == 0) return true
+                panel.viewTreeObserver.removeOnPreDrawListener(this)
+                slide.snap(panel.height.toFloat())
+                slide.animateTo(0f)
+                return true
+            }
+        })
     }
 
     override fun dismiss() = dismiss(null)

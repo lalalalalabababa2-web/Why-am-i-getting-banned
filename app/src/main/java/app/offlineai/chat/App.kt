@@ -65,6 +65,9 @@ class App : Application() {
         chat = ChatController(this)
         lastExit = readLastExit()
         engine.activityLog = { what -> writeActivity(what) }
+        // the launcher entry always matches the setting (after an update, a restore or cleared
+        // data, a game entry left on with no code set would lock Nyx out for good)
+        runCatching { Disguise.apply(this, settings.disguised && settings.disguiseCode.isNotEmpty()) }
         try {
             NativeEngine.init(applicationInfo.nativeLibraryDir)
         } catch (t: Throwable) {
@@ -104,11 +107,14 @@ class App : Application() {
             }
 
             override fun onActivityResumed(activity: android.app.Activity) {
-                if (settings.disguised && activity !is PongActivity) {
-                    // the recent apps show the game's name and no picture of what is on screen
-                    activity.setTaskDescription(android.app.ActivityManager.TaskDescription(Disguise.GAME_NAME))
-                    if (android.os.Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(false)
-                }
+                if (activity is PongActivity) return
+                // hidden: the recent apps show the game's name and no picture of what is on screen
+                val hidden = settings.disguised
+                @Suppress("DEPRECATION")
+                activity.setTaskDescription(
+                    if (hidden) android.app.ActivityManager.TaskDescription(Disguise.GAME_NAME) else android.app.ActivityManager.TaskDescription(),
+                )
+                if (android.os.Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(!hidden)
             }
             override fun onActivityPaused(activity: android.app.Activity) {}
             override fun onActivitySaveInstanceState(activity: android.app.Activity, state: android.os.Bundle) {}
@@ -121,14 +127,14 @@ class App : Application() {
     private val lock = Runnable { if (!inFront && settings.disguised) open.filter { it !is PongActivity }.forEach { it.finish() } }
 
     private fun watchScreen() {
-        registerReceiver(object : android.content.BroadcastReceiver() {
+        androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
                 if (settings.disguised) {
                     lockTimer.removeCallbacks(lock)
                     lockTimer.post { if (!inFront) lock.run() }
                 }
             }
-        }, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
+        }, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     private fun frontChanged(front: Boolean) {

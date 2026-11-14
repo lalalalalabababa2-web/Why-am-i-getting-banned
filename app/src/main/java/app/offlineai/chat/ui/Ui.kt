@@ -236,45 +236,35 @@ fun Activity.edgeToEdge(root: View) {
         isAppearanceLightStatusBars = !Palette.dark
         isAppearanceLightNavigationBars = !Palette.dark
     }
-    // While the keyboard slides, the screen is already laid out for where it will end up and is
-    // moved by what is left of the way each frame, so the message box rides up with the keyboard
-    // instead of jumping ahead of it.
-    var animating = false
-    var startBottom = 0
+    // While the keyboard slides, the bottom edge of the screen follows it frame by frame, so the
+    // message box rides up with the keyboard instead of jumping ahead of it. Only the bottom
+    // moves: the top bar stays where it is.
+    val all = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
+    var imeMoving = false
     ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-        val bars = insets.getInsets(
-            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime(),
-        )
-        v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        val bars = insets.getInsets(all)
+        // mid-slide the bottom is set by the animation below; the end state arrives first
+        v.setPadding(bars.left, bars.top, bars.right, if (imeMoving) v.paddingBottom else bars.bottom)
         WindowInsetsCompat.CONSUMED
     }
     ViewCompat.setWindowInsetsAnimationCallback(root, object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
         override fun onPrepare(animation: WindowInsetsAnimationCompat) {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) startBottom = root.paddingBottom
-        }
-
-        override fun onStart(animation: WindowInsetsAnimationCompat, bounds: WindowInsetsAnimationCompat.BoundsCompat): WindowInsetsAnimationCompat.BoundsCompat {
-            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                animating = true
-                // laid out for the end already: start from where it was
-                root.translationY = (root.paddingBottom - startBottom).toFloat()
-            }
-            return bounds
+            if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) imeMoving = true
         }
 
         override fun onProgress(insets: WindowInsetsCompat, running: MutableList<WindowInsetsAnimationCompat>): WindowInsetsCompat {
-            if (!animating) return insets
-            val now = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime(),
-            ).bottom
-            root.translationY = (root.paddingBottom - now).toFloat()
+            if (imeMoving) {
+                val bottom = insets.getInsets(all).bottom
+                if (bottom != root.paddingBottom) root.setPadding(root.paddingLeft, root.paddingTop, root.paddingRight, bottom)
+            }
             return insets
         }
 
         override fun onEnd(animation: WindowInsetsAnimationCompat) {
             if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                animating = false
-                root.translationY = 0f
+                imeMoving = false
+                // settle exactly where the keyboard ended up
+                ViewCompat.requestApplyInsets(root)
             }
         }
     })
