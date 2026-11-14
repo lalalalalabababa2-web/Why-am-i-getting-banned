@@ -3,6 +3,7 @@ package app.offlineai.chat.ui
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.os.Bundle
+import app.offlineai.chat.data.Disguise
 import android.text.InputType
 import android.view.Gravity
 import android.widget.EditText
@@ -295,6 +296,8 @@ class SettingsActivity : AppCompatActivity() {
         row("Chats", "Search, rename, export, import or delete chats.") {
             startActivity(Intent(this, ChatsActivity::class.java))
         }
+        row("Hide as a game", if (s.disguised) "On: the launcher shows Ping Pong. Your code, typed as the player name in its settings, opens Nyx."
+            else "The launcher shows a ping pong game instead of Nyx; a secret code you choose opens it.") { hideAsGame() }
         row("Delete all downloaded models", ModelStore.formatBytes(app.models.local().sumOf { it.sizeBytes }) + " on this phone") {
             AlertDialog.Builder(this)
                 .setTitle("Delete all models?")
@@ -537,6 +540,50 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun note(s: String): TextView = text(s, 13f, Palette.text2).apply { setPadding(dp(20), dp(4), dp(20), dp(8)) }
+
+    private fun hideAsGame() {
+        val s = app.settings
+        if (s.disguised) {
+            Sheet(this, "Hidden as a game", "The launcher shows Ping Pong. In the game, tap the gear and type your code as the player name, then Save.")
+                .button("Show Nyx again", primary = false) {
+                    Disguise.disable(this, s)
+                    Toast.makeText(this, "Nyx is back in the launcher (it can take a few seconds).", Toast.LENGTH_LONG).show()
+                    rebuild()
+                }
+                .show()
+            return
+        }
+        val code = EditText(this).apply {
+            hint = "Your secret code"
+            setHintTextColor(Palette.text3)
+            setTextColor(Palette.text)
+            textSize = 16f * Palette.fontScale
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            background = rounded(Palette.surface2, dp(14).toFloat(), dp(1), Palette.border)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            isSingleLine = true
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(text("Nyx leaves the launcher and a ping pong game called Ping Pong takes its place. It is a real " +
+            "game. To open Nyx: in the game, tap the gear, type your code as the player name, then Save.\n\n" +
+            "Nyx locks again a minute after you leave it, or when the screen turns off. Replies being written carry on. " +
+            "Notifications and the recent apps say Ping Pong. Write the code down somewhere safe: without it, the " +
+            "only way back in is to reinstall, which deletes your chats and models.", 14f, Palette.text2))
+        box.addView(code, lp(MATCH, WRAP).apply { topMargin = dp(16) })
+        Sheet(this, "Hide as a game")
+            .view(box)
+            .button("Hide Nyx") {
+                val c = code.text.toString().trim()
+                if (c.length < 4) {
+                    Toast.makeText(this, "Use a code of at least 4 characters.", Toast.LENGTH_LONG).show()
+                    return@button
+                }
+                Disguise.enable(this, s, c)
+                Toast.makeText(this, "Hidden. Ping Pong is in the launcher now (it can take a few seconds).", Toast.LENGTH_LONG).show()
+                rebuild()
+            }
+            .show()
+    }
 
     private fun row(title: String, value: String, onClick: () -> Unit) {
         val r = LinearLayout(this).apply {

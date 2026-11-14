@@ -191,6 +191,20 @@ class Settings(context: Context) {
         get() = prefs.getString("team_partner", null)
         set(v) = put("team_partner", v)
 
+    // ---- hidden as a game (see Disguise)
+    var disguised: Boolean
+        get() = bool("disguised", false)
+        set(v) = put("disguised", v)
+    var disguiseCode: String
+        get() = str("disguise_code", "")
+        set(v) = put("disguise_code", v)
+    var gamePlayer: String
+        get() = str("game_player", "")
+        set(v) = put("game_player", v)
+    var gameLevel: Int
+        get() = int("game_level", 1)
+        set(v) = put("game_level", v)
+
     // ---- pictures
     var pictureModel: String
         get() = str("picture_model", "")

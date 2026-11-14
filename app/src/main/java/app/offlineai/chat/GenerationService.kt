@@ -18,6 +18,8 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import app.offlineai.chat.data.BackgroundSpeed
 import app.offlineai.chat.ui.MainActivity
+import app.offlineai.chat.ui.PongActivity
+import app.offlineai.chat.data.Disguise
 import java.util.Locale
 
 /**
@@ -122,8 +124,9 @@ class GenerationService : Service() {
         } + (if (gentle) " · gentle while you use other apps" else "")
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_spark)
-            .setContentTitle(title)
-            .setContentText(text)
+            // hidden as a game: nothing in the notification gives the app away
+            .setContentTitle(if (app.settings.disguised) Disguise.GAME_NAME else title)
+            .setContentText(if (app.settings.disguised) "Running" else text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
         if (reading) b.setProgress(c.promptTotal, c.promptDone, false)
         return b
@@ -158,12 +161,17 @@ class GenerationService : Service() {
                 context, 2, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
+            val hidden = App.of(context).settings.disguised
+            val game = PendingIntent.getActivity(
+                context, 3, Intent(context, PongActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
             val n = NotificationCompat.Builder(context, CHANNEL_DONE)
                 .setSmallIcon(R.drawable.ic_spark)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                .setContentIntent(open)
+                .setContentTitle(if (hidden) Disguise.GAME_NAME else title)
+                .setContentText(if (hidden) "Your turn" else text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(if (hidden) "Your turn" else text))
+                .setContentIntent(if (hidden) game else open)
                 .setAutoCancel(true)
                 .build()
             runCatching { nm.notify(DONE_ID, n) }  // no permission: nothing shown

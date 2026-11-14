@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A table-tennis paddle and a ball. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:rotation="-35" android:pivotX="54" android:pivotY="54">
+        <!-- handle -->
+        <path android:fillColor="#7A3B12" android:pathData="M50,62 h8 v18 a4,4 0 0 1 -4,4 a4,4 0 0 1 -4,-4 z" />
+        <!-- blade -->
+        <path android:fillColor="#FFFFFF" android:pathData="M54,30 m-17,0 a17,17 0 1,0 34,0 a17,17 0 1,0 -34,0" />
+        <path android:fillColor="#1E1E28" android:pathData="M54,30 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0" />
+    </group>
+    <path android:fillColor="#FFFFFF" android:pathData="M74,72 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+</vector>

@@ -4,8 +4,11 @@ import android.app.ActivityManager
 import android.app.Application
 import android.app.ApplicationExitInfo
 import android.content.Context
+import android.content.Intent
 import android.os.PowerManager
 import app.offlineai.chat.data.PictureStore
+import app.offlineai.chat.data.Disguise
+import app.offlineai.chat.ui.PongActivity
 import app.offlineai.chat.data.ChatStore
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.BackgroundSpeed
@@ -80,6 +83,7 @@ class App : Application() {
     private var started = 0
 
     private fun watchFront() {
+        watchScreen()
         registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: android.app.Activity) {
                 started++
@@ -91,16 +95,49 @@ class App : Application() {
                 if (started == 0) frontChanged(false)
             }
 
-            override fun onActivityCreated(activity: android.app.Activity, state: android.os.Bundle?) {}
-            override fun onActivityResumed(activity: android.app.Activity) {}
+            override fun onActivityCreated(activity: android.app.Activity, state: android.os.Bundle?) {
+                open.add(activity)
+            }
+
+            override fun onActivityDestroyed(activity: android.app.Activity) {
+                open.remove(activity)
+            }
+
+            override fun onActivityResumed(activity: android.app.Activity) {
+                if (settings.disguised && activity !is PongActivity) {
+                    // the recent apps show the game's name and no picture of what is on screen
+                    activity.setTaskDescription(android.app.ActivityManager.TaskDescription(Disguise.GAME_NAME))
+                    if (android.os.Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(false)
+                }
+            }
             override fun onActivityPaused(activity: android.app.Activity) {}
             override fun onActivitySaveInstanceState(activity: android.app.Activity, state: android.os.Bundle) {}
-            override fun onActivityDestroyed(activity: android.app.Activity) {}
         })
+    }
+
+    /** Every screen of the app that is open, to close them when it is hidden as a game. */
+    private val open = mutableSetOf<android.app.Activity>()
+    private val lockTimer = android.os.Handler(android.os.Looper.getMainLooper())
+    private val lock = Runnable { if (!inFront && settings.disguised) open.filter { it !is PongActivity }.forEach { it.finish() } }
+
+    private fun watchScreen() {
+        registerReceiver(object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                if (settings.disguised) {
+                    lockTimer.removeCallbacks(lock)
+                    lockTimer.post { if (!inFront) lock.run() }
+                }
+            }
+        }, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
     }
 
     private fun frontChanged(front: Boolean) {
         inFront = front
+        // hidden as a game: a minute away (time to pick a photo or share something), or the
+        // screen going off, locks the app again, so the launcher opens the game next time (a
+        // reply being written carries on)
+        lockTimer.removeCallbacks(lock)
+        if (!front && settings.disguised) lockTimer.postDelayed(lock, 60_000)
         applyBackground()
         if (front) GenerationService.clearReplyReady(this)
     }
