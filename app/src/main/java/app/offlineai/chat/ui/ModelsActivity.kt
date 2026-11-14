@@ -24,6 +24,7 @@ import app.offlineai.chat.data.DownloadState
 import app.offlineai.chat.data.ExtraFile
 import app.offlineai.chat.data.LocalModel
 import app.offlineai.chat.data.ModelStore
+import app.offlineai.chat.data.PictureCatalog
 import app.offlineai.chat.engine.EngineController
 import java.io.File
 
@@ -127,6 +128,22 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             visibility = View.GONE
         }
         content.addView(noMatch)
+
+        // the models that make pictures live on the Pictures screen; they are found from here too
+        content.addView(sectionTitle("Picture models"))
+        val here = PictureCatalog.models.count { java.io.File(app.models.dir, it.key).isFile }
+        content.addView(card().apply {
+            addView(text("Make pictures from words", 17f, bold = true))
+            addView(text(
+                "SDXS 512 (683 MB, about 8 s a picture), SD-Turbo (2.0 GB, the best looking), DreamShaper 8 LCM and " +
+                    "DreamShaper DMD2 (1.6 GB each). They run here on the phone, like the chat models." +
+                    if (here > 0) " $here on this phone." else "",
+                14f, Palette.text2,
+            ).apply { setPadding(0, dp(4), 0, dp(12)) })
+            addView(pill(if (here > 0) "Open Pictures" else "Choose a picture model", primary = true) {
+                startActivity(android.content.Intent(this@ModelsActivity, PicturesActivity::class.java))
+            }, lp(WRAP, WRAP))
+        })
 
         // the catalog, grouped by what you would pick it for
         val byId = Catalog.models.associateBy { it.id }
