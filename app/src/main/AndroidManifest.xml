@@ -123,6 +123,14 @@
             android:exported="false" />
 
         <service
+            android:name=".PictureService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs a picture model on the phone to finish pictures the user asked for, while the app is in the background." />
+        </service>
+        <service
             android:name=".GenerationService"
             android:exported="false"
             android:foregroundServiceType="specialUse">

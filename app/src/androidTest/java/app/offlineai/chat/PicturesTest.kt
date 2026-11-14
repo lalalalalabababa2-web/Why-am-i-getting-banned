@@ -99,17 +99,24 @@ class PicturesTest {
         assertNotNull("a missing model should say why", r.error)
     }
 
-    /** The real thing: SDXS through pictures.cpp, when CI has pushed it (/sdcard/Download/oa-sdxs.gguf). */
-    @Test
-    fun sdxsMakesAPicture() {
+    /** SDXS in the app's picture folder, when CI has pushed it (/sdcard/Download/oa-sdxs.gguf); null when not here. */
+    private fun sdxs(): File? {
         val m = PictureCatalog.models.first { it.id == "sdxs" }
         val dst = File(app.models.dir, m.key)
         dst.parentFile?.mkdirs()
         if (!dst.isFile) TestDevice.shell("mv /sdcard/Download/oa-sdxs.gguf ${dst.path}")
         if (!dst.isFile || dst.length() < m.sizeBytes) {
             Log.w("OfflineAI-Test", "SDXS is not on this device; picture making itself not tested here")
-            return
+            return null
         }
+        return dst
+    }
+
+    /** The real thing: SDXS through pictures.cpp. */
+    @Test
+    fun sdxsMakesAPicture() {
+        val m = PictureCatalog.models.first { it.id == "sdxs" }
+        val dst = sdxs() ?: return
         val r = make(dst, 1, 400)
         assertNull("error: ${r.error}", r.error)
         val p = r.picture!!
@@ -129,6 +136,33 @@ class PicturesTest {
         assertTrue(app.pictures.all().any { it.prompt == "test apple" })
         app.pictures.all().filter { it.prompt == "test apple" }.forEach { app.pictures.delete(it) }
         PictureEngine.unload()
+    }
+
+    /** Two pictures queued the way the screen does it: both are made, one after the other, and kept. */
+    @Test
+    fun queueMakesPicturesOneAfterAnother() {
+        sdxs() ?: return
+        val m = PictureCatalog.models.first { it.id == "sdxs" }
+        val jobs = app.pictureJobs
+        val before = app.pictures.all().size
+        inst.runOnMainSync {
+            jobs.add("queue test one", "None", m, 512, 512, 1, 11)
+            jobs.add("queue test two", "Photo", m, 512, 512, 2, 12)
+            assertEquals(1, jobs.waiting)
+        }
+        val end = SystemClock.uptimeMillis() + 400_000
+        var idle = false
+        while (!idle && SystemClock.uptimeMillis() < end) {
+            Thread.sleep(500)
+            inst.runOnMainSync { idle = jobs.current == null && jobs.waiting == 0 }
+        }
+        assertTrue("the queue did not finish", idle)
+        assertNull("error: ${jobs.lastError}", jobs.lastError)
+        val made = app.pictures.all().filter { it.prompt.startsWith("queue test") }
+        assertEquals(2, made.size)
+        assertEquals(before + 2, app.pictures.all().size)
+        assertEquals("the steps asked for are kept", setOf(1, 2), made.map { it.steps }.toSet())
+        made.forEach { app.pictures.delete(it) }
     }
 
     @Test

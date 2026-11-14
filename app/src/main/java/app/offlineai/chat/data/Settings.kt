@@ -212,6 +212,10 @@ class Settings(context: Context) {
     var pictureStyle: String
         get() = str("picture_style", "None")
         set(v) = put("picture_style", v)
+    /** Steps picked for a picture model (its own number when none was picked). */
+    fun pictureSteps(id: String, def: Int): Int = int("picture_steps_$id", def)
+    fun setPictureSteps(id: String, n: Int) = put("picture_steps_$id", n)
+
     /** 0 square, 1 portrait, 2 landscape. */
     var pictureShape: Int
         get() = int("picture_shape", 0)

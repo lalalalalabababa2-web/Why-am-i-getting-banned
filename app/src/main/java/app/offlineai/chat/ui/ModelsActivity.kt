@@ -135,8 +135,9 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         content.addView(card().apply {
             addView(text("Make pictures from words", 17f, bold = true))
             addView(text(
-                "SDXS 512 (683 MB, about 8 s a picture), SD-Turbo (2.0 GB, the best looking), DreamShaper 8 LCM and " +
-                    "DreamShaper DMD2 (1.6 GB each). They run here on the phone, like the chat models." +
+                "DreamShaper XL Turbo and RealVisXL Lightning (SDXL, 2.8 GB, the best looking), Realistic Vision 6, " +
+                    "SD-Turbo, SDXS 512 (683 MB, about 8 s a picture) and more. They run here on the phone, like the " +
+                    "chat models, and carry on in the background." +
                     if (here > 0) " $here on this phone." else "",
                 14f, Palette.text2,
             ).apply { setPadding(0, dp(4), 0, dp(12)) })

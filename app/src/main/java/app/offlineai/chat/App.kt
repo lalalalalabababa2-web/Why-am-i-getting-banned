@@ -42,6 +42,8 @@ class App : Application() {
 
     /** The pictures made on this phone. */
     val pictures by lazy { PictureStore(this) }
+    /** The pictures being made, carrying on in the background. */
+    val pictureJobs by lazy { app.offlineai.chat.engine.PictureJobs(this) }
 
     /** Set when the native engine could not start; the app then explains instead of crashing. */
     var nativeError: String? = null

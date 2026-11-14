@@ -37,6 +37,8 @@ object PictureEngine {
         val cfg: Float,
         val seed: Long,
         val sampler: String,
+        /** The noise schedule ("" for the model's own). */
+        val scheduler: String = "",
     )
 
     interface Events {
@@ -70,6 +72,7 @@ object PictureEngine {
                     .put("cfg", request.cfg.toDouble())
                     .put("seed", request.seed)
                     .put("sampler", request.sampler)
+                    .put("scheduler", request.scheduler)
                 val listener = object : PictureListener {
                     override fun onProgress(stage: String, done: Long, total: Long) {
                         main.post { events.onProgress(stage, done, total) }

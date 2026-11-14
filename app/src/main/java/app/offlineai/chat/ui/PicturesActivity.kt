@@ -36,6 +36,7 @@ import app.offlineai.chat.data.PictureCatalog
 import app.offlineai.chat.data.PictureModel
 import app.offlineai.chat.data.PictureStyles
 import app.offlineai.chat.engine.PictureEngine
+import app.offlineai.chat.engine.PictureJobs
 import java.io.File
 import kotlin.random.Random
 
@@ -45,7 +46,7 @@ import kotlin.random.Random
  * joins the grid of everything made so far. Tapping a picture opens it, to share, save to the
  * phone's photos, make again or delete.
  */
-class PicturesActivity : AppCompatActivity() {
+class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
     private lateinit var app: App
     private lateinit var grid: RecyclerView
     private lateinit var adapter: Grid
@@ -65,7 +66,12 @@ class PicturesActivity : AppCompatActivity() {
 
     private val main = Handler(Looper.getMainLooper())
     private var pictures: List<Picture> = emptyList()
-    private var making = false
+    private val jobs get() = app.pictureJobs
+    private val making get() = jobs.current != null
+    /** The finished picture last shown in the studio card. */
+    private var shownResult: Picture? = null
+    private lateinit var stopPill: TextView
+    private lateinit var stepsChip: TextView
     private var lastSeed = 0L
     private val poll = object : Runnable {
         override fun run() {
@@ -123,18 +129,20 @@ class PicturesActivity : AppCompatActivity() {
         main.removeCallbacks(poll)
     }
 
-    override fun onStop() {
-        super.onStop()
-        // out of sight: the picture model's memory goes back to the chat model (it loads again
-        // in about a second), unless a picture is still being made
-        if (!making) PictureEngine.unload()
+    override fun onStart() {
+        super.onStart()
+        jobs.addListener(this)
+        // in sight: a finished picture shows here instead of in a notification
+        jobs.screenVisible = true
+        onPicturesChanged()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (making) PictureEngine.cancel()
-        // the picture model's memory goes back to the phone (and the chat model)
-        if (isFinishing) PictureEngine.unload()
+    override fun onStop() {
+        super.onStop()
+        jobs.removeListener(this)
+        // out of sight: pictures carry on in the background (with a notification); with none
+        // being made, the picture model's memory goes back to the chat model
+        jobs.screenVisible = false
     }
 
     // ------------------------------------------------------------------ the studio card
@@ -174,6 +182,8 @@ class PicturesActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         studio.addView(bar, lp(MATCH, dp(4)).apply { setMargins(dp(40), dp(6), dp(40), dp(4)) })
+        stopPill = pill("Stop") { jobs.cancelAll() }.apply { visibility = View.GONE }
+        studio.addView(stopPill, lp(WRAP, WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) })
 
         // shown while no picture model is on the phone yet
         setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -214,8 +224,10 @@ class PicturesActivity : AppCompatActivity() {
         }
         styleChip = chip("") { pickStyle() }
         shapeChip = chip("") { pickShape() }
+        stepsChip = chip("") { pickSteps() }
         chips.addView(styleChip, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
-        chips.addView(shapeChip, lp(WRAP, WRAP))
+        chips.addView(shapeChip, lp(WRAP, WRAP).apply { marginEnd = dp(8) })
+        chips.addView(stepsChip, lp(WRAP, WRAP))
         wrap.addView(chips, lp(MATCH, WRAP))
 
         val box = LinearLayout(this).apply {
@@ -241,7 +253,7 @@ class PicturesActivity : AppCompatActivity() {
             scaleType = ImageView.ScaleType.CENTER
             background = rounded(Palette.accent, dp(22).toFloat())
             contentDescription = "Make the picture"
-            setOnClickListener { if (making) PictureEngine.cancel() else start(null) }
+            setOnClickListener { start(null) }
         }.pressable(0.86f)
         box.addView(make, lp(dp(44), dp(44)))
         wrap.addView(box, lp(MATCH, WRAP))
@@ -250,9 +262,9 @@ class PicturesActivity : AppCompatActivity() {
     }
 
     private fun setMakeIcon() {
-        val icon = if (making) R.drawable.ic_stop else R.drawable.ic_spark
-        make.setImageDrawable(ContextCompat.getDrawable(this, icon)?.mutate()?.apply { setTint(Palette.onAccent) })
-        make.contentDescription = if (making) "Stop" else "Make the picture"
+        make.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_spark)?.mutate()?.apply { setTint(Palette.onAccent) })
+        // while one is being made, another waits its turn
+        make.contentDescription = if (making) "Make this one next" else "Make the picture"
     }
 
     private fun chip(label: String, onClick: () -> Unit): TextView = text(label, 13f, Palette.text, bold = true).apply {
@@ -266,7 +278,9 @@ class PicturesActivity : AppCompatActivity() {
     private fun refreshChips() {
         modelChip.text = (currentModel()?.name ?: "Choose a model") + "  ▾"
         styleChip.text = "Style: " + PictureStyles.byName(app.settings.pictureStyle).name
+        val m = currentModel()
         shapeChip.text = SHAPES[app.settings.pictureShape.coerceIn(0, 2)].first
+        stepsChip.text = if (m == null) "Steps" else "Steps: ${stepsFor(m)}"
     }
 
     // ------------------------------------------------------------------ models
@@ -274,11 +288,9 @@ class PicturesActivity : AppCompatActivity() {
     private fun currentModel(): PictureModel? =
         PictureCatalog.byId(app.settings.pictureModel) ?: PictureCatalog.models.firstOrNull { ready(it) }
 
-    private fun modelFile(m: PictureModel) = File(app.models.dir, m.key)
-    private fun decoderFile() = File(app.models.dir, PictureCatalog.DECODER_KEY)
+    private fun modelFile(m: PictureModel) = jobs.modelFile(m)
 
-    private fun ready(m: PictureModel): Boolean =
-        modelFile(m).isFile && (!m.tinyDecoder || decoderFile().isFile)
+    private fun ready(m: PictureModel): Boolean = jobs.ready(m)
 
     private fun download(m: PictureModel) {
         if (app.settings.offlineOnly) {
@@ -293,8 +305,9 @@ class PicturesActivity : AppCompatActivity() {
         if (!modelFile(m).isFile && !app.models.isDownloading(m.key)) {
             app.models.download(m.url, m.key, m.name)?.let { toast(it); return }
         }
-        if (m.tinyDecoder && !decoderFile().isFile && !app.models.isDownloading(PictureCatalog.DECODER_KEY)) {
-            app.models.download(PictureCatalog.decoder.url, PictureCatalog.DECODER_KEY, "Picture decoder")
+        val d = m.decoder
+        if (d != null && !File(app.models.dir, d.key).isFile && !app.models.isDownloading(d.key)) {
+            app.models.download(d.url, d.key, "Picture decoder")
         }
         app.settings.pictureModel = m.id
         refreshChips()
@@ -327,9 +340,13 @@ class PicturesActivity : AppCompatActivity() {
         val sheet = Sheet(this, "Remove a picture model")
         for (m in PictureCatalog.models.filter { modelFile(it).isFile }) {
             sheet.item(m.name, R.drawable.ic_close, ModelStore.formatBytes(modelFile(m).length()), danger = true) {
+                if (jobs.current?.model?.id == m.id) jobs.cancelAll()
                 PictureEngine.unload()
                 modelFile(m).delete()
-                if (PictureCatalog.models.none { it.tinyDecoder && modelFile(it).isFile }) decoderFile().delete()
+                // a decoder no model on the phone uses any more goes too
+                for (d in PictureCatalog.Decoder.entries) {
+                    if (PictureCatalog.models.none { it.decoder == d && modelFile(it).isFile }) File(app.models.dir, d.key).delete()
+                }
                 refreshChips()
                 refreshSetup()
             }
@@ -393,13 +410,75 @@ class PicturesActivity : AppCompatActivity() {
 
     private fun pickShape() {
         val sheet = Sheet(this, "Shape")
-        SHAPES.forEachIndexed { i, (name, size) ->
+        val m = currentModel()
+        SHAPES.forEachIndexed { i, (name, _) ->
+            val size = if (m != null) sizeFor(m, i) else SHAPES[i].second
             sheet.item(name, detail = "${size.first} × ${size.second}", checked = i == app.settings.pictureShape) {
                 app.settings.pictureShape = i
                 refreshChips()
             }
         }
         sheet.show()
+    }
+
+    /** Steps for [m]: what was picked for it, or the steps it was made for. */
+    private fun stepsFor(m: PictureModel): Int = app.settings.pictureSteps(m.id, m.steps).coerceIn(1, PictureCatalog.MAX_STEPS)
+
+    /** The picture's size for [shape], around the model's own size, sides in steps of 64. */
+    private fun sizeFor(m: PictureModel, shape: Int): Pair<Int, Int> {
+        val n = m.native
+        val long = (n * 5 / 4 + 32) / 64 * 64
+        val short = (n * n / long + 32) / 64 * 64
+        return when (shape.coerceIn(0, 2)) {
+            1 -> short to long
+            2 -> long to short
+            else -> n to n
+        }
+    }
+
+    private fun pickSteps() {
+        val m = currentModel() ?: run { pickModel(); return }
+        var n = stepsFor(m)
+        val label = text("", 28f, bold = true).apply { gravity = Gravity.CENTER }
+        val hint = text("", 13f, Palette.text2).apply { gravity = Gravity.CENTER }
+        fun show() {
+            label.text = "$n step${if (n == 1) "" else "s"}"
+            hint.text = when {
+                n == m.steps -> "What ${m.name} was made for."
+                n < m.steps -> "Faster, rougher. ${m.name} was made for ${m.steps}."
+                else -> "Slower, often more detail (about ${n * 100 / m.steps - 100}% longer). ${m.name} was made for ${m.steps}."
+            }
+        }
+        val bar = android.widget.SeekBar(this).apply {
+            max = PictureCatalog.MAX_STEPS - 1
+            progress = n - 1
+            progressTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
+            thumbTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, fromUser: Boolean) {
+                    n = v + 1
+                    show()
+                }
+                override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+                override fun onStopTrackingTouch(sb: android.widget.SeekBar) {}
+            })
+        }
+        show()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(label, lp(MATCH, WRAP))
+        box.addView(bar, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, dp(8)) })
+        box.addView(hint, lp(MATCH, WRAP))
+        Sheet(this, "Steps", "How many times ${m.name} goes over the picture: 1 to ${PictureCatalog.MAX_STEPS}.")
+            .view(box)
+            .button("Done") {
+                app.settings.setPictureSteps(m.id, n)
+                refreshChips()
+            }
+            .button("Back to ${m.steps}", primary = false) {
+                app.settings.setPictureSteps(m.id, m.steps)
+                refreshChips()
+            }
+            .show()
     }
 
     // ------------------------------------------------------------------ making a picture
@@ -421,77 +500,81 @@ class PicturesActivity : AppCompatActivity() {
             return
         }
         val style = PictureStyles.byName(app.settings.pictureStyle)
-        val (w, h) = SHAPES[app.settings.pictureShape.coerceIn(0, 2)].second
+        val (w, h) = sizeFor(m, app.settings.pictureShape)
         val s = seed ?: Random.nextLong(1, Int.MAX_VALUE.toLong())
         lastSeed = s
-        making = true
-        setMakeIcon()
+        val queued = making
+        jobs.add(words, style.name, m, w, h, stepsFor(m), s)
         hideKeyboard()
         grid.smoothScrollToPosition(0)
-        canvasFrame.layoutParams = (canvasFrame.layoutParams as LinearLayout.LayoutParams).apply { height = squareSide() * h / w }
-        canvas.setImageDrawable(null)
-        canvas.visibility = View.GONE
-        canvasFrame.findViewWithTag<View>("orb")?.visibility = View.VISIBLE
-        status.text = if (PictureEngine.loadedKey.startsWith(modelFile(m).path)) "Starting…" else "Loading ${m.name}…"
-        bar.visibility = View.VISIBLE
-        bar.isIndeterminate = true
+        if (queued) toast("Next up: it starts when the picture being made is done.")
+        onPicturesChanged()
+    }
 
-        val request = PictureEngine.Request(
-            prompt = words + style.suffix,
-            negative = style.negative,
-            width = w, height = h,
-            steps = m.steps, cfg = 1.0f, seed = s, sampler = m.sampler,
-        )
-        PictureEngine.make(
-            modelFile(m).path, if (m.tinyDecoder) decoderFile().path else null, app.threadsNow(), request,
-            object : PictureEngine.Events {
-                override fun onProgress(stage: String, done: Long, total: Long) {
-                    if (isDestroyed) return
-                    val sampling = stage.contains("sampl", ignoreCase = true) || stage.contains("denois", ignoreCase = true)
-                    if (sampling && total > 0) {
-                        bar.isIndeterminate = false
-                        bar.setProgress((done * 1000 / total).toInt(), true)
-                        status.text = "Painting · step ${done.coerceAtMost(total)} of $total"
-                    } else if (stage.contains("decod", ignoreCase = true)) {
-                        status.text = "Finishing the picture…"
-                    } else if (stage.contains("cond", ignoreCase = true) || stage.contains("text", ignoreCase = true)) {
-                        status.text = "Reading your words…"
-                    }
-                }
-
-                override fun onPreview(preview: Bitmap) {
-                    if (isDestroyed) return
-                    val first = canvas.drawable == null
-                    canvas.setImageBitmap(preview)
-                    canvas.visibility = View.VISIBLE
-                    canvasFrame.findViewWithTag<View>("orb")?.visibility = View.GONE
-                    if (first) Motion.enter(canvas, 0, 1.03f)
-                }
-
-                override fun onDone(picture: Bitmap?, error: String?, millis: Long) {
-                    making = false
-                    // finished while out of sight: give the memory back now
-                    if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) PictureEngine.unload()
-                    if (isDestroyed) return
-                    setMakeIcon()
-                    bar.visibility = View.GONE
-                    if (picture == null) {
-                        canvas.setImageDrawable(null)
-                        status.text = error ?: "Stopped."
-                        showIdle()
-                        if (error != null) status.text = error
-                        return
-                    }
-                    canvas.setImageBitmap(picture)
-                    canvas.visibility = View.VISIBLE
-                    Motion.pop(canvasFrame, 0.97f)
-                    val saved = app.pictures.save(picture, words, style.name, m.name, s, millis)
-                    status.text = "${m.name} · ${"%.1f".format(millis / 1000.0)} s · seed $s"
-                    reload()
-                    canvasFrame.setOnClickListener { if (saved.file.isFile) open(saved) }
-                }
-            },
-        )
+    /** Shows what the queue is doing: the picture coming together, or the last one finished. */
+    override fun onPicturesChanged() {
+        if (isDestroyed) return
+        val j = jobs.current
+        setMakeIcon()
+        if (j != null) {
+            val h = squareSide() * j.height / j.width
+            val lpc = canvasFrame.layoutParams as LinearLayout.LayoutParams
+            if (lpc.height != h) {
+                lpc.height = h
+                canvasFrame.layoutParams = lpc
+            }
+            canvasFrame.setOnClickListener(null)
+            val pv = jobs.preview
+            if (pv != null) {
+                val first = canvas.visibility != View.VISIBLE || shownResult != null
+                canvas.setImageBitmap(pv)
+                canvas.visibility = View.VISIBLE
+                canvasFrame.findViewWithTag<View>("orb")?.visibility = View.GONE
+                if (first) Motion.enter(canvas, 0, 1.03f)
+            } else {
+                canvas.setImageDrawable(null)
+                canvas.visibility = View.GONE
+                canvasFrame.findViewWithTag<View>("orb")?.visibility = View.VISIBLE
+            }
+            shownResult = null
+            val st = jobs.stage
+            val waiting = if (jobs.waiting > 0) " · ${jobs.waiting} more waiting" else ""
+            bar.visibility = View.VISIBLE
+            if (st.contains("sampl") && jobs.total > 0) {
+                bar.isIndeterminate = false
+                bar.max = 1000
+                bar.setProgress((jobs.done * 1000 / jobs.total).toInt(), true)
+                status.text = "Painting · step ${jobs.done.coerceAtMost(jobs.total)} of ${jobs.total}$waiting"
+            } else {
+                bar.isIndeterminate = true
+                status.text = when {
+                    st.contains("decod") -> "Finishing the picture…"
+                    st.contains("cond") -> "Reading your words…"
+                    st.isEmpty() && !PictureEngine.loadedKey.startsWith(modelFile(j.model).path) -> "Loading ${j.model.name}…"
+                    else -> "Getting ready…"
+                } + waiting
+            }
+            stopPill.visibility = View.VISIBLE
+            stopPill.text = if (jobs.waiting > 0) "Stop all" else "Stop"
+            return
+        }
+        stopPill.visibility = View.GONE
+        bar.visibility = View.GONE
+        val last = jobs.lastPicture
+        if (last != null && last !== shownResult && last.file.isFile) {
+            shownResult = last
+            canvas.setImageBitmap(BitmapFactory.decodeFile(last.file.path))
+            canvas.visibility = View.VISIBLE
+            canvasFrame.findViewWithTag<View>("orb")?.visibility = View.GONE
+            Motion.pop(canvasFrame, 0.97f)
+            status.text = "${last.model} · ${"%.1f".format(jobs.lastMillis / 1000.0)} s · ${last.steps} steps · seed ${last.seed}"
+            canvasFrame.setOnClickListener { if (last.file.isFile) open(last) }
+            reload()
+        } else if (jobs.lastError != null && shownResult == null) {
+            status.text = jobs.lastError
+        } else if (shownResult == null) {
+            showIdle()
+        }
     }
 
     private fun reload() {

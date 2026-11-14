@@ -59,6 +59,9 @@ void log_cb(enum sd_log_level_t level, const char * text, void *) {
     __android_log_write(prio, TAG, text);
     if (level == SD_LOG_ERROR && text) {
         g_error = text;
+        // the library ends its messages with " --- file.cpp:123": not for people
+        const size_t at = g_error.find(" --- ");
+        if (at != std::string::npos) g_error.resize(at);
         while (!g_error.empty() && (g_error.back() == '\n' || g_error.back() == ' ')) g_error.pop_back();
     }
 }
@@ -167,6 +170,7 @@ Java_app_offlineai_chat_engine_PictureEngine_nativeGenerate(JNIEnv * env, jclass
     const std::string prompt = req.value("prompt", std::string());
     const std::string negative = req.value("negative", std::string());
     const std::string sampler = req.value("sampler", std::string());
+    const std::string scheduler = req.value("scheduler", std::string());
 
     Listener l;
     if (listener) {
@@ -195,6 +199,10 @@ Java_app_offlineai_chat_engine_PictureEngine_nativeGenerate(JNIEnv * env, jclass
     if (!sampler.empty()) {
         const sample_method_t m = str_to_sample_method(sampler.c_str());
         if (m != SAMPLE_METHOD_COUNT) gp.sample_params.sample_method = m;
+    }
+    if (!scheduler.empty()) {
+        const scheduler_t sc = str_to_scheduler(scheduler.c_str());
+        if (sc != SCHEDULER_COUNT) gp.sample_params.scheduler = sc;
     }
     // decoding the picture in tiles keeps the memory it needs small on a phone
     gp.vae_tiling_params.enabled = req.value("tiled", false);
