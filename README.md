@@ -19,12 +19,16 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 ## What it does
 
-- **Pictures**: words in, a picture out, on the phone. Four picture models, each tried on real
-  prompts (512 x 512 on four ARM cores in CI, 4 threads): SDXS 512 (683 MB, 1 step, 7.4 s),
-  SD-Turbo (2.0 GB, 2 steps, 29.5 s, the best looking), DreamShaper DMD2 (1.6 GB, 4 steps,
-  56 s) and DreamShaper 8 LCM (1.6 GB, 4 steps, 60 s). The bigger three decode with TAESD,
-  which halves the time with no visible change. The picture comes together step by step on
-  screen; styles, shapes, share, save to photos, make again with the same or a new seed.
+- **Pictures**: words in, a picture out, on the phone. Seven picture models, each tried on real
+  prompts first. Best looking: DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four
+  x86 cores), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
+  512 px, 6 steps). Quick ones, timed at 512 px on four ARM cores in CI: SDXS 512 (683 MB, 1
+  step, 7.4 s), SD-Turbo (2 steps, 29.5 s), DreamShaper DMD2 (56 s) and DreamShaper 8 LCM (60 s).
+  Decoding uses TAESD / TAESDXL, which halves the time with no visible change. Pictures are made
+  by an app-wide queue behind a foreground service, so they carry on in the background, with the
+  step in a notification and the finished picture in another. Steps from 1 to 30 per model,
+  styles, shapes, share, save to photos, make again with the same or a new seed. No content
+  filter, with one line held: nothing sexual with children.
 - **Hide as a game** (Settings, Privacy): the launcher shows "Ping Pong", a real game; a secret
   code typed as the player name in its settings opens the app. It locks again a minute after
   leaving or when the screen goes off; notifications and recent apps say Ping Pong.

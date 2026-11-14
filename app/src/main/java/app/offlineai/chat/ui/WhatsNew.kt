@@ -7,9 +7,18 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 1
+    const val VERSION = 2
 
     private val ITEMS = listOf(
+        "Nyx" to "A new name, icon and look: menus that rise from the bottom, a message box that floats over the " +
+            "chat like frosted glass, and motion that follows your finger.",
+        "Pictures" to "Make pictures from words, here on the phone: tap Make a picture in a new chat, or the paperclip. " +
+            "Seven picture models, from SDXS (seconds) to DreamShaper XL Turbo (the best looking); styles, shapes, " +
+            "and Steps from 1 to 30. Pictures carry on in the background, with a notification when one is ready.",
+        "Steadier speed" to "Replies keep the phone's processor at full speed for the whole reply, and the " +
+            "conversation memory is kept compact when memory is tight.",
+        "Hide as a game" to "Settings, Privacy: the launcher shows a ping pong game instead; a secret code typed as " +
+            "the player name opens Nyx.",
         "New models" to "Spark-X2.6 4B and 1.7B, Nemotron 3.5 Bolt E4B, Ornith 1.5 9B, and for pictures and video " +
             "Qwen3-VL 2B, 4B and 8B and LFM2.5-VL 3B.",
         "Answers sooner" to "Thinking models now answer after 1024 tokens of thinking (Settings, Thinking budget), " +
