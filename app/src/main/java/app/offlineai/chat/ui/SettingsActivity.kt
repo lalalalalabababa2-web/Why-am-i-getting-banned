@@ -75,7 +75,7 @@ class SettingsActivity : AppCompatActivity() {
         val s = app.settings
         val reloadNote = if (app.engine.loaded != null) " Applies when the model reloads (on leaving Settings)." else ""
 
-        content.addView(sectionTitle("Model and memory"))
+        section("Model and memory")
         choice("Context size",
             "How much of the conversation the model holds at once. Larger uses more memory.$reloadNote",
             Settings.CONTEXT_SIZES.map { "$it tokens" }, Settings.CONTEXT_SIZES.indexOf(s.contextSize)) {
@@ -93,7 +93,7 @@ class SettingsActivity : AppCompatActivity() {
             s.promptBatch = Settings.PROMPT_BATCHES[it]
         }
 
-        content.addView(sectionTitle("Performance"))
+        section("Performance")
         choice("Mode", s.perfMode.help, PerfMode.values().map { it.label }, s.perfMode.ordinal) {
             s.perfMode = PerfMode.values()[it]
             applyThreadsNow()
@@ -146,10 +146,10 @@ class SettingsActivity : AppCompatActivity() {
             s.streamIntervalMs = Settings.STREAM_INTERVALS[it]
         }
         val heat = app.currentThermal()
-        content.addView(note("The phone is ${Device.thermalLabel(heat)} right now. Balanced and Eco use fewer threads as it warms, " +
+        group.addView(note("The phone is ${Device.thermalLabel(heat)} right now. Balanced and Eco use fewer threads as it warms, " +
             "so it can keep a steady speed instead of overheating and slowing down hard."))
 
-        content.addView(sectionTitle("Writing speed"))
+        section("Writing speed")
         switch("Copy from the conversation",
             "When a reply repeats text that is already in the chat (rewriting a note, editing code, quoting you), the " +
                 "repeated part is checked many words at a time instead of one by one. It costs nothing when nothing " +
@@ -193,13 +193,13 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 } + (if (current.info.specNMax > 0) ", up to ${current.info.specNMax} words per step." else ".")
             }
-            content.addView(note(desc))
+            group.addView(note(desc))
         }
         row("Drafting test", s.draftSummary.ifBlank {
             "Writes the same short text with drafting off and with 1, 2 and 3 drafted words, and keeps the fastest for this model."
         }) { runDraftTest() }
 
-        content.addView(sectionTitle("Pictures, video and sound"))
+        section("Pictures, video and sound")
         choice("Picture detail", s.pictureDetail.help + reloadNote, PictureDetail.values().map { it.label }, s.pictureDetail.ordinal) {
             s.pictureDetail = PictureDetail.values()[it]
         }
@@ -208,11 +208,11 @@ class SettingsActivity : AppCompatActivity() {
             Settings.VIDEO_FRAMES.map { "$it frames" }, Settings.VIDEO_FRAMES.indexOf(s.videoFrames).coerceAtLeast(0)) {
             s.videoFrames = Settings.VIDEO_FRAMES[it]
         }
-        content.addView(note("Pictures and sound need a model that can take them (Gemma 4, Qwen3.5, Qwen3-VL, LFM2.5-VL, " +
+        group.addView(note("Pictures and sound need a model that can take them (Gemma 4, Qwen3.5, Qwen3-VL, LFM2.5-VL, " +
             "Ministral 3, Bonsai) and its picture support, downloaded from the Models screen. Sound: up to ${Settings.MAX_SOUND_SECONDS} " +
             "seconds, Gemma 4 models only."))
 
-        content.addView(sectionTitle("Replies"))
+        section("Replies")
         switch("Thinking", "Models that can think work through the problem before answering. Slower, often better.",
             s.thinking) { s.thinking = it; rebuild() }
         switch("Show thinking open", "Keep the thinking unfolded after the answer starts.", s.expandThinking) {
@@ -248,7 +248,7 @@ class SettingsActivity : AppCompatActivity() {
             editText("System prompt", s.systemPrompt, multiLine = true) { s.systemPrompt = it.trim(); rebuild() }
         }
 
-        content.addView(sectionTitle("Sampling"))
+        section("Sampling")
         switch("Use each model's recommended settings", "Turn off to set them yourself.", s.useRecommendedSampling) {
             s.useRecommendedSampling = it
             rebuild()
@@ -261,7 +261,7 @@ class SettingsActivity : AppCompatActivity() {
             number("Repeat penalty", s.repeatPenalty, "Above 1 discourages repeating (1 = off).") { s.repeatPenalty = it.coerceIn(0.5f, 2f) }
         }
 
-        content.addView(sectionTitle("Chat"))
+        section("Chat")
         switch("Follow new text", "While you are at the bottom, the chat follows the reply. Scrolling up always stops it.",
             s.autoFollow) { s.autoFollow = it }
         switch("Jump-to-bottom button", "Shown while you are reading further up.", s.jumpButton) { s.jumpButton = it }
@@ -272,7 +272,7 @@ class SettingsActivity : AppCompatActivity() {
         switch("Colour code", "Syntax colours in code blocks.", s.syntaxHighlight) { s.syntaxHighlight = it }
         switch("Wrap long code lines", "Off scrolls code sideways instead.", s.codeWrap) { s.codeWrap = it }
 
-        content.addView(sectionTitle("Appearance"))
+        section("Appearance")
         choice("Theme", null, ThemeMode.values().map { it.label }, s.theme.ordinal) {
             s.theme = ThemeMode.values()[it]
             restyle()
@@ -288,8 +288,8 @@ class SettingsActivity : AppCompatActivity() {
         }
         switch("Keep the screen on while it writes", null, s.keepScreenOn) { s.keepScreenOn = it }
 
-        content.addView(sectionTitle("Privacy and data"))
-        content.addView(note("Chats and models never leave this phone. Chats are kept in the app's private storage, which " +
+        section("Privacy and data")
+        group.addView(note("Chats and models never leave this phone. Chats are kept in the app's private storage, which " +
             "Android encrypts along with the rest of the phone's data."))
         switch("Offline only", "Turns off model downloads too, so the app never goes online.", s.offlineOnly) { s.offlineOnly = it }
         row("Chats", "Search, rename, export, import or delete chats.") {
@@ -310,12 +310,12 @@ class SettingsActivity : AppCompatActivity() {
                 .show()
         }
 
-        content.addView(sectionTitle("About"))
+        section("About")
         row("About Offline AI", "What it promises, what it is made with, credits and open-source licenses.") {
             startActivity(Intent(this, AboutActivity::class.java))
         }
         val loaded = app.engine.loaded
-        content.addView(note(
+        group.addView(note(
             "Offline AI ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
                 (loaded?.let { m ->
                     "\n\nLoaded: ${m.displayName} (${m.info.desc}), ${m.nCtx} context, ${if (m.config.lowMemory) "low-memory" else "fast"} mode, " +
@@ -524,6 +524,18 @@ class SettingsActivity : AppCompatActivity() {
 
     // ---- rows
 
+    /** The card the rows being built go into: one per section. */
+    private lateinit var group: LinearLayout
+
+    private fun section(title: String) {
+        content.addView(sectionTitle(title))
+        group = card().apply {
+            setPadding(0, dp(6), 0, dp(6))
+            clipToOutline = true
+        }
+        content.addView(group)
+    }
+
     private fun note(s: String): TextView = text(s, 13f, Palette.text2).apply { setPadding(dp(20), dp(4), dp(20), dp(8)) }
 
     private fun row(title: String, value: String, onClick: () -> Unit) {
@@ -535,7 +547,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         r.addView(text(title, 15f))
         r.addView(text(value, 13f, Palette.text2).apply { maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END })
-        content.addView(r, lp(MATCH, WRAP))
+        group.addView(r, lp(MATCH, WRAP))
     }
 
     private fun choice(title: String, help: String?, options: List<String>, current: Int, onPick: (Int) -> Unit) {
@@ -577,7 +589,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         r.addView(sw)
         r.setOnClickListener { sw.toggle() }
-        content.addView(r, lp(MATCH, WRAP))
+        group.addView(r, lp(MATCH, WRAP))
     }
 
     private fun number(title: String, value: Float, help: String, onSave: (Float) -> Unit) {

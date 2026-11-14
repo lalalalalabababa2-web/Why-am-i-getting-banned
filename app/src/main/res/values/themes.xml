@@ -14,6 +14,7 @@
         <item name="android:textColorHint">@color/text_tertiary</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@style/OfflineAI.Screens</item>
         <item name="alertDialogTheme">@style/Theme.OfflineAI.Dialog</item>
         <item name="android:alertDialogTheme">@style/Theme.OfflineAI.Dialog</item>
     </style>
@@ -24,5 +25,13 @@
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
         <item name="colorControlActivated">@color/accent</item>
+    </style>
+
+    <!-- Going to a screen it slides in from the side while the one behind eases back; Back undoes it. -->
+    <style name="OfflineAI.Screens" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/screen_open_enter</item>
+        <item name="android:activityOpenExitAnimation">@anim/screen_open_exit</item>
+        <item name="android:activityCloseEnterAnimation">@anim/screen_close_enter</item>
+        <item name="android:activityCloseExitAnimation">@anim/screen_close_exit</item>
     </style>
 </resources>
