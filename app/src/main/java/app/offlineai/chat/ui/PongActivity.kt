@@ -326,10 +326,13 @@ class PongView(context: Context, private var player: String, private var level: 
             x += 26 * density
         }
         // scores, big and faint behind the play
-        big.textSize = 120 * density
-        big.color = 0x18FFFFFF
-        c.drawText("$cpuScore", w / 2, mid - 36 * density, big)
-        c.drawText("$myScore", w / 2, mid + 120 * density, big)
+        // (not under the title screen's words)
+        if (!(serving && myScore == 0 && cpuScore == 0) && winner == null) {
+            big.textSize = 120 * density
+            big.color = 0x18FFFFFF
+            c.drawText("$cpuScore", w / 2, mid - 36 * density, big)
+            c.drawText("$myScore", w / 2, mid + 120 * density, big)
+        }
         small.textSize = 13 * density
         small.color = 0x80FFFFFF.toInt()
         c.drawText("COMPUTER · ${PongActivity.LEVELS[level.coerceIn(0, 2)].uppercase()}", w / 2, top - 30 * density, small)

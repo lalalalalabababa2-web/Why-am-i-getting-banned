@@ -90,7 +90,7 @@ class PicturesActivity : AppCompatActivity() {
         adapter = Grid()
         grid = RecyclerView(this).apply {
             clipToPadding = false
-            setPadding(dp(10), 0, dp(10), dp(150))
+            setPadding(dp(10), 0, dp(10), dp(180))
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             // the studio card is one view, kept: never cross-faded into a second copy of itself
             (itemAnimator as? androidx.recyclerview.widget.SimpleItemAnimator)?.supportsChangeAnimations = false
@@ -193,12 +193,13 @@ class PicturesActivity : AppCompatActivity() {
     private fun buildComposer(): View {
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(10))
-            // a soft fade from the page into the composer
+            // the page fades into the composer, solid behind the chips and the box, so the grid
+            // scrolling under them never shows through their edges
             background = android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
                 intArrayOf(Palette.bg, Palette.bg, androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0)),
-            )
+            ).apply { setColors(intArrayOf(Palette.bg, Palette.bg, androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0)), floatArrayOf(0f, 0.72f, 1f)) }
+            setPadding(dp(10), dp(28), dp(10), dp(10))
         }
         val chips = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL

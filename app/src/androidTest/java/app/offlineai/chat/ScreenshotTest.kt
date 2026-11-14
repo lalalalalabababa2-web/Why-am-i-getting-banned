@@ -266,5 +266,33 @@ class ScreenshotTest {
             }
         }
         onMain { app.settings.theme = ThemeMode.DARK }
+
+        // Big text, as many phones are set up: the screens must still line up
+        prefix = "big"
+        TestDevice.shell("settings put system font_scale 1.3")
+        settle(1500)
+        try {
+            onMain { app.chat.newChat() }
+            ActivityScenario.launch(MainActivity::class.java).use { shot("02-new-chat") }
+            onMain {
+                app.chat.newChat()
+                app.chat.conversation.messages.addAll(sampleChat())
+            }
+            ActivityScenario.launch(MainActivity::class.java).use { sc ->
+                shot("07-chat-end")
+                sc.view { it is EditText }?.let {
+                    tap(it)
+                    settle(900)
+                    TestDevice.shell("input text Hello")
+                    shot("10-chat-keyboard")
+                    back()
+                }
+            }
+            onMain { app.chat.newChat() }
+            ActivityScenario.launch(PicturesActivity::class.java).use { shot("21-pictures") }
+            ActivityScenario.launch(SettingsActivity::class.java).use { shot("14-settings") }
+        } finally {
+            TestDevice.shell("settings put system font_scale 1.0")
+        }
     }
 }

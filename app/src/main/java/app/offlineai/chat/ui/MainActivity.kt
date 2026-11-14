@@ -322,7 +322,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         // composer
         val composer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.BOTTOM
+            // one line: the buttons sit level with the text, whatever the font size; several
+            // lines: they stay at the bottom, next to the line being typed (see below)
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(4), dp(4), dp(4))
             // translucent: what is behind shows through, blurred by the backdrop under it
             background = rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.surface1, if (Palette.dark) 0xB8 else 0xC4),
@@ -362,7 +364,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 }
             })
         }
+        input.gravity = Gravity.CENTER_VERTICAL or Gravity.START
         composer.addView(input, lp(0, WRAP, 1f))
+        input.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            val want = if (input.lineCount > 1) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
+            if (composer.gravity != want) composer.post { composer.gravity = want }
+        }
         send = ImageButton(this).apply {
             scaleType = android.widget.ImageView.ScaleType.CENTER
             background = ripple(rounded(Palette.accent, dp(22).toFloat()), dp(22).toFloat())
