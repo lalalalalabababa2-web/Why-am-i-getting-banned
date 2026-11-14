@@ -187,7 +187,14 @@ class MessageAdapter(
         private val waiting = ctx.text("", 14f, Palette.text3)
         private val dots = TypingDots(ctx)
         private val errorText = ctx.text("", 14f, Palette.danger)
-        private val stats = ctx.text("", 12f, Palette.text3)
+        private val stats = ctx.text("", 12f, Palette.text3).apply {
+            // one line; a tap shows all of it
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setOnClickListener { maxLines = if (maxLines == 1) 8 else 1 }
+        }
+        /** What went wrong or was left out (slow from memory, context full…): on its own line, in full. */
+        private val note = ctx.text("", 12f, Palette.caution)
         private val copy = ctx.iconButton(R.drawable.ic_copy, "Copy reply", Palette.text3) {}
         private val again = ctx.iconButton(R.drawable.ic_refresh, "Write again", Palette.text3) {}
         private val more = ctx.iconButton(R.drawable.ic_more, "More", Palette.text3) {}
@@ -227,6 +234,7 @@ class MessageAdapter(
             footer.addView(again, lp(ctx.dp(36), ctx.dp(36)))
             footer.addView(more, lp(ctx.dp(36), ctx.dp(36)))
             col.addView(footer, lp(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
+            col.addView(note, lp(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
 
             content.setOnLongClickListener { showMenu(it); true }
         }
@@ -346,10 +354,17 @@ class MessageAdapter(
 
             if (streaming) {
                 footer.visibility = View.GONE
+                note.visibility = View.GONE
             } else {
                 footer.visibility = View.VISIBLE
-                // which model wrote it, so a chat that changed models says who said what
-                stats.text = if (m.error) "" else listOf(m.model, m.stats).filter { it.isNotBlank() }.joinToString(" · ")
+                // which model wrote it, so a chat that changed models says who said what; what
+                // needs attention goes on its own line below
+                val parts = if (m.error) emptyList() else listOf(m.model).filter { it.isNotBlank() } + m.stats.split(" · ").filter { it.isNotBlank() }
+                val warn = parts.filter { isWarning(it) }.map { warningText(it) }
+                stats.text = parts.filterNot { isWarning(it) }.joinToString(" · ")
+                stats.maxLines = 1
+                note.text = warn.joinToString("\n")
+                note.visibility = if (warn.isEmpty()) View.GONE else View.VISIBLE
                 copy.visibility = if (m.error || m.content.isBlank()) View.GONE else View.VISIBLE
                 copy.setOnClickListener { ctx.copyText("reply", m.content) }
                 again.visibility = if (isLast && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
@@ -376,4 +391,16 @@ class MessageAdapter(
     companion object {
         const val PAYLOAD_STREAM = "stream"
     }
+}
+
+
+/** Parts of a reply's stats line that need the reader's attention. */
+private fun isWarning(part: String): Boolean =
+    part.startsWith("slow because") || part.startsWith("slow:") || part.endsWith("left out to fit") || part == "context full"
+
+private fun warningText(part: String): String = when {
+    // replies saved before the wording changed
+    part.startsWith("slow because") -> "Slow: the model did not fit in free memory. Close other apps, lower the context size in Settings, or pick a smaller model"
+    part == "context full" -> "Stopped: the conversation filled the context. Start a new chat or raise the context size"
+    else -> part.replaceFirstChar { it.uppercase() }
 }

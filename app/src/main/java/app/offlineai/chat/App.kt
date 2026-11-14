@@ -203,6 +203,20 @@ class App : Application() {
         MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.45
     }
 
+    /**
+     * Automatic memory: the conversation memory at full size would not fit comfortably in what
+     * is free now (a long context on a phone with other apps open), so it is kept at 8 bits, half
+     * the size. Otherwise Android pushes the model's pages out and reads them back from storage on
+     * every word, which is what makes a reply crawl.
+     */
+    private fun tightFor(model: LocalModel): Boolean {
+        if (settings.memoryMode != MemoryMode.AUTO) return false
+        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        val full = weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
+        val free = availableRam() + (engine.loaded?.let { l -> models.find(l.key)?.sizeBytes } ?: 0L)
+        return full > free * 0.6
+    }
+
     fun configFor(model: LocalModel): LoadConfig {
         val low = lowMemoryFor(model)
         val drafts = settings.draftsFor(model.file.name)
@@ -212,7 +226,7 @@ class App : Application() {
             nUbatch = settings.promptBatch,
             lowMemory = low,
             // a model too big for fast mode also gets the half-size conversation memory, unless set by hand
-            kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO),
+            kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO) || tightFor(model),
             specNMax = drafts,
             specNgram = settings.copyDrafts,
             drafterPath = if (drafts > 0 && model.hasDrafter) model.drafterFile.absolutePath else "",

@@ -123,6 +123,13 @@ class PicturesActivity : AppCompatActivity() {
         main.removeCallbacks(poll)
     }
 
+    override fun onStop() {
+        super.onStop()
+        // out of sight: the picture model's memory goes back to the chat model (it loads again
+        // in about a second), unless a picture is still being made
+        if (!making) PictureEngine.unload()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (making) PictureEngine.cancel()
@@ -463,6 +470,8 @@ class PicturesActivity : AppCompatActivity() {
 
                 override fun onDone(picture: Bitmap?, error: String?, millis: Long) {
                     making = false
+                    // finished while out of sight: give the memory back now
+                    if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) PictureEngine.unload()
                     if (isDestroyed) return
                     setMakeIcon()
                     bar.visibility = View.GONE
