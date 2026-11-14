@@ -1,0 +1,5 @@
+# Not the app: other projects kept as submodules, and build output
+third_party/
+build/
+app/build/
+.gradle/
