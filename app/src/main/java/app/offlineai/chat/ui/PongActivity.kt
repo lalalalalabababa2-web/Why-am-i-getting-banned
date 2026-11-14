@@ -43,6 +43,8 @@ class PongActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         app = App.of(this)
         Palette.apply(this, app.settings)
+        // hidden: the game opening means the app behind it is locked (Back never shows it)
+        if (app.settings.disguised) app.lockNow()
         val root = FrameLayout(this).apply { setBackgroundColor(0xFF07070D.toInt()) }
         game = PongView(this, app.settings.gamePlayer.ifBlank { "You" }, app.settings.gameLevel)
         root.addView(game, FrameLayout.LayoutParams(MATCH, MATCH))

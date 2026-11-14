@@ -31,6 +31,7 @@ class PictureJobs(private val app: App) {
         fun onPicturesChanged()
     }
 
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val queue = ArrayDeque<Job>()
     private val listeners = mutableSetOf<Listener>()
 
@@ -52,6 +53,9 @@ class PictureJobs(private val app: App) {
     var lastError: String? = null
         private set
     var lastMillis = 0L
+        private set
+    /** The last picture was stopped before it was done. */
+    var lastStopped = false
         private set
     /** How many are waiting after the current one. */
     val waiting: Int get() = queue.size
@@ -96,6 +100,23 @@ class PictureJobs(private val app: App) {
         changed()
     }
 
+    /** The chat model was put away to make room for a picture model; it comes back after. */
+    private var chatPutAway = false
+
+    /**
+     * A picture model next to a big chat model can be more than the phone has: Android then ends
+     * the app. With too little free memory for the picture model and its working memory, the chat
+     * model (when it is not writing) is unloaded first and loaded again when the pictures are done.
+     */
+    private fun makeRoom(m: PictureModel) {
+        if (app.engine.loaded == null || app.engine.isBusy || app.chat.generating) return
+        val need = modelFile(m).length() + (if (m.xl) 2_000_000_000L else 900_000_000L)
+        if (app.availableRam() < need) {
+            app.engine.unload()
+            chatPutAway = true
+        }
+    }
+
     private fun next() {
         val j = queue.removeFirstOrNull()
         current = j
@@ -106,9 +127,16 @@ class PictureJobs(private val app: App) {
         if (j == null) {
             PictureService.stop(app)
             if (!screenVisible) PictureEngine.unload()
+            if (chatPutAway) {
+                chatPutAway = false
+                PictureEngine.unload()
+                // after the picture model has let go (and the chat engine has finished unloading)
+                main.postDelayed({ if (current == null) app.loadLastModel() }, 800)
+            }
             changed()
             return
         }
+        makeRoom(j.model)
         PictureService.start(app)
         changed()
         val st = PictureStyles.byName(j.style)
@@ -139,6 +167,7 @@ class PictureJobs(private val app: App) {
             override fun onDone(picture: Bitmap?, error: String?, millis: Long) {
                 lastMillis = millis
                 lastError = error
+                lastStopped = picture == null && error == null
                 if (picture != null) {
                     val saved = app.pictures.save(picture, j.prompt, j.style, j.model.name, j.seed, millis, j.steps)
                     lastPicture = saved

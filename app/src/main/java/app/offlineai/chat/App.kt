@@ -126,7 +126,12 @@ class App : Application() {
     /** Every screen of the app that is open, to close them when it is hidden as a game. */
     private val open = mutableSetOf<android.app.Activity>()
     private val lockTimer = android.os.Handler(android.os.Looper.getMainLooper())
-    private val lock = Runnable { if (!inFront && settings.disguised) open.filter { it !is PongActivity }.forEach { it.finish() } }
+    private val lock = Runnable { if (!inFront && settings.disguised) lockNow() }
+
+    /** Hidden as a game: closes every screen of the app but the game. */
+    fun lockNow() {
+        open.filter { it !is PongActivity }.forEach { it.finish() }
+    }
 
     private fun watchScreen() {
         androidx.core.content.ContextCompat.registerReceiver(this, object : android.content.BroadcastReceiver() {
@@ -213,6 +218,9 @@ class App : Application() {
      */
     private fun tightFor(model: LocalModel): Boolean {
         if (settings.memoryMode != MemoryMode.AUTO) return false
+        // decided when the model is loaded and kept while it stays loaded: free memory moves all
+        // the time, and a changed answer would look like a changed setting and reload the model
+        engine.loaded?.takeIf { it.key == model.file.name }?.let { return it.config.kvQ8 }
         val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
         val full = weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
         val free = availableRam() + (engine.loaded?.let { l -> models.find(l.key)?.sizeBytes } ?: 0L)

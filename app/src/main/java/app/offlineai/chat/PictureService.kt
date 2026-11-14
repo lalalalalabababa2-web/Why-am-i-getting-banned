@@ -38,16 +38,20 @@ class PictureService : Service() {
             app.pictureJobs.cancelAll()
             return START_NOT_STICKY
         }
-        if (app.pictureJobs.current == null) {
-            stopNow()
-            return START_NOT_STICKY
-        }
+        // Always first: a service started as a foreground service must show its notification
+        // before anything else, even when there is nothing left to do (Android ends the app
+        // otherwise).
         try {
             val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this), type)
         } catch (e: Exception) {
             // refused (started from the background): the picture still finishes while the app is open
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (app.pictureJobs.current == null) {
+            // the pictures were done before the service got here
+            stopNow()
             return START_NOT_STICKY
         }
         if (wakeLock == null) {
@@ -87,12 +91,18 @@ class PictureService : Service() {
         private var lastUpdate = 0L
 
         fun start(context: Context) {
+            if (running) {
+                // already there (the next picture in the queue): only its words change
+                lastUpdate = 0
+                update(context)
+                return
+            }
             runCatching { ContextCompat.startForegroundService(context, Intent(context, PictureService::class.java)) }
         }
 
+        /** Ends the service, or, if it has not started yet, leaves it to stop itself when it does. */
         fun stop(context: Context) {
-            running = false
-            runCatching { context.stopService(Intent(context, PictureService::class.java)) }
+            if (running) runCatching { context.stopService(Intent(context, PictureService::class.java)) }
         }
 
         /** The progress in the notification, at most a few times a second. */
@@ -160,7 +170,7 @@ class PictureService : Service() {
                 .setOnlyAlertOnce(true)
                 .setProgress(if (sampling) jobs.total.toInt() else 0, if (sampling) jobs.done.toInt() else 0, !sampling)
                 .setContentIntent(open(context, 44))
-                .addAction(0, if (hidden) "Stop" else "Stop", stop)
+                .addAction(0, "Stop", stop)
                 .build()
         }
 

@@ -564,19 +564,26 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         stopPill.visibility = View.GONE
         bar.visibility = View.GONE
         val last = jobs.lastPicture
-        if (last != null && last !== shownResult && last.file.isFile) {
-            shownResult = last
-            canvas.setImageBitmap(BitmapFactory.decodeFile(last.file.path))
-            canvas.visibility = View.VISIBLE
-            canvasFrame.findViewWithTag<View>("orb")?.visibility = View.GONE
-            Motion.pop(canvasFrame, 0.97f)
-            status.text = "${last.model} · ${"%.1f".format(jobs.lastMillis / 1000.0)} s · ${last.steps} steps · seed ${last.seed}"
-            canvasFrame.setOnClickListener { if (last.file.isFile) open(last) }
-            reload()
-        } else if (jobs.lastError != null && shownResult == null) {
-            status.text = jobs.lastError
+        val failed = jobs.lastError != null || jobs.lastStopped
+        if (!failed && last != null && last.file.isFile) {
+            if (last !== shownResult) {
+                shownResult = last
+                canvas.setImageBitmap(BitmapFactory.decodeFile(last.file.path))
+                canvas.visibility = View.VISIBLE
+                canvasFrame.findViewWithTag<View>("orb")?.visibility = View.GONE
+                Motion.pop(canvasFrame, 0.97f)
+                status.text = "${last.model} · ${"%.1f".format(jobs.lastMillis / 1000.0)} s · ${last.steps} steps · seed ${last.seed}"
+                canvasFrame.setOnClickListener { if (last.file.isFile) open(last) }
+                reload()
+            }
         } else if (shownResult == null) {
+            // stopped, failed, or nothing made yet: no half-made picture or old step count left behind
+            canvas.setImageDrawable(null)
+            canvasFrame.setOnClickListener(null)
+            status.text = ""
             showIdle()
+            jobs.lastError?.let { status.text = it }
+            if (jobs.lastError == null && jobs.lastStopped) status.text = "Stopped."
         }
     }
 

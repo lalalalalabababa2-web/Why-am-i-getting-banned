@@ -41,7 +41,12 @@ object Disguise {
         fun set(name: String, on: Boolean) {
             val state = if (on) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
             val c = ComponentName(context.packageName, name)
-            if (pm.getComponentEnabledSetting(c) != state) pm.setComponentEnabledSetting(c, state, PackageManager.DONT_KILL_APP)
+            val now = pm.getComponentEnabledSetting(c)
+            // never touched yet: it is as the manifest has it (the app on, the game off); changing
+            // that to the same thing would only make launchers redo their icons
+            val isOn = now == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ||
+                (now == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && name == APP)
+            if (isOn != on) pm.setComponentEnabledSetting(c, state, PackageManager.DONT_KILL_APP)
         }
         // the new entry first, so the app never has no entry at all
         if (hidden) {

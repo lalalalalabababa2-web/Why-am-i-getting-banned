@@ -50,8 +50,12 @@ object PictureEngine {
         fun onDone(picture: Bitmap?, error: String?, millis: Long)
     }
 
+    /** Asked to stop: also skips a picture whose model is still loading. Cleared by the next [make]. */
+    @Volatile private var stopped = false
+
     fun make(model: String, decoder: String?, threads: Int, request: Request, events: Events) {
         busy = true
+        stopped = false
         worker.execute {
             val t0 = System.currentTimeMillis()
             val key = "$model|${decoder.orEmpty()}|$threads"
@@ -62,7 +66,7 @@ object PictureEngine {
                 if (error == null) loadedKey = key
             }
             var picture: Bitmap? = null
-            if (error == null) {
+            if (error == null && !stopped) {
                 val json = JSONObject()
                     .put("prompt", request.prompt)
                     .put("negative", request.negative)
@@ -99,7 +103,10 @@ object PictureEngine {
         }
     }
 
-    fun cancel() = nativeCancel()
+    fun cancel() {
+        stopped = true
+        nativeCancel()
+    }
 
     /** Frees the picture model's memory (after the queued work). */
     fun unload() {
