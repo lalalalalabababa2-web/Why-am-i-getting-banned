@@ -61,7 +61,8 @@ add_subdirectory(${SD_SRC} sd-build)
 add_library(offlineai SHARED
         jni_bridge.cpp
         engine.cpp
-        pictures.cpp)
+        pictures.cpp
+        ggml_extra.c)
 
 target_include_directories(offlineai PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
@@ -71,7 +72,8 @@ target_include_directories(offlineai PRIVATE
         ${LLAMA_SRC}/src
         ${LLAMA_SRC}/tools/mtmd
         ${LLAMA_SRC}/vendor
-        ${SD_SRC}/include)
+        ${SD_SRC}/include
+        ${LLAMA_SRC}/ggml/src)
 
 target_link_libraries(offlineai
         llama
