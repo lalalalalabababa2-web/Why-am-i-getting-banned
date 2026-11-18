@@ -40,6 +40,11 @@ class PhonesActivity : AppCompatActivity(), Phones.Listener {
 
     private val tick = object : Runnable {
         override fun run() {
+            if (LendService.takeStopNote(this@PhonesActivity)) {
+                Toast.makeText(this@PhonesActivity, "Lending stopped: this phone's battery is low.", Toast.LENGTH_LONG).show()
+                mine = null
+                refresh(force = true)
+            }
             if (app.settings.lending) {
                 io.execute {
                     val port = LendService.localPort(this@PhonesActivity)

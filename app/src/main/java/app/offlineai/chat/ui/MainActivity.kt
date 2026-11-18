@@ -446,6 +446,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         app.loadLastModel()
         // lending was left on: it carries on (a foreground service can only start from a screen)
+        LendService.takeStopNote(this)
         if (app.settings.lending) {
             runCatching { LendService.start(this, app.settings.lendCode, app.settings.lendName) }
         }

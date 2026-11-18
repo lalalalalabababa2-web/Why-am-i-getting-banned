@@ -362,8 +362,10 @@ class LendService : Service() {
                 .setAutoCancel(true)
                 .build())
         }
-        // the setting goes off too, so the app does not start lending again by itself
-        Settings(this).lending = false
+        // The setting goes off too, so the app does not start lending again by itself. It belongs
+        // to the main process (two processes writing one settings file undo each other's changes),
+        // so this one leaves a note it picks up (see [takeStopNote]).
+        runCatching { File(filesDir, STOP_NOTE).writeText("low battery") }
     }
 
     override fun onDestroy() {
@@ -441,6 +443,21 @@ class LendService : Service() {
 
         fun stop(context: Context) {
             runCatching { context.startService(Intent(context, LendService::class.java).setAction(ACTION_STOP)) }
+        }
+
+        /** Left by the lending process when it stopped by itself (a low battery). */
+        private const val STOP_NOTE = "lend_stopped"
+
+        /**
+         * Main process: lending stopped by itself since last asked; turns the setting off. True
+         * when that happened.
+         */
+        fun takeStopNote(context: Context): Boolean {
+            val f = File(context.filesDir, STOP_NOTE)
+            if (!f.exists()) return false
+            f.delete()
+            Settings(context).lending = false
+            return true
         }
 
         /** The port this phone's own gate listens on while it lends, or 0. */
