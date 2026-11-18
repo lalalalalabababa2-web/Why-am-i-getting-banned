@@ -361,9 +361,12 @@ class Phones(private val app: App) {
             if (st.name.isNotBlank() && st.name != h.name) {
                 synchronized(this) { store(saved().map { if (it.id == h.id) it.copy(name = st.name) else it }) }
             }
-            // it no longer holds this phone's part (it was restarted, or let go after a long silence);
-            // twice in a row, since a connection being set up is briefly counted on one side only
-            val gone = inUse && inUse(h.id) > 0 && (!st.busy || (st.peerId.isNotEmpty() && st.peerId != app.settings.deviceId))
+            // It no longer holds this phone's part (it was restarted, or let go after a long silence).
+            // [inUse] means the loaded model has a part there, so there is no setting-up window
+            // (that happens while the model loads, when nothing counts as in use); twice in a row
+            // all the same. Whether a connection is still open here says nothing: when the other
+            // side goes, its end closes them.
+            val gone = inUse && (!st.busy || (st.peerId.isNotEmpty() && st.peerId != app.settings.deviceId))
             val n = if (gone) (strays[h.id] ?: 0) + 1 else 0
             strays[h.id] = n
             if (n >= 2) lost(h)
@@ -374,11 +377,19 @@ class Phones(private val app: App) {
         }
     }
 
+    /** When each phone was last reported lost, so a phone that stays gone is reported once while the model reloads. */
+    private val lostAt = ConcurrentHashMap<String, Long>()
+
     private fun lost(h: HelperPhone) {
-        val link = links[h.id] ?: return
-        if (link.active() == 0) return
-        link.cut()
+        // whatever is still open to it is cut, so a step waiting on it fails at once
+        links[h.id]?.cut()
         seenAt.remove(h.id)
+        misses[h.id] = 0
+        strays[h.id] = 0
+        val now = SystemClock.elapsedRealtime()
+        val last = lostAt[h.id] ?: 0L
+        if (last != 0L && now - last < 20_000) return
+        lostAt[h.id] = now
         main.post { onLost?.invoke(h.name) }
     }
 
