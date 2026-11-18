@@ -176,7 +176,7 @@ class Phones(private val app: App) {
     fun inUse(id: String): Int = links[id]?.active() ?: 0
 
     private inner class Link(val id: String) {
-        private val server = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
+        private val server = ServerSocket(0, 8, PoolWire.LOOPBACK)
         val port: Int = server.localPort
         private val pipes = mutableSetOf<Pipe>()
 

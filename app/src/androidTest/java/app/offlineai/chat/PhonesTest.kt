@@ -120,7 +120,11 @@ class PhonesTest {
 
             // the model is split with it
             s.poolMode = PoolMode.ALWAYS
-            assertNull("split load", load(installed("test-llama.gguf")))
+            val loadErr = load(installed("test-llama.gguf"))
+            if (loadErr != null) {
+                Log.i(TAG, "split load failed: $loadErr · gate: ${app.phones.lastError} · lending: ${PoolWire.status("127.0.0.1", port)}")
+            }
+            assertNull("split load", loadErr)
             val info = app.engine.loaded!!.info
             Log.i(TAG, "split: ${info.nRemoteLayers} of ${info.nLayer} layers on the other phone")
             assertTrue("part of the model is on the other phone", info.nRemoteLayers > 0)

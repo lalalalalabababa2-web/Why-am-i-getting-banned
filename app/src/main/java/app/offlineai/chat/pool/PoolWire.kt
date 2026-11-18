@@ -32,6 +32,12 @@ import javax.crypto.spec.SecretKeySpec
  */
 object PoolWire {
     const val SERVICE_TYPE = "_nyxpool._tcp."
+
+    /**
+     * 127.0.0.1, by name: llama.cpp's RPC client and server use IPv4, and Android's
+     * InetAddress.getLoopbackAddress() is the IPv6 one (::1), which they never reach.
+     */
+    val LOOPBACK: java.net.InetAddress = java.net.InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
     const val PORT = 50652
     const val VERSION = 1
     private val MAGIC = "NYXP1".toByteArray(Charsets.US_ASCII)

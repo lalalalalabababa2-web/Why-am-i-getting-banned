@@ -125,7 +125,7 @@ class LendService : Service() {
         for (m in modes) runCatching { wm.createWifiLock(m, "OfflineAI:lending-$m").apply { setReferenceCounted(false); acquire() } }.getOrNull()?.let { wifiLocks += it }
 
         // the RPC server, on the loopback only
-        rpcPort = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        rpcPort = ServerSocket(0, 1, PoolWire.LOOPBACK).use { it.localPort }
         if (serverError.isEmpty()) {
             val threads = Device.fastCores().coerceAtLeast(2)
             Thread({
@@ -227,7 +227,7 @@ class LendService : Service() {
         // through to the RPC server
         val rpc = Socket().apply {
             tcpNoDelay = true
-            connect(InetSocketAddress(InetAddress.getLoopbackAddress(), rpcPort), 5000)
+            connect(InetSocketAddress(PoolWire.LOOPBACK, rpcPort), 5000)
         }
         s.soTimeout = 0
         synchronized(this) {
