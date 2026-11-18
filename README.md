@@ -229,6 +229,22 @@ models and prints how fast they write split and whole, and how long loading take
 and with the helper's kept copy. On one desktop machine the split path itself cost about 0.1 ms a
 word with a tiny model; between phones each word also waits for a few Wi-Fi round trips.
 
+Measured in CI with half the layers on a helper over the loopback (both halves sharing one
+machine's 4 cores, so this is the split's cost on a busy CPU, not two phones, where each half has
+a phone to itself and the Wi-Fi adds a few milliseconds a round trip):
+
+| Model, runner | Layers on the helper | Writing, alone / split | Reading, alone / split | Loading split, first / with the helper's copy |
+|---|---|---|---|---|
+| Qwen3.5 4B Q4_K_M, x86 | 17 of 33 | 8.6 / 8.0 tok/s | 24.2 / 25.2 tok/s | 6.8 s / 4.9 s |
+| Qwen3.5 4B Q4_K_M, ARM | 17 of 33 | 8.9 / 5.8 tok/s | 38.3 / 16.8 tok/s | 5.5 s / 4.3 s |
+| Gemma 4 E2B Q4_K_M, ARM | 18 of 35 | 15.3 / 9.1 tok/s | 47.0 / 23.6 tok/s | 3.6 s / 2.8 s |
+
+Gemma wrote the same 48 words split as alone. Qwen3.5 parted ways after 26 (ARM) and 6 (x86): the
+helper computes its layers with ggml's plain CPU kernels and this side with its repacked ones, the
+same sums in another order, so a 4-bit model's numbers differ in the last bits and greedy writing
+can take the other side of a near tie. The check is on the numbers, with the tolerance the other
+real-model checks use.
+
 It also checks drafting: with n-gram drafts and with an MTP head (a random model with one added
 by the test), greedy replies must be the same tokens as without drafting. And exactly the same
 again when the reply is replayed on the same engine without the drafter: the engine records each

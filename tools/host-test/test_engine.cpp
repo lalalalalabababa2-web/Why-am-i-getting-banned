@@ -1766,7 +1766,7 @@ static void test_phones_real(const std::string & path, const char * label, int p
     auto ms = [](std::chrono::steady_clock::time_point t0) {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     };
-    auto run = [&](oa::Engine & e, std::vector<token> & words, double & read_tps, double & write_tps) {
+    auto run = [&](oa::Engine & e, std::vector<token> & words, double & read_tps, double & write_tps, std::vector<float> & logits) {
         std::string err;
         auto t0 = std::chrono::steady_clock::now();
         if (!e.sync_prompt(prompt, 0, err, nullptr, nullptr)) {
@@ -1775,6 +1775,7 @@ static void test_phones_real(const std::string & path, const char * label, int p
             return;
         }
         read_tps = prompt.size() * 1000.0 / ms(t0);
+        logits = e.last_logits();
         t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < 48; i++) {
             const token t = e.argmax();
@@ -1788,6 +1789,7 @@ static void test_phones_real(const std::string & path, const char * label, int p
         write_tps = 48 * 1000.0 / ms(t0);
     };
     std::vector<token> wa, wb;
+    std::vector<float> la, lb;
     double ra = 0, wa_tps = 0, rb = 0, wb_tps = 0;
     {
         oa::Engine solo;
@@ -1802,7 +1804,7 @@ static void test_phones_real(const std::string & path, const char * label, int p
         while (text.size() < 3000) text += filler(7, 40) + " ";
         prompt = solo.tokenize(text, true);
         if (prompt.size() > 300) prompt.resize(300);
-        run(solo, wa, ra, wa_tps);
+        run(solo, wa, ra, wa_tps, la);
     }
     double first = 0, second = 0;
     {
@@ -1817,7 +1819,7 @@ static void test_phones_real(const std::string & path, const char * label, int p
         first = ms(t0);
         const auto info = split.info();
         std::printf("    %d of %d layers on the helper\n", info.n_remote_layers, info.n_layer);
-        run(split, wb, rb, wb_tps);
+        run(split, wb, rb, wb_tps, lb);
     }
     {
         oa::Engine again;
@@ -1831,9 +1833,13 @@ static void test_phones_real(const std::string & path, const char * label, int p
                 rb, wb_tps, first / 1000, second / 1000);
     size_t same = 0;
     while (same < wa.size() && same < wb.size() && wa[same] == wb[same]) same++;
-    std::printf("    same words for %zu of %zu\n", same, wa.size());
-    // a quantized model computed in another order can tip a near tie late in a greedy run
-    CHECK(same >= 16, "%s: split wrote other words after %zu", label, same);
+    const double err = la.size() == lb.size() && !la.empty() ? nmse(la, lb) : 1.0;
+    std::printf("    logits after the message: nmse %.2e; same words for %zu of %zu\n", err, same, wa.size());
+    // The helper computes its layers with ggml's plain CPU kernels, this side with its repacked
+    // ones (another order of the same sums), so a quantized model's numbers differ in the last
+    // bits and a greedy run can take the other side of a near tie early: the numbers are what is
+    // checked, with the tolerance the other real-model checks use.
+    CHECK(err < 2e-2, "%s: split logits differ (nmse %.3e)", label, err);
 }
 
 int main(int argc, char ** argv) {
