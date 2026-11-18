@@ -593,8 +593,20 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         return true
     }
 
-    private fun download(m: CatalogModel) {
+    private fun download(m: CatalogModel, phonesChecked: Boolean = false) {
         if (offlineBlocked()) return
+        // a model for several phones, and no phone to share it with yet: say so before 8 GB come down
+        if (!phonesChecked && m.phones > 1 && app.phones.saved().none { it.enabled }) {
+            AlertDialog.Builder(this)
+                .setTitle("${m.name} needs ${m.phones} phones")
+                .setMessage("It is too big for one phone: it runs across ${m.phones} phones on the same Wi-Fi, each holding " +
+                    "part of it. Pair your other phone first (Phones together), then download it here.")
+                .setPositiveButton("Pair a phone") { _, _ -> startActivity(android.content.Intent(this, PhonesActivity::class.java)) }
+                .setNeutralButton("Download anyway") { _, _ -> download(m, phonesChecked = true) }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
         val free = app.models.freeBytes()
         if (free in 0 until m.sizeBytes + 200_000_000L) {
             AlertDialog.Builder(this)
