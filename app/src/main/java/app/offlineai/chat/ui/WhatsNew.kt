@@ -10,6 +10,8 @@ object WhatsNew {
     const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Continue" to "A reply cut off by its length limit, or stopped, has a Continue button: the model carries on " +
+            "writing it from where it stopped, in the same message.",
         "Memory" to "Nyx can remember things about you across every chat: long-press a message and pick Remember " +
             "this, or add notes in Settings, Memory. They stay on the phone.",
         "Phones together" to "Run models bigger than one phone's memory across two phones on the same Wi-Fi (or one on " +

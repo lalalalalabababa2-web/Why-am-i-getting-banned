@@ -296,6 +296,30 @@ static void test_template(const std::string & vocab_path, const std::string & tm
     if (thinking) CHECK(fin.reasoning_content.find("plan") != std::string::npos, "reasoning not separated");
     CHECK(fin.content.find("plan") == std::string::npos, "reasoning leaked into content");
     CHECK(fin.reasoning_content.find("think>") == std::string::npos, "thinking tags left in the reasoning");
+
+    // Continue: a reply cut short (its length limit) is rendered unfinished, the model writes on from
+    // there, and the result is the whole reply, the part it had and the new part (what the app shows)
+    {
+        std::vector<common_chat_msg> cont = turn1;
+        cont.push_back(msg("assistant", "Hello! How", thinking ? "I should plan a short greeting." : ""));
+        auto in = inputs_for(cont, false);
+        in.continue_final_message = COMMON_CHAT_CONTINUATION_AUTO;
+        common_chat_session sc(tmpls.get(), vocab, in);
+        const std::string pc = sc.prompt().str();
+        const std::string end = pc.substr(0, pc.find_last_not_of(" \n") + 1);
+        CHECK(end.size() >= 10 && end.compare(end.size() - 10, 10, "Hello! How") == 0,
+              "a continued reply should end the prompt unfinished: [...%s]", pc.substr(pc.size() > 60 ? pc.size() - 60 : 0).c_str());
+        common_params_sampling sp2;
+        sc.apply_sampling(sp2);
+        for (auto t : common_tokenize(vocab, " can I help?", false, true)) {
+            common_chat_input c;
+            c.append(common_token_to_piece(vocab, t, sp2.preserved_tokens.count(t) > 0), t);
+            sc.feed(c);
+        }
+        const auto & fc = sc.finish();
+        std::printf("  continued: [%s]\n", fc.content.c_str());
+        CHECK(fc.content == "Hello! How can I help?", "the continued reply should be whole: [%s]", fc.content.c_str());
+    }
     CHECK(fin.content.find("<") == std::string::npos, "markup left in the content: %s", fin.content.c_str());
 
     // The next turn must share the first turn's prompt up to where the reply began.
@@ -399,6 +423,18 @@ static void test_chat_smoke(const std::string & path) {
         req.messages.push_back({"user", "Tell me more about that, in a few more words than before please.", ""});
     }
     CHECK(updates > 0, "no streaming updates");
+
+    // carrying on the last reply: the result starts with what it had
+    {
+        oa::ChatRequest c = req;
+        c.messages.pop_back();  // the follow-up question added above
+        const std::string had = c.messages.back().content;
+        c.continue_last = true;
+        auto r = e.chat(c, cb);
+        std::printf("    continue ok=%d had=%zu now=%zu err=%s\n", r.ok, had.size(), r.content.size(), r.error.c_str());
+        CHECK(r.ok, "continue failed: %s", r.error.c_str());
+        CHECK(r.content.compare(0, had.size(), had) == 0 || had.empty(), "a continued reply should start with what it had");
+    }
 
     // stop while generating
     req.sampling.max_tokens = 400;

@@ -1605,6 +1605,8 @@ static common_chat_templates_inputs inputs_for(const std::vector<common_chat_msg
     if (first) in.messages.push_back(all[0]);
     for (size_t i = first + drop; i < all.size(); i++) in.messages.push_back(all[i]);
     in.add_generation_prompt = add_gen;
+    // carrying on a reply: the template renders it unfinished, and the model writes from there
+    if (req.continue_last) in.continue_final_message = COMMON_CHAT_CONTINUATION_AUTO;
     in.use_jinja = true;
     in.enable_thinking = req.enable_thinking;
     in.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -1662,7 +1664,12 @@ bool Engine::collect(const ChatRequest & req, Rendered & r, std::string & err) c
         r.all.push_back(std::move(cm));
         r.all_media.push_back(std::move(kept));
     }
-    if (r.all.empty() || r.all.back().role != "user") {
+    if (req.continue_last) {
+        if (r.all.empty() || r.all.back().role != "assistant") {
+            err = "There is no reply to continue.";
+            return false;
+        }
+    } else if (r.all.empty() || r.all.back().role != "user") {
         err = "The last message has to be yours.";
         return false;
     }
@@ -1893,7 +1900,7 @@ static constexpr size_t kMaxDraftChars = 6000;  // about 1500 tokens each, so th
 ChatResult Engine::chat(const ChatRequest & req, const ChatCallbacks & cb, Engine * partner) {
     stop_.store(false);
     if (partner) partner->stop_.store(false);
-    if (req.team >= 2 && !req.messages.empty() && req.messages.back().role == "user") {
+    if (req.team >= 2 && !req.continue_last && !req.messages.empty() && req.messages.back().role == "user") {
         return chat_team(req, cb, partner && partner != this && partner->loaded() ? partner : nullptr);
     }
     return chat_one(req, cb);

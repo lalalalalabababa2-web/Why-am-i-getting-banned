@@ -229,6 +229,11 @@ class MessageAdapter(
         private val note = ctx.text("", 12f, Palette.caution)
         private val copy = ctx.iconButton(R.drawable.ic_copy, "Copy reply", Palette.text3) {}
         private val again = ctx.iconButton(R.drawable.ic_refresh, "Write again", Palette.text3) {}
+        /** A reply cut off by its length limit (or stopped): carry on from where it stopped. */
+        private val cont = ctx.pill("Continue") { app.chat.continueLast() }.apply {
+            minHeight = ctx.dp(32)
+            setPadding(ctx.dp(14), ctx.dp(4), ctx.dp(14), ctx.dp(4))
+        }
         private val more = ctx.iconButton(R.drawable.ic_more, "More", Palette.text3) {}
         private val footer = LinearLayout(ctx)
         private var message: ChatMessage? = null
@@ -267,6 +272,7 @@ class MessageAdapter(
             footer.addView(more, lp(ctx.dp(36), ctx.dp(36)))
             col.addView(footer, lp(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
             col.addView(note, lp(MATCH, WRAP).apply { topMargin = ctx.dp(2) })
+            col.addView(cont, lp(WRAP, WRAP).apply { topMargin = ctx.dp(6) })
 
             content.setOnLongClickListener { showMenu(it); true }
         }
@@ -389,6 +395,7 @@ class MessageAdapter(
 
             if (streaming) {
                 footer.visibility = View.GONE
+                cont.visibility = View.GONE
                 note.visibility = View.GONE
             } else {
                 footer.visibility = View.VISIBLE
@@ -404,6 +411,7 @@ class MessageAdapter(
                 copy.setOnClickListener { ctx.copyText("reply", m.content) }
                 again.visibility = if (isLast && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
                 again.setOnClickListener { app.chat.regenerate() }
+                cont.visibility = if (isLast && app.chat.canContinue(m)) View.VISIBLE else View.GONE
                 more.setOnClickListener { showMenu(it) }
             }
         }

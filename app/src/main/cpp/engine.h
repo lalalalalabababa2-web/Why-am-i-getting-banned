@@ -120,6 +120,10 @@ struct ChatRequest {
     // second answer is the partner's; partner_name labels its answers.
     int                  team            = 0;
     std::string          partner_name;
+    // The last message is a reply of the model's that stopped short (its length limit): carry on
+    // writing it, from where it stopped, instead of answering anew. The result holds the whole
+    // reply, the part it had and the part written now.
+    bool                 continue_last   = false;
 };
 
 struct ChatStats {

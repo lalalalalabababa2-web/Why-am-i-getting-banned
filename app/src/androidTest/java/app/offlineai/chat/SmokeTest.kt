@@ -436,6 +436,39 @@ class SmokeTest {
         }
     }
 
+    /** A reply cut off by its length limit is carried on, into the same message, starting with what it had. */
+    @Test
+    fun aCutOffReplyContinues() {
+        app.settings.contextSize = 2048
+        app.settings.maxTokens = 6
+        try {
+            load(installed("test-llama.gguf"))
+            onMain { app.chat.newChat() }
+            turn("Tell me a long story")
+            var before = ""
+            var can = false
+            onMain {
+                val m = app.chat.conversation.messages.last()
+                before = m.content
+                can = app.chat.canContinue(m)
+                Log.i(TAG, "cut off: stats=${m.stats} can=$can")
+            }
+            if (!can) return  // the tiny model ended on its own within 6 tokens: nothing to carry on
+            val count = app.chat.conversation.messages.size
+            onMain { app.chat.continueLast() }
+            waitFor("the continued reply", 120_000) { !app.chat.generating }
+            onMain {
+                val m = app.chat.conversation.messages.last()
+                Log.i(TAG, "continued: ${before.length} -> ${m.content.length} chars, stats=${m.stats}")
+                assertEquals("carried on in the same message", count, app.chat.conversation.messages.size)
+                assertTrue("starts with what it had", m.content.startsWith(before.trim()))
+                assertTrue("says it was continued: ${m.stats}", m.stats.contains("continued"))
+            }
+        } finally {
+            app.settings.maxTokens = 4096
+        }
+    }
+
     /** Memory: notes kept once (ignoring case), in the system prompt only while on, and a chat runs with them. */
     @Test
     fun memoryGoesIntoEveryChat() {

@@ -61,6 +61,9 @@ browser when Android asks. New builds install over old ones and keep models and 
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
   file from the phone's storage or a pasted link.
+- **Continue**: a reply cut off by its length limit (or stopped) has a *Continue* button: the
+  model carries on writing the same message from where it stopped (llama.cpp renders the reply
+  unfinished and the model writes on; checked with the real Qwen3.5 and Gemma 4 templates).
 - **Memory**: notes Nyx keeps in mind in every chat, with any model (long-press a message, *Remember
   this*, shortened to what matters; or Settings, Memory, where each can be forgotten). They go into
   the system prompt, so they stay on the phone like everything else; at most 40, since every note

@@ -262,15 +262,47 @@ class ChatController(private val app: App) {
         app.engine.readAhead(buildRequest(model, NEXT_MESSAGE).put("probe", NEXT_MESSAGE))
     }
 
-    private fun startReply(model: LoadedModel) {
-        val team = teamSize()
+    /**
+     * Whether [m] can be carried on: the last reply, cut off by its length limit or stopped, with
+     * words in it (a team reply is settled by its review; it is written again instead).
+     */
+    fun canContinue(m: ChatMessage): Boolean =
+        !generating && app.engine.loaded != null && m.role == "assistant" && !m.error && m.team == 0 && m.content.isNotBlank() &&
+            conversation.messages.lastOrNull() === m && (m.stats.contains("length limit") || m.stats.contains("stopped"))
+
+    /** Carries on the last reply from where it stopped, into the same message. */
+    fun continueLast() {
+        val model = app.engine.loaded ?: return
+        val m = conversation.messages.lastOrNull() ?: return
+        if (!canContinue(m)) return
+        startReply(model, continuing = m)
+    }
+
+    /** What the reply being carried on had before (content, thinking); null for a new reply. */
+    private var continuedFrom: Pair<String, String>? = null
+
+    /** The engine returns the whole reply when carrying one on; this keeps it whole either way. */
+    private fun whole(content: String): String {
+        val before = continuedFrom?.first ?: return content
+        return if (content.startsWith(before)) content else before + content
+    }
+
+    private fun startReply(model: LoadedModel, continuing: ChatMessage? = null) {
+        val team = if (continuing != null) 0 else teamSize()
         val partner = app.engine.partner?.takeIf { team > 0 && it.key == app.settings.teamPartner && it.key != model.key }
-        val reply = ChatMessage(
+        val reply = continuing?.apply { partial = true } ?: ChatMessage(
             role = "assistant", content = "", partial = true, team = team,
             model = if (partner != null) "${model.displayName} + ${partner.displayName}" else model.displayName,
         )
+        continuedFrom = continuing?.let { it.content to it.reasoning }
         val request = buildRequest(model)
-        conversation.messages.add(reply)
+        if (continuing != null) {
+            request.put("continue", true)
+            request.remove("team")
+            request.remove("partner")
+        } else {
+            conversation.messages.add(reply)
+        }
         streaming = reply
         replyConversation = conversation
         lastPartialSave = SystemClock.uptimeMillis()
@@ -304,8 +336,8 @@ class ChatController(private val app: App) {
             override fun onUpdate(reasoning: String, content: String, generated: Int) {
                 if (genStartedAt == 0L) genStartedAt = SystemClock.uptimeMillis()
                 this@ChatController.generated = generated
-                reply.reasoning = reasoning
-                reply.content = content
+                reply.reasoning = reasoning.ifBlank { continuedFrom?.second ?: "" }
+                reply.content = whole(content)
                 replyUpdated()
                 // kept every few seconds, so a reply cut off by Android is not lost
                 val now = SystemClock.uptimeMillis()
@@ -334,20 +366,28 @@ class ChatController(private val app: App) {
         replyConversation = null
         reply.partial = false
         GenerationService.stop(app)
-        if (!o.ok) {
+        if (!o.ok && continuedFrom != null) {
+            // carrying it on failed: the reply keeps what it had, and says why it did not go on
+            val (content, reasoning) = continuedFrom!!
+            reply.content = content
+            reply.reasoning = reasoning
+            reply.stats = "could not continue: ${o.error.ifBlank { "something went wrong" }}"
+        } else if (!o.ok) {
             reply.error = true
             reply.reasoning = ""
             reply.content = o.error.ifBlank { "Something went wrong." }
         } else {
-            reply.content = o.content.trim()
-            reply.reasoning = o.reasoning.trim()
+            val carried = continuedFrom
+            reply.content = whole(o.content).trim()
+            reply.reasoning = o.reasoning.trim().ifBlank { carried?.second?.trim() ?: "" }
             if (reply.content.isEmpty() && reply.reasoning.isEmpty() && o.stopReason == "stopped") {
                 convo?.messages?.remove(reply)
             } else {
-                reply.stats = describe(o)
+                reply.stats = describe(o) + (if (carried != null) " · continued" else "")
                 if (o.team > 0) reply.team = o.team
             }
         }
+        continuedFrom = null
         // into the chat it was written for, which may not be the one open now
         convo?.let { app.chats.saveAsync(it) }
         changed()

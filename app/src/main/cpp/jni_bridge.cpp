@@ -74,6 +74,7 @@ void parse_request(const json & j, oa::ChatRequest & req) {
     req.enable_thinking = j.value("thinking", true);
     req.spec_n_max = j.value("spec_n_max", -1);
     req.team = j.value("team", 0);
+    req.continue_last = j.value("continue", false);
     req.partner_name = j.value("partner_name", std::string());
     req.now_ms = j.value("now_ms", (int64_t) 0);
     if (j.contains("sampling")) {
