@@ -1,7 +1,10 @@
-#!/usr/bin/env bash
-# Free Fire graphics performance mod (over ADB, no root, no APK changes)
+#!/usr/bin/env sh
+# Free Fire graphics performance mod (no root, no APK changes)
 # Target: com.dts.freefireth 1.132.x (Unity 2018.4 IL2CPP, isGame=true, no game_mode_config)
-# Host:   macOS (bash 3.2) or Linux, with Android platform-tools installed.
+# Runs on the phone itself:
+#   - Termux + android-tools, adb connected to the phone's own wireless debugging
+#   - or directly in a shell-level session (Shizuku "rish", LADB, root)
+# Also works from a computer with adb. POSIX sh, so Android's /system/bin/sh can run it.
 #
 # Works through Android's Game Mode interventions: the OS renders the game at a
 # lower resolution and caps its frame rate, then upscales the result to the screen.
@@ -36,7 +39,7 @@ options:
   --anim       also turn off system animations (snappier menus)
   --trim       kill cached background apps before launching
   --no-launch  don't start the game afterwards
-  -s SERIAL    pick a device when more than one is connected
+  -s SERIAL    adb device to use when more than one is connected
 EOF
 }
 
@@ -72,14 +75,34 @@ case "$CMD" in
   *) usage; exit 1 ;;
 esac
 
-command -v adb >/dev/null 2>&1 || die "adb not found (macOS: brew install android-platform-tools)"
-
-ADB=(adb)
-[ -n "$SERIAL" ] && ADB=(adb -s "$SERIAL")
-sh_() { "${ADB[@]}" shell "$@" | tr -d '\r'; }
-
-STATE=$("${ADB[@]}" get-state 2>/dev/null || true)
-[ "$STATE" = "device" ] || die "no authorized device. Turn on USB debugging (or wireless debugging + adb pair) and accept the prompt."
+# Direct mode: already running as shell (2000) or root (0) on the phone, e.g. Shizuku rish.
+# Otherwise go through adb (Termux talking to the phone's own wireless debugging, or a computer).
+UID_NOW=$(id -u 2>/dev/null || echo 99999)
+if command -v getprop >/dev/null 2>&1 && { [ "$UID_NOW" = 2000 ] || [ "$UID_NOW" = 0 ]; }; then
+  MODE=direct
+  sh_() { "$@" 2>&1 | tr -d '\r'; }
+else
+  MODE=adb
+  if ! command -v adb >/dev/null 2>&1; then
+    if command -v getprop >/dev/null 2>&1; then
+      die "adb not found. In Termux run: pkg install android-tools   (then pair, see README)"
+    fi
+    die "adb not found (macOS: brew install android-platform-tools)"
+  fi
+  if [ -n "$SERIAL" ]; then
+    adb_() { adb -s "$SERIAL" "$@"; }
+  else
+    adb_() { adb "$@"; }
+  fi
+  sh_() { adb_ shell "$@" | tr -d '\r'; }
+  STATE=$(adb_ get-state 2>/dev/null || true)
+  if [ "$STATE" != "device" ]; then
+    if command -v getprop >/dev/null 2>&1; then
+      die "adb isn't connected. Settings > Developer options > Wireless debugging, then: adb connect localhost:<port>   (first time: adb pair localhost:<pair-port>)"
+    fi
+    die "no authorized device. Turn on USB debugging (or wireless debugging + adb pair) and accept the prompt."
+  fi
+fi
 
 SDK=$(sh_ getprop ro.build.version.sdk)
 REL=$(sh_ getprop ro.build.version.release)
@@ -90,18 +113,19 @@ if [ -n "$SCALE" ]; then
 fi
 case "$FPS" in ""|30|45|60|90|120|disable) ;; *) die "--fps must be 30|45|60|90|120|disable" ;; esac
 
-echo "device: Android $REL (SDK $SDK)   game: $PKG"
+echo "device: Android $REL (SDK $SDK)   game: $PKG   via: $MODE"
+
+ANIM_KEYS="window_animation_scale transition_animation_scale animator_duration_scale"
 
 # Shrinks the whole display (pre-Android 12 fallback). Density is scaled by the
 # same factor so other apps keep their layout, just rendered with fewer pixels.
 global_res() {
-  local phys dens w h nw nh nd
   phys=$(sh_ wm size | sed -n 's/^Physical size: //p')
   dens=$(sh_ wm density | sed -n 's/^Physical density: //p')
   [ -n "$phys" ] && [ -n "$dens" ] || die "couldn't read display size/density"
   w=${phys%x*}; h=${phys#*x}
-  nw=$(awk -v v="$w" -v s="$SCALE" 'BEGIN{printf "%d", (v*s)/2*2}')
-  nh=$(awk -v v="$h" -v s="$SCALE" 'BEGIN{printf "%d", (v*s)/2*2}')
+  nw=$(awk -v v="$w" -v s="$SCALE" 'BEGIN{printf "%d", int(v*s/2)*2}')
+  nh=$(awk -v v="$h" -v s="$SCALE" 'BEGIN{printf "%d", int(v*s/2)*2}')
   nd=$(awk -v v="$dens" -v s="$SCALE" 'BEGIN{printf "%d", v*s}')
   sh_ wm size "${nw}x${nh}" >/dev/null
   sh_ wm density "$nd" >/dev/null
@@ -126,9 +150,7 @@ apply() {
   fi
 
   if [ "$ANIM" -eq 1 ]; then
-    for k in window_animation_scale transition_animation_scale animator_duration_scale; do
-      sh_ settings put global "$k" 0
-    done
+    for k in $ANIM_KEYS; do sh_ settings put global "$k" 0; done
     echo "system animations: off"
   fi
 
@@ -157,8 +179,8 @@ reset_all() {
     sh_ wm size reset; sh_ wm density reset
   fi
   # Only put animations back if they're still at the 0 this script sets.
-  for k in window_animation_scale transition_animation_scale animator_duration_scale; do
-    [ "$(sh_ settings get global "$k")" = "0" ] && sh_ settings put global "$k" 1
+  for k in $ANIM_KEYS; do
+    if [ "$(sh_ settings get global "$k")" = "0" ]; then sh_ settings put global "$k" 1; fi
   done
   sh_ am force-stop "$PKG"
   echo "reset done"
@@ -169,9 +191,7 @@ status() {
     sh_ dumpsys game | grep -A12 "$PKG" || echo "no game-mode config for $PKG"
   fi
   sh_ wm size; sh_ wm density
-  for k in window_animation_scale transition_animation_scale animator_duration_scale; do
-    echo "$k=$(sh_ settings get global $k)"
-  done
+  for k in $ANIM_KEYS; do echo "$k=$(sh_ settings get global "$k")"; done
 }
 
 case "$CMD" in
