@@ -10,6 +10,8 @@ object WhatsNew {
     const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Memory" to "Nyx can remember things about you across every chat: long-press a message and pick Remember " +
+            "this, or add notes in Settings, Memory. They stay on the phone.",
         "Phones together" to "Run models bigger than one phone's memory across two phones on the same Wi-Fi (or one on " +
             "the other's hotspot). On the second phone: Settings, Phones together, Let another phone use this one. On " +
             "this one, pair it with the code it shows. A model that does not fit here then shares its memory. If the " +

@@ -61,6 +61,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
   file from the phone's storage or a pasted link.
+- **Memory**: notes Nyx keeps in mind in every chat, with any model (long-press a message, *Remember
+  this*, shortened to what matters; or Settings, Memory, where each can be forgotten). They go into
+  the system prompt, so they stay on the phone like everything else; at most 40, since every note
+  is read with every message.
 - **Chat**: replies stream in as they are written; models that think show their thinking in a
   fold above the answer; code blocks have a copy button; tables line up. Stop, write again, edit
   and resend the last message. Maths that models write as LaTeX ($\frac{3}{4}$, x^2, \boxed{51})

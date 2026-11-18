@@ -258,7 +258,7 @@ class ChatController(private val app: App) {
         if (!app.settings.readAhead || generating) return
         val model = app.engine.loaded ?: return
         // an empty chat without a system prompt has nothing to get ready
-        if (conversation.messages.none { !it.error } && app.settings.systemPrompt.isBlank()) return
+        if (conversation.messages.none { !it.error } && systemPrompt().isEmpty()) return
         app.engine.readAhead(buildRequest(model, NEXT_MESSAGE).put("probe", NEXT_MESSAGE))
     }
 
@@ -411,7 +411,7 @@ class ChatController(private val app: App) {
     private fun buildRequest(model: LoadedModel, nextMessage: String? = null): JSONObject {
         val s = app.settings
         val messages = JSONArray()
-        val system = s.systemPrompt.trim()
+        val system = systemPrompt()
         if (system.isNotEmpty()) messages.put(JSONObject().put("role", "system").put("content", system))
 
         // Templates expect turns to alternate; a failed reply leaves two of yours in a row, so
@@ -466,6 +466,10 @@ class ChatController(private val app: App) {
         }
         return request
     }
+
+    /** The system prompt: the one set in Settings, and what Nyx remembers about you (Memory). */
+    private fun systemPrompt(): String =
+        listOf(app.settings.systemPrompt.trim(), app.memory.prompt()).filter { it.isNotEmpty() }.joinToString("\n\n")
 
     /** Answers a team reply is written from (0: answered once). */
     fun teamSize(): Int = app.settings.teamSize.let { if (it >= 2) it.coerceAtMost(3) else 0 }

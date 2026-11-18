@@ -434,6 +434,29 @@ class SmokeTest {
         }
     }
 
+    /** Memory: notes kept once (ignoring case), in the system prompt only while on, and a chat runs with them. */
+    @Test
+    fun memoryGoesIntoEveryChat() {
+        val mem = app.memory
+        mem.clear()
+        try {
+            assertTrue(mem.add("I am allergic to peanuts"))
+            assertFalse("the same note twice", mem.add("i am  allergic to peanuts"))
+            assertTrue(mem.prompt().contains("allergic to peanuts"))
+            mem.enabled = false
+            assertEquals("", mem.prompt())
+            mem.enabled = true
+            app.settings.contextSize = 2048
+            app.settings.maxTokens = 24
+            load(installed("test-llama.gguf"))
+            onMain { app.chat.newChat() }
+            turn("Hello, do you remember me?")
+        } finally {
+            mem.clear()
+            mem.enabled = true
+        }
+    }
+
     /** Turning 8-bit conversation memory off again reloads the model (in Automatic memory mode it never did). */
     @Test
     fun eightBitMemoryTurnsOffAgain() {

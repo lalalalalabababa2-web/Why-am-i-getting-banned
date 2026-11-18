@@ -39,6 +39,8 @@ class App : Application() {
         private set
     lateinit var chat: ChatController
         private set
+    /** What Nyx remembers about you across chats. */
+    val memory by lazy { app.offlineai.chat.data.MemoryStore(this) }
 
     /** The pictures made on this phone. */
     val pictures by lazy { PictureStore(this) }

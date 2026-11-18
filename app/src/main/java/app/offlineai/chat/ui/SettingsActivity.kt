@@ -15,6 +15,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import app.offlineai.chat.App
+import app.offlineai.chat.R
 import app.offlineai.chat.BuildConfig
 import app.offlineai.chat.data.Accent
 import app.offlineai.chat.data.BackgroundSpeed
@@ -251,6 +252,12 @@ class SettingsActivity : AppCompatActivity() {
             if (style >= 0) style else Settings.PROMPT_STYLES.size) {
             if (it < Settings.PROMPT_STYLES.size) s.systemPrompt = Settings.PROMPT_STYLES[it].second
         }
+        val notes = app.memory.list()
+        row("Memory", when {
+            notes.isEmpty() -> "Nothing yet. Long-press a message and pick Remember this, or add something here."
+            !app.memory.enabled -> "Off · ${notes.size} kept"
+            else -> "${notes.size} thing${if (notes.size > 1) "s" else ""} Nyx keeps in mind in every chat"
+        }) { memorySheet() }
         row("System prompt", s.systemPrompt.ifBlank { "None" }) {
             editText("System prompt", s.systemPrompt, multiLine = true) { s.systemPrompt = it.trim(); rebuild() }
         }
@@ -543,6 +550,41 @@ class SettingsActivity : AppCompatActivity() {
             clipToOutline = true
         }
         content.addView(group)
+    }
+
+    /** What Nyx remembers about you: on or off, each note (tap to forget it), add one, forget all. */
+    private fun memorySheet() {
+        val mem = app.memory
+        val notes = mem.list()
+        val sheet = Sheet(this, "Memory", "What Nyx keeps in mind in every chat, with any model. It stays on this phone.")
+        sheet.item(if (mem.enabled) "On: every chat knows these" else "Off: chats do not see these", checked = mem.enabled) {
+            mem.enabled = !mem.enabled
+            rebuild()
+        }
+        sheet.item("Add something to remember", R.drawable.ic_add) {
+            editText("Remember", "", multiLine = true) {
+                if (!mem.add(it)) Toast.makeText(this, "Already remembered, or empty.", Toast.LENGTH_SHORT).show()
+                rebuild()
+            }
+        }
+        if (notes.isNotEmpty()) sheet.divider()
+        notes.forEachIndexed { i, n ->
+            sheet.item(n, detail = "Tap to forget") {
+                mem.remove(i)
+                rebuild()
+            }
+        }
+        if (notes.isNotEmpty()) {
+            sheet.divider().item("Forget everything", R.drawable.ic_close, danger = true) {
+                AlertDialog.Builder(this)
+                    .setTitle("Forget everything?")
+                    .setMessage("Nyx forgets all ${notes.size} notes.")
+                    .setPositiveButton("Forget") { _, _ -> mem.clear(); rebuild() }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+        sheet.show()
     }
 
     private fun note(s: String): TextView = text(s, 13f, Palette.text2).apply { setPadding(dp(20), dp(4), dp(20), dp(8)) }

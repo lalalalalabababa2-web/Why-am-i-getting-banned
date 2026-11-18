@@ -1,5 +1,6 @@
 package app.offlineai.chat.ui
 
+import app.offlineai.chat.data.MemoryStore
 import android.content.Context
 import android.view.Gravity
 import android.view.View
@@ -23,6 +24,32 @@ class MessageAdapter(
     private val app: App,
     private val actions: Actions,
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+    /** Keeps [text] in Memory, after a chance to shorten it to what matters. */
+    private fun remember(context: android.content.Context, text: String) {
+        val field = android.widget.EditText(context).apply {
+            setText(text.trim().replace(Regex("\\s+"), " ").take(MemoryStore.MAX_CHARS))
+            setTextColor(Palette.text)
+            textSize = 15f * Palette.fontScale
+            background = rounded(Palette.surface2, context.dp(14).toFloat(), context.dp(1), Palette.border)
+            setPadding(context.dp(14), context.dp(12), context.dp(14), context.dp(12))
+            maxLines = 6
+        }
+        val box = android.widget.LinearLayout(context).apply {
+            setPadding(context.dp(20), context.dp(8), context.dp(20), 0)
+            addView(field, lp(MATCH, WRAP))
+        }
+        androidx.appcompat.app.AlertDialog.Builder(context)
+            .setTitle("Remember this")
+            .setMessage("Shorten it to what matters. Nyx keeps it in mind in every chat; Settings, Memory lists it.")
+            .setView(box)
+            .setPositiveButton("Remember") { _, _ ->
+                val ok = app.memory.add(field.text.toString())
+                android.widget.Toast.makeText(context, if (ok) "Remembered." else "Already remembered, or empty.", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     interface Actions {
         fun editLast(text: String)
@@ -163,6 +190,11 @@ class MessageAdapter(
                 val sheet = Sheet(act)
                     .item("Copy", R.drawable.ic_copy) { v.context.copyText("message", m.content) }
                     .item("Select text") { actions.selectText(m.content) }
+                if (m.content.isNotBlank()) {
+                    sheet.item("Remember this", R.drawable.ic_spark, "Nyx keeps it in mind in every chat (Settings, Memory)") {
+                        remember(v.context, m.content)
+                    }
+                }
                 if (isLastUser && !app.chat.generating) {
                     sheet.item("Edit and send again", R.drawable.ic_refresh) { app.chat.takeBackLast()?.let(actions::editLast) }
                 }
@@ -261,6 +293,9 @@ class MessageAdapter(
                 .item("Select text") { actions.selectText(m.content) }
             val readable = !m.error && m.content.isNotBlank() && app.chat.streaming !== m
             if (readable) {
+                sheet.item("Remember this", R.drawable.ic_spark, "Nyx keeps it in mind in every chat (Settings, Memory)") {
+                    remember(v.context, m.content)
+                }
                 sheet.item(if (ReadAloud.isReading(m.id)) "Stop reading" else "Read aloud", R.drawable.ic_audio) {
                     if (ReadAloud.isReading(m.id)) ReadAloud.stop() else ReadAloud.read(v.context, m.id, m.content)
                 }
