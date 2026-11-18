@@ -39,6 +39,7 @@ import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Settings
 import app.offlineai.chat.data.SoundRecorder
 import app.offlineai.chat.engine.EngineController
+import app.offlineai.chat.pool.LendService
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -444,6 +445,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             WhatsNew.maybeShow(this, app.settings.whatsNewSeen) { app.settings.whatsNewSeen = it }
         }
         app.loadLastModel()
+        // lending was left on: it carries on (a foreground service can only start from a screen)
+        if (app.settings.lending) {
+            runCatching { LendService.start(this, app.settings.lendCode, app.settings.lendName) }
+        }
         refreshDraft()
         refreshAll()
         if (savedInstanceState == null) handleShortcut(intent)
@@ -1057,6 +1062,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 TeamDialog.show(this, app) { refreshAll() }
             }
             .item("All models", detail = "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
+            .item("Phones together", detail = "Bigger models across your phones on the same Wi-Fi") {
+                startActivity(Intent(this, PhonesActivity::class.java))
+            }
             .item("Pictures", R.drawable.ic_image, "Make pictures from words") { openPictures() }
             .show()
     }
@@ -1071,7 +1079,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                     }
                     val need = app.estimatedRam(m)
                     val free = app.availableRam()
-                    if (need > free && !app.lowMemoryFor(m)) {
+                    // other phones taking part of it make room the free memory here does not show
+                    if (need > free && !app.lowMemoryFor(m) && app.configFor(m).rpc.isEmpty()) {
                         // the same warning as the Models screen gives
                         AlertDialog.Builder(this)
                             .setTitle("This may not fit right now")
@@ -1137,6 +1146,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             }
             loaded == null -> "No model loaded · tap to choose"
             else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
+                (if (loaded.info.nRemoteLayers > 0) " · shared with ${loaded.config.rpc.size} phone${if (loaded.config.rpc.size > 1) "s" else ""}" else "") +
                 (if (loaded.info.vision) " · sees pictures" else "") + " · tap to change"
         }
         val showProgress = e.isLoading || (c.generating && c.promptTotal > 0 && c.promptDone < c.promptTotal)

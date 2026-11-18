@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Only for downloading the models you pick. Chatting never goes online. -->
+    <!-- Only for downloading the models you pick, and (Phones working together, only if you turn
+         it on) for your own phones on the same Wi-Fi to share a model. Chatting never goes online. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Phones working together: this phone's addresses on the Wi-Fi, finding the others there,
+         and keeping the Wi-Fi awake (power saving adds a delay to every word) while sharing -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!-- While a reply is being written, and only then: a foreground service with a notification
          and a partial wake lock, so the reply can finish with the app in the background or the
@@ -118,6 +124,12 @@
         </provider>
 
         <activity
+            android:name=".ui.PhonesActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+
+        <activity
             android:name=".ui.SelectTextActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
             android:exported="false" />
@@ -129,6 +141,17 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs a picture model on the phone to finish pictures the user asked for, while the app is in the background." />
+        </service>
+        <!-- Lending this phone to another one: in a process of its own, so ending it gives back
+             everything the other phone kept here -->
+        <service
+            android:name=".pool.LendService"
+            android:exported="false"
+            android:process=":lend"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Lets the user's other phone on the same Wi-Fi run part of an AI model on this phone, while the user has turned lending on." />
         </service>
         <service
             android:name=".GenerationService"

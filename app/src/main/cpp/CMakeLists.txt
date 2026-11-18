@@ -21,6 +21,9 @@ set(GGML_CPU_ALL_VARIANTS ON)
 set(GGML_OPENMP OFF)        # ggml's own thread pool; nothing extra to package
 set(GGML_CPU_KLEIDIAI OFF)  # helps Q4_0 models only, and would download at configure time
 set(GGML_LLAMAFILE OFF)
+# Phones working together: the RPC backend, as one more loadable module (libggml-rpc.so), used to
+# put part of a model on another phone and to lend this one (see engine.cpp, pool/)
+set(GGML_RPC ON)
 set(LLAMA_BUILD_COMMON ON)
 set(LLAMA_BUILD_TESTS OFF)
 set(LLAMA_BUILD_EXAMPLES OFF)

@@ -10,11 +10,11 @@ OUT="${HOST_TEST_OUT:-$ROOT/build/host-test}"
 mkdir -p "$OUT/models"
 
 sh "$ROOT/third_party/patches/apply.sh"
-if [ ! -f "$OUT/llama/bin/libmtmd.so" ]; then
+if [ ! -f "$OUT/llama/bin/libmtmd.so" ] || [ ! -f "$OUT/llama/bin/libggml-rpc.so" ]; then
   cmake -S "$SRC" -B "$OUT/llama" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF \
     -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_OPENSSL=OFF -DBUILD_SHARED_LIBS=ON \
-    -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF
+    -DLLAMA_BUILD_MTMD=ON -DMTMD_VIDEO=OFF -DGGML_RPC=ON
   cmake --build "$OUT/llama" --target llama llama-common mtmd test-llama-archs
 fi
 

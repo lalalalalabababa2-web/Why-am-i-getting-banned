@@ -352,10 +352,13 @@ class ChatController(private val app: App) {
         convo?.let { app.chats.saveAsync(it) }
         changed()
         status()
-        // a setting changed while it wrote (context size, memory mode, picture support) could not
-        // reload the model then; it does now, instead of waiting for the next visit to Settings
-        // (in the background it waits for the chat to come back: a big load there can get the app closed)
-        if (app.inFront && app.needsReload()) {
+        if (o.lostPhone) {
+            // a phone holding part of the model went away: it loads again with the phones still there
+            app.reloadFresh()
+        } else if (app.inFront && app.needsReload()) {
+            // a setting changed while it wrote (context size, memory mode, picture support) could not
+            // reload the model then; it does now, instead of waiting for the next visit to Settings
+            // (in the background it waits for the chat to come back: a big load there can get the app closed)
             app.reloadIfNeeded()
         } else if (!reply.error && app.inFront && convo === conversation) {
             // while you read the reply, the model gets ready for your next message

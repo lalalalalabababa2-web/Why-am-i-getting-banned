@@ -55,9 +55,17 @@ class App : Application() {
     private val activityFile by lazy { File(filesDir, "engine_activity") }
     private val crashFile by lazy { File(filesDir, "crash.txt") }
 
+    /** Lends this phone's memory to the others, or borrows theirs (Phones working together). */
+    lateinit var phones: app.offlineai.chat.pool.Phones
+        private set
+
     override fun onCreate() {
         super.onCreate()
         settings = Settings(this)
+        // The lending process (LendService) needs only the settings and the engine's library: none
+        // of the chat's state, which belongs to the app's main process alone (two processes saving
+        // the same chats would undo each other).
+        if (android.os.Build.VERSION.SDK_INT >= 28 && Application.getProcessName().endsWith(":lend")) return
         installCrashHandler()
         // the theme before any screen exists, so none has to be rebuilt for it
         app.offlineai.chat.ui.Palette.apply(this, settings)
@@ -78,6 +86,30 @@ class App : Application() {
         chat.restore()
         watchHeat()
         watchFront()
+        phones = app.offlineai.chat.pool.Phones(this)
+        phones.partsInUse = { engine.loaded?.config?.rpc ?: emptyList() }
+        phones.onLost = { name -> phoneLost(name) }
+        phones.startPolling()
+    }
+
+    /**
+     * A phone holding part of the loaded model went away. A reply being written fails at its next
+     * step and reloads from there (ChatController); with nothing being written, the model loads
+     * again now, with the phones that are still there.
+     */
+    private fun phoneLost(name: String) {
+        lostPhoneName = name
+        if (!chat.generating && !engine.isBusy) reloadFresh()
+    }
+
+    /** The phone lost last, to say which one went away. */
+    var lostPhoneName: String? = null
+
+    /** Loads the model again, deciding anew which phones share it. */
+    fun reloadFresh() {
+        val m = engine.loaded ?: return
+        if (engine.isBusy) return
+        models.find(m.key)?.let { loadModel(it) }
     }
 
     // ---------------------------------------------------------------- in front or not
@@ -200,14 +232,37 @@ class App : Application() {
     /** Extra memory while pictures or sound are being read. */
     fun picturesRam(model: LocalModel): Long = if (model.hasPictures) model.picturesFile.length() + 150_000_000L else 0L
 
-    fun lowMemoryFor(model: LocalModel): Boolean = when (settings.memoryMode) {
+    /** [localShare]: the part of the model on this phone (less when other phones hold the rest). */
+    fun lowMemoryFor(model: LocalModel, localShare: Float = 1f): Boolean = when (settings.memoryMode) {
         MemoryMode.FAST -> false
         MemoryMode.LOW -> true
         // Fast mode copies the weights into ggml's faster layout in the app's own memory, which
         // Android can only make room for by swapping it out or closing the app; low memory leaves
         // them in the file, where Android can drop pages and read them again. A model of more
         // than 45% of the phone's memory (3.8 GB Bonsai 27B on an 8 GB phone) goes low.
-        MemoryMode.AUTO -> !model.ple && model.sizeBytes > totalRam * 0.45
+        MemoryMode.AUTO -> !model.ple && model.sizeBytes * localShare > totalRam * 0.45
+    }
+
+    /** What the whole model needs in memory, wherever it runs (16-bit conversation memory). */
+    private fun needFor(model: LocalModel): Long {
+        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        return weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
+    }
+
+    /** The phones the model is split with when it loads: decided at load, kept while it stays loaded (like [tightFor]). */
+    private var poolKept: Pair<String, List<app.offlineai.chat.pool.RpcPart>>? = null
+
+    private fun poolFor(model: LocalModel, fresh: Boolean): List<app.offlineai.chat.pool.RpcPart> {
+        if (!::phones.isInitialized) return emptyList()
+        val name = model.file.name
+        if (!fresh) {
+            val kept = poolKept
+            if (kept != null && kept.first == name && (engine.loaded?.key == name || engine.loadingKey == name)) return kept.second
+        }
+        val localFree = availableRam() + (engine.loaded?.let { l -> models.find(l.key)?.sizeBytes } ?: 0L)
+        val plan = phones.plan(needFor(model), localFree)
+        if (fresh) poolKept = name to plan
+        return plan
     }
 
     /**
@@ -240,7 +295,8 @@ class App : Application() {
 
     /** How [model] loads with the settings as they are. [fresh]: for loading it now, deciding automatic memory anew. */
     fun configFor(model: LocalModel, fresh: Boolean = false): LoadConfig {
-        val low = lowMemoryFor(model)
+        val parts = poolFor(model, fresh)
+        val low = lowMemoryFor(model, 1f - parts.sumOf { it.share.toDouble() }.toFloat())
         val drafts = settings.draftsFor(model.file.name)
         return LoadConfig(
             nCtx = settings.contextSize,
@@ -256,6 +312,7 @@ class App : Application() {
             imageMaxTokens = settings.pictureDetail.maxTokens,
             // big Gemma models: a compact sliding-window cache (much less memory, no drafting)
             swaFull = !low,
+            rpc = parts,
         )
     }
 
@@ -267,6 +324,7 @@ class App : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        if (!::engine.isInitialized) return  // the lending process has no engine of its own
         val low = level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
             level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
@@ -314,6 +372,20 @@ class App : Application() {
 
     fun loadModel(model: LocalModel, onDone: ((String?) -> Unit)? = null) {
         settings.lastModelFile = model.file.name
+        if (::phones.isInitialized) {
+            phones.changed = false
+            // the other phones were not asked lately: ask first (a few seconds), so the model is
+            // split with the ones that are there
+            if (phones.needsFreshLook()) {
+                engine.preparing(model.file.name, model.displayName)
+                phones.lookThen { loadModelNow(model, onDone) }
+                return
+            }
+        }
+        loadModelNow(model, onDone)
+    }
+
+    private fun loadModelNow(model: LocalModel, onDone: ((String?) -> Unit)?) {
         engine.load(model.file.name, model.displayName, model.file.absolutePath, configFor(model, fresh = true), onDone)
         // the team partner, unless it is now the model itself
         applyTeamPartner()

@@ -7,9 +7,13 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 2
+    const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Phones together" to "Run models bigger than one phone's memory across two phones on the same Wi-Fi (or one on " +
+            "the other's hotspot). On the second phone: Settings, Phones together, Let another phone use this one. On " +
+            "this one, pair it with the code it shows. A model that does not fit here then shares its memory. If the " +
+            "other phone leaves, the reply stops with a message and the model loads again here.",
         "Nyx" to "A new name, icon and look: menus that rise from the bottom, a message box that floats over the " +
             "chat like frosted glass, and motion that follows your finger.",
         "Pictures" to "Make pictures from words, here on the phone: tap Make a picture in a new chat, or the paperclip. " +

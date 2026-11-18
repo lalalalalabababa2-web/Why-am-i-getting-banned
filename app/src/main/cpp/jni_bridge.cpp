@@ -107,6 +107,12 @@ std::string parse_load_options(JNIEnv * env, jbyteArray joptions, oa::LoadParams
         p.drafter_path = o.value("drafter", std::string());
         p.mmproj_path = o.value("mmproj", std::string());
         p.image_max_tokens = o.value("image_max_tokens", p.image_max_tokens);
+        if (o.contains("rpc")) {
+            for (const auto & r : o.at("rpc")) {
+                p.rpc_servers.push_back(r.value("endpoint", std::string()));
+                p.rpc_shares.push_back(r.value("share", 0.0f));
+            }
+        }
     } catch (const std::exception & e) {
         return std::string("Bad load options: ") + e.what();
     }
@@ -174,6 +180,14 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoad(JNIEnv * env, jclass, jby
     return to_bytes(env, err.empty() ? std::string("The model could not be loaded.") : err);
 }
 
+// Lends this phone to other phones' engines: serves its CPU over ggml RPC on `endpoint` (the
+// app's own proxy in front of it checks the pairing code). Blocks while it serves; returns the
+// reason it could not start.
+JNIEXPORT jbyteArray JNICALL
+Java_app_offlineai_chat_engine_NativeEngine_nativeServe(JNIEnv * env, jclass, jbyteArray jendpoint, jbyteArray jcache, jint threads) {
+    return to_bytes(env, oa::Engine::serve(from_bytes(env, jendpoint), from_bytes(env, jcache), (int) threads));
+}
+
 JNIEXPORT void JNICALL
 Java_app_offlineai_chat_engine_NativeEngine_nativeUnload(JNIEnv *, jclass) {
     engine().unload();
@@ -189,6 +203,8 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeLoadPartner(JNIEnv * env, jcla
     p.spec_ngram = false;
     p.drafter_path.clear();
     p.mmproj_path.clear();
+    p.rpc_servers.clear();  // the partner stays on this phone
+    p.rpc_shares.clear();
     std::string err;
     if (partner().load(from_bytes(env, jpath), p, err, nullptr, nullptr)) return nullptr;
     return to_bytes(env, err.empty() ? std::string("The team partner could not be loaded.") : err);
@@ -221,6 +237,8 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"vision", mi.vision},
         {"audio", mi.audio},
         {"compute_bytes", engine().compute_bytes()},
+        {"n_layer", mi.n_layer},
+        {"n_remote_layers", mi.n_remote_layers},
     };
     return to_bytes(env, dump(j));
 }
@@ -378,6 +396,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeChat(JNIEnv * env, jclass, jby
             {"stop_reason", res.stats.stop_reason},
             {"team", res.stats.team},
         }},
+        {"lost_phone", engine().lost_phone()},
     };
     return to_bytes(env, dump(r));
 }

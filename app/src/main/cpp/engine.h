@@ -28,6 +28,7 @@
 #include <vector>
 
 struct llama_batch_ext;
+struct ggml_backend_device;
 struct llama_model;
 struct llama_context;
 struct llama_vocab;
@@ -72,6 +73,12 @@ struct LoadParams {
     // message holds a picture or a sound, not before.
     std::string mmproj_path;
     int  image_max_tokens = 0;   // cap on tokens per picture for models that scale with size; 0 = model's own
+
+    // Other phones that hold part of the model, as ggml RPC endpoints ("host:port"), with the
+    // share of the model's layers each one takes (same order). Empty: all of it on this phone.
+    // The last layers go to them; the first ones, the embeddings and the output stay here.
+    std::vector<std::string> rpc_servers;
+    std::vector<float>       rpc_shares;
 };
 
 struct SamplingParams {
@@ -178,6 +185,8 @@ struct ModelInfo {
     bool        has_mtp           = false;  // the file carries an MTP head (loaded only when drafting with it)
     bool        vision            = false;
     bool        audio             = false;
+    int         n_layer           = 0;      // the model's repeating layers
+    int         n_remote_layers   = 0;      // of those, on other phones
 };
 
 // What Engine::read_ahead did.
@@ -213,6 +222,13 @@ public:
               const std::function<void()> & on_warmup = nullptr);
     void unload();
     bool loaded() const { return ctx_ != nullptr; }
+    // Part of the model is on another phone and the connection to it was lost: every step fails
+    // from then on, until the model is loaded again.
+    bool lost_phone() const { return lost_phone_; }
+    // Serves this phone's CPU to other phones' engines (ggml RPC) on `endpoint`; weights they send
+    // are kept in `cache_dir` so a second load does not send them again. Blocks while it serves;
+    // returns only when it could not start, with the reason.
+    static std::string serve(const std::string & endpoint, const std::string & cache_dir, int n_threads);
     ModelInfo info() const;
 
     // A reply to the conversation. A team request (req.team) is answered by several passes; with a
@@ -370,6 +386,11 @@ private:
     int                    ngram_n_max_ = 0;
     int                    ngram_n_min_ = 0;
     bool                   has_mtp_ = false;
+    bool                   lost_phone_ = false;
+    uint32_t               rpc_lost0_ = 0;       // lost-connection count when the model was loaded
+    int                    n_layer_ = 0;
+    int                    n_remote_ = 0;
+    bool add_phones(const LoadParams & params, std::vector<::ggml_backend_device *> & devs, std::string & err);
     int                    spec_n_max_ = 0;        // drafter tokens per step
     int                    spec_n_out_ = 1;        // outputs per step the context was made for
     bool                   ngram_      = false;

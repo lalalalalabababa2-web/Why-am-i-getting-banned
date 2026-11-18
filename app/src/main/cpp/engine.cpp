@@ -10,11 +10,13 @@
 #include "ggml-cpu.h"     // threadpool types (the functions come from the loaded CPU backend)
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "gguf.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <sched.h>
+#include <csignal>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <sys/prctl.h>
@@ -264,6 +266,9 @@ void Engine::backend_init(const std::string & lib_dir) {
     static bool done = false;
     if (done) return;
     done = true;
+    // A phone holding part of the model that goes away mid-write would otherwise end this process
+    // with SIGPIPE; ignored, the write fails and the step reports the lost phone.
+    signal(SIGPIPE, SIG_IGN);
     if (!lib_dir.empty()) {
         ggml_backend_load_all_from_path(lib_dir.c_str());
     }
@@ -332,6 +337,9 @@ void Engine::unload() {
     cut_key_ = 0;
     mm_vision_ = mm_audio_ = false;
     compute_bytes_ = 0;
+    lost_phone_ = false;
+    n_layer_ = 0;
+    n_remote_ = 0;
     free_pools();
 }
 
@@ -374,6 +382,79 @@ static size_t compute_bytes_of(const llama_context * ctx) {
     return total;
 }
 
+// ---- other phones (ggml RPC) ----
+
+// A step on a model split with another phone failed because that phone went away.
+static constexpr int kLostPhone = -1000;
+static const char * kLostPhoneMessage =
+    "The other phone holding part of this model stopped answering (it left the Wi-Fi, went to sleep or "
+    "closed Nyx), so this reply stopped. The model loads again with the phones that are still there.";
+
+static ggml_backend_reg_t rpc_reg() {
+    static ggml_backend_reg_t reg = ggml_backend_reg_by_name("RPC");
+    return reg;
+}
+
+// How many connections to other phones have been lost since the app started (0 without RPC).
+static uint32_t rpc_lost_count() {
+    using fn_t = uint32_t (*)();
+    static fn_t fn = rpc_reg() ? (fn_t) ggml_backend_reg_get_proc_address(rpc_reg(), "ggml_backend_rpc_lost_count") : nullptr;
+    return fn ? fn() : 0;
+}
+
+// The repeating layers a model file has, from its header (0 if it does not say).
+static int gguf_layers(const std::string & path) {
+    gguf_init_params ip = {true, nullptr};
+    gguf_context * g = gguf_init_from_file(path.c_str(), ip);
+    if (!g) return 0;
+    int n = 0;
+    const int64_t ka = gguf_find_key(g, "general.architecture");
+    if (ka >= 0 && gguf_get_kv_type(g, ka) == GGUF_TYPE_STRING) {
+        const std::string key = std::string(gguf_get_val_str(g, ka)) + ".block_count";
+        const int64_t kb = gguf_find_key(g, key.c_str());
+        if (kb >= 0) {
+            switch (gguf_get_kv_type(g, kb)) {
+                case GGUF_TYPE_UINT32: n = (int) gguf_get_val_u32(g, kb); break;
+                case GGUF_TYPE_INT32:  n = (int) gguf_get_val_i32(g, kb); break;
+                case GGUF_TYPE_UINT64: n = (int) gguf_get_val_u64(g, kb); break;
+                default: break;
+            }
+        }
+    }
+    gguf_free(g);
+    return n;
+}
+
+bool Engine::add_phones(const LoadParams & params, std::vector<::ggml_backend_device *> & devs, std::string & err) {
+    using add_t = ggml_backend_reg_t (*)(const char *);
+    add_t add = rpc_reg() ? (add_t) ggml_backend_reg_get_proc_address(rpc_reg(), "ggml_backend_rpc_add_server") : nullptr;
+    if (!add) {
+        err = "This build of the engine cannot use other phones.";
+        return false;
+    }
+    for (const auto & ep : params.rpc_servers) {
+        ggml_backend_reg_t reg = add(ep.c_str());
+        const size_t n = reg ? ggml_backend_reg_dev_count(reg) : 0;
+        if (n == 0) {
+            err = "The other phone could not be reached. Check that it is on the same Wi-Fi (or this phone's "
+                  "hotspot) and that Lend this phone is on there.";
+            return false;
+        }
+        // one device per phone: its CPU
+        devs.push_back(ggml_backend_reg_dev_get(reg, 0));
+    }
+    return true;
+}
+
+std::string Engine::serve(const std::string & endpoint, const std::string & cache_dir, int n_threads) {
+    using start_t = void (*)(const char *, const char *, size_t, size_t, ggml_backend_dev_t *);
+    start_t start = rpc_reg() ? (start_t) ggml_backend_reg_get_proc_address(rpc_reg(), "ggml_backend_rpc_start_server") : nullptr;
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!start || !cpu) return "This build of the engine cannot lend this phone.";
+    start(endpoint.c_str(), cache_dir.empty() ? nullptr : cache_dir.c_str(), (size_t) std::max(1, n_threads), 1, &cpu);
+    return "The lending service stopped (the port may be in use).";
+}
+
 bool Engine::load(const std::string & path, const LoadParams & params, std::string & err,
                   const std::function<bool(float)> & progress, const std::function<void()> & on_warmup) {
     unload();
@@ -390,8 +471,11 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         }
     } catch (...) {
     }
-    const bool file_mtp = params.spec_n_max > 0 && has_mtp_;
-    const bool use_drafter = params.spec_n_max > 0 && !file_mtp && !params.drafter_path.empty();
+    // split with other phones: no helper drafting (its head would sit on the far side of the Wi-Fi);
+    // copying from the conversation still works
+    const bool split = !params.rpc_servers.empty();
+    const bool file_mtp = params.spec_n_max > 0 && has_mtp_ && !split;
+    const bool use_drafter = params.spec_n_max > 0 && !file_mtp && !params.drafter_path.empty() && !split;
     dft_type_ = COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
     if (use_drafter) {
         try {
@@ -416,10 +500,66 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     mp.progress_callback = load_progress;
     mp.progress_callback_user_data = &bridge;
 
-    model_ = llama_model_load_from_file(path.c_str(), mp);
+    // Other phones: the last layers (and their part of the conversation memory) go to them, as
+    // many as their shares say; the output weights stay here, so what crosses the Wi-Fi for each
+    // step is one row of numbers per token each way, not a row per word of the vocabulary.
+    std::vector<ggml_backend_dev_t> devs;
+    std::vector<float> split_at(std::max<size_t>(llama_max_devices(), 1), 0.0f);
+    std::vector<llama_model_tensor_buft_override> overrides;
+    n_layer_ = 0;
+    n_remote_ = 0;
+    lost_phone_ = false;
+    rpc_lost0_ = rpc_lost_count();
+    if (split) {
+        n_layer_ = gguf_layers(path);
+        float share = 0.0f;
+        for (size_t i = 0; i < params.rpc_servers.size(); i++) {
+            share += i < params.rpc_shares.size() ? std::max(0.0f, params.rpc_shares[i]) : 0.0f;
+        }
+        share = std::min(share, 1.0f);
+        n_remote_ = n_layer_ > 0 ? std::min(n_layer_, (int) std::lround(share * n_layer_)) : 0;
+        // a share that is there at all gets a layer, however few the model has
+        if (n_remote_ == 0 && share >= 0.05f && n_layer_ > 1) n_remote_ = 1;
+        if (n_remote_ > 0) {
+            if (params.rpc_servers.size() > split_at.size()) {
+                err = "Too many phones for one model.";
+                return false;
+            }
+            if (!add_phones(params, devs, err)) return false;
+            for (size_t i = 0; i < devs.size(); i++) {
+                split_at[i] = i < params.rpc_shares.size() ? std::max(0.001f, params.rpc_shares[i]) : 1.0f;
+            }
+            devs.push_back(nullptr);
+            mp.devices = devs.data();
+            mp.n_gpu_layers = n_remote_ + 1;  // the output layer counts as one; its weights stay here (below)
+            mp.split_mode = LLAMA_SPLIT_MODE_LAYER;
+            mp.tensor_split = split_at.data();
+            ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            if (cpu) {
+                overrides.push_back({"^output(_norm)?\\.", ggml_backend_dev_buffer_type(cpu)});
+                overrides.push_back({nullptr, nullptr});
+                mp.tensor_buft_overrides = overrides.data();
+            }
+        }
+    }
+
+    try {
+        model_ = llama_model_load_from_file(path.c_str(), mp);
+    } catch (...) {
+        model_ = nullptr;
+    }
     if (!model_) {
-        err = "The model could not be loaded. The file may be incomplete or damaged, or it is a kind of "
-              "model this version of the app cannot run.";
+        if (n_remote_ > 0 && rpc_lost_count() != rpc_lost0_) {
+            err = "The other phone stopped answering while the model was being sent to it. Check that both "
+                  "phones are on the same Wi-Fi and that Lend this phone is still on there.";
+        } else if (n_remote_ > 0) {
+            err = "The model could not be split with the other phone: it may not have enough free memory for "
+                  "its part. Close apps there, or give it a smaller part.";
+        } else {
+            err = "The model could not be loaded. The file may be incomplete or damaged, or it is a kind of "
+                  "model this version of the app cannot run.";
+        }
+        n_remote_ = 0;
         return false;
     }
     vocab_ = llama_model_get_vocab(model_);
@@ -461,6 +601,8 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
     cp.abort_callback = abort_cb;
     cp.abort_callback_data = this;
     cp.no_perf = true;
+    // with other phones: never copy this phone's weights over the Wi-Fi to compute a big step there
+    if (n_remote_ > 0) cp.op_offload = false;
     if (params.kv_q8) {
         // A quantized V cache needs flash attention, which the CPU backend has.
         cp.type_k = GGML_TYPE_Q8_0;
@@ -502,6 +644,11 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         llama_decode(ctx_, llama_batch_get_one(tmp.data(), (int32_t) tmp.size()));
         llama_memory_clear(llama_get_memory(ctx_), true);
         llama_synchronize(ctx_);
+        if (n_remote_ > 0 && rpc_lost_count() != rpc_lost0_) {
+            err = "The other phone stopped answering right after the model was loaded.";
+            unload();
+            return false;
+        }
     }
 
     const auto rm_type = common_context_can_seq_rm(ctx_);
@@ -626,6 +773,8 @@ ModelInfo Engine::info() const {
     mi.has_mtp = has_mtp_;
     mi.vision = mm_vision_;
     mi.audio = mm_audio_;
+    mi.n_layer = n_layer_;
+    mi.n_remote_layers = n_remote_;
     return mi;
 }
 
@@ -710,8 +859,18 @@ int Engine::run_step(::llama_batch_ext * batch) {
         if (void * mgr = h.get()) hint_ = h.create(mgr, tids.data(), tids.size(), kHintTargetNs);
         hint_tid_ = current_tid();
     }
+    if (lost_phone_) return kLostPhone;
     const auto t0 = std::chrono::steady_clock::now();
-    const int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch);
+    int ret = llama_process(ctx_, LLAMA_PROCESS_TYPE_DECODE, batch);
+    if (n_remote_ > 0) {
+        // a phone that went away answers with zeros from then on: the step is worthless, whatever
+        // llama says (part of it may have been queued before the loss was noticed)
+        llama_synchronize(ctx_);
+        if (rpc_lost_count() != rpc_lost0_) {
+            lost_phone_ = true;
+            ret = kLostPhone;
+        }
+    }
     if (hint && hint_) {
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
         if (ns > 0) h.report(hint_, (int64_t) ns);
@@ -876,7 +1035,8 @@ bool Engine::decode_text(const std::vector<token> & tokens, size_t from, size_t 
             } else {
                 clear_memory();
             }
-            if (ret == 2 || stopping()) err = "stopped";
+            if (ret == kLostPhone) err = kLostPhoneMessage;
+            else if (ret == 2 || stopping()) err = "stopped";
             else if (ret == 1) err = "The conversation no longer fits in the context. Start a new chat or raise the context size.";
             else err = "The model failed while reading the conversation (error " + std::to_string(ret) + ").";
             return false;
@@ -1290,7 +1450,8 @@ bool Engine::push_token(token t, std::string & err) {
             if (pos_max >= 0 && (size_t) pos_max == cache_.size()) cache_.push_back(t);
             trim_draft(cache_.size());
         }
-        if (ret == 2 || stopping()) err = "stopped";
+        if (ret == kLostPhone) err = kLostPhoneMessage;
+        else if (ret == 2 || stopping()) err = "stopped";
         else if (ret == 1) err = "The conversation no longer fits in the context.";
         else err = "The model failed while writing (error " + std::to_string(ret) + ").";
         return false;
@@ -1326,7 +1487,7 @@ bool Engine::push_step(const std::vector<token> & tokens, size_t keep, std::vect
     const int ret = run_step(batch.get());
     if (ret != 0) {
         clear_memory();
-        err = "The model failed while writing (error " + std::to_string(ret) + ").";
+        err = ret == kLostPhone ? std::string(kLostPhoneMessage) : "The model failed while writing (error " + std::to_string(ret) + ").";
         return false;
     }
     const int n_vocab = llama_vocab_n_tokens(vocab_);
@@ -2152,7 +2313,10 @@ ChatResult Engine::chat_one(const ChatRequest & req, const ChatCallbacks & cb) {
                 llama_memory_seq_rm(llama_get_memory(ctx_), 0, (llama_pos) before, -1);
                 trim_draft(before);
             }
-            if (ret == 2 || stopping()) reason = "stopped";
+            if (ret == kLostPhone) {
+                reason = "error";
+                res.error = kLostPhoneMessage;
+            } else if (ret == 2 || stopping()) reason = "stopped";
             else if (ret == 1) reason = "context";
             else {
                 reason = "error";

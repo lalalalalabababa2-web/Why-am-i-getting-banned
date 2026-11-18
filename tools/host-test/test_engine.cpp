@@ -13,6 +13,13 @@
 #include "ggml-backend.h"
 #include "llama-ext.h"
 
+#include <arpa/inet.h>
+#include <csignal>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -1595,6 +1602,204 @@ static void profile_writing(const std::string & path, const char * label, bool l
     llama_model_free(m);
 }
 
+// ---- other phones: a model split with a helper (ggml RPC), the helper in its own process ----
+
+static bool port_open(int port) {
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t) port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const bool ok = connect(fd, (sockaddr *) &a, sizeof a) == 0;
+    close(fd);
+    return ok;
+}
+
+// A helper "phone": this program again, in a child process, lending its CPU on `port` (as the
+// app's lending service does, in its own process).
+static pid_t start_helper(int port, const std::string & cache) {
+    const pid_t pid = fork();
+    if (pid == 0) {
+        const std::string why = oa::Engine::serve("127.0.0.1:" + std::to_string(port), cache, 2);
+        std::fprintf(stderr, "helper stopped: %s\n", why.c_str());
+        _exit(3);
+    }
+    for (int i = 0; i < 100 && !port_open(port); i++) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    return pid;
+}
+
+static void test_phones(const std::string & path, int port, pid_t & helper) {
+    std::printf("== split with another phone: %s\n", path.c_str());
+    oa::LoadParams lp;
+    lp.n_ctx = 512;
+    lp.n_threads = 2;
+    lp.n_batch = 64;
+    lp.n_ubatch = 32;
+    lp.spec_n_max = 0;
+    oa::LoadParams lps = lp;
+    lps.rpc_servers = {"127.0.0.1:" + std::to_string(port)};
+    lps.rpc_shares = {0.5f};
+
+    oa::Engine solo, split;
+    std::string err;
+    CHECK(solo.load(path, lp, err), "solo load: %s", err.c_str());
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = split.load(path, lps, err);
+    CHECK(ok, "split load: %s", err.c_str());
+    if (!ok) return;
+    const auto info = split.info();
+    std::printf("  layers %d, on the other phone %d, loaded in %.0f ms\n", info.n_layer, info.n_remote_layers,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    CHECK(info.n_remote_layers > 0 && info.n_remote_layers < info.n_layer, "half the layers should be on the other phone (%d of %d)",
+          info.n_remote_layers, info.n_layer);
+
+    // the same numbers as the whole model on one phone, prompt and words written
+    std::mt19937 rng(77);
+    const auto p = random_tokens(rng, 120, 100);
+    CHECK(solo.sync_prompt(p, 0, err, nullptr, nullptr), "solo sync: %s", err.c_str());
+    CHECK(split.sync_prompt(p, 0, err, nullptr, nullptr), "split sync: %s", err.c_str());
+    const auto a = solo.last_logits(), b = split.last_logits();
+    CHECK(!a.empty() && a.size() == b.size(), "logits size");
+    if (!a.empty() && a.size() == b.size()) {
+        const double e = nmse(a, b);
+        std::printf("    split vs one phone: nmse %.2e\n", e);
+        CHECK(e < 1e-4, "split logits differ (nmse %.3e)", e);
+    }
+    std::vector<token> wa, wb;
+    for (int i = 0; i < 12; i++) {
+        const token ta = solo.argmax(), tb = split.argmax();
+        wa.push_back(ta);
+        wb.push_back(tb);
+        CHECK(solo.push_token(ta, err), "solo push: %s", err.c_str());
+        CHECK(split.push_token(tb, err), "split push: %s", err.c_str());
+    }
+    CHECK(wa == wb, "split wrote other words");
+    const auto t1 = std::chrono::steady_clock::now();
+    std::string e2;
+    for (int i = 0; i < 16; i++) split.push_token(split.argmax(), e2);
+    std::printf("    writing over the loopback: %.1f ms a token\n",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count() / 16);
+
+    // a whole chat turn through the split model
+    oa::ChatRequest req;
+    req.now_ms = 1760000000000LL;
+    req.sampling.max_tokens = 16;
+    req.sampling.seed = 3;
+    req.messages.push_back({"user", "Hello there, how are you?", ""});
+    auto r = split.chat(req, {});
+    CHECK(r.ok, "split chat: %s", r.error.c_str());
+
+    // the other phone goes away: the next step fails with a clear message instead of ending the app
+    kill(helper, SIGKILL);
+    waitpid(helper, nullptr, 0);
+    helper = 0;
+    bool pushed = true;
+    for (int i = 0; i < 3 && pushed; i++) pushed = split.push_token(split.argmax(), err);
+    CHECK(!pushed && split.lost_phone(), "a lost phone should fail the step (lost=%d)", split.lost_phone());
+    std::printf("    after losing the phone: %s\n", err.c_str());
+    r = split.chat(req, {});
+    CHECK(!r.ok, "a chat after losing the phone should fail");
+    split.unload();
+    // loading with it again fails with a reason, and on this phone alone works
+    CHECK(!split.load(path, lps, err), "loading with a phone that is gone should fail");
+    std::printf("    loading with it again: %s\n", err.c_str());
+    CHECK(split.load(path, lp, err), "load alone afterwards: %s", err.c_str());
+}
+
+// A real model split with a helper over the loopback: the same words as on one machine, how fast
+// it writes, and how long loading takes the first time (every weight of the helper's part sent)
+// and the second (the helper has them kept, only their hashes are checked). The loopback has no
+// Wi-Fi delay: on phones each word also waits a few Wi-Fi round trips.
+static void test_phones_real(const std::string & path, const char * label, int port) {
+    if (!std::ifstream(path).good()) {
+        std::printf("== phones %s: %s not there, skipped\n", label, path.c_str());
+        return;
+    }
+    std::printf("== split with another phone (loopback): %s\n", label);
+    const int threads = std::max(1, (int) std::thread::hardware_concurrency());
+    oa::LoadParams lp;
+    lp.n_ctx = 2048;
+    lp.n_threads = threads;
+    lp.spec_n_max = 0;
+    lp.spec_ngram = false;
+    oa::LoadParams lps = lp;
+    lps.rpc_servers = {"127.0.0.1:" + std::to_string(port)};
+    lps.rpc_shares = {0.5f};
+    std::vector<token> prompt;
+    auto ms = [](std::chrono::steady_clock::time_point t0) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    };
+    auto run = [&](oa::Engine & e, std::vector<token> & words, double & read_tps, double & write_tps) {
+        std::string err;
+        auto t0 = std::chrono::steady_clock::now();
+        if (!e.sync_prompt(prompt, 0, err, nullptr, nullptr)) {
+            std::fprintf(stderr, "  FAIL %s: read: %s\n", label, err.c_str());
+            g_failures++;
+            return;
+        }
+        read_tps = prompt.size() * 1000.0 / ms(t0);
+        t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < 48; i++) {
+            const token t = e.argmax();
+            words.push_back(t);
+            if (!e.push_token(t, err)) {
+                std::fprintf(stderr, "  FAIL %s: write: %s\n", label, err.c_str());
+                g_failures++;
+                return;
+            }
+        }
+        write_tps = 48 * 1000.0 / ms(t0);
+    };
+    std::vector<token> wa, wb;
+    double ra = 0, wa_tps = 0, rb = 0, wb_tps = 0;
+    {
+        oa::Engine solo;
+        std::string err;
+        if (!solo.load(path, lp, err)) {
+            std::fprintf(stderr, "  FAIL %s: solo load: %s\n", label, err.c_str());
+            g_failures++;
+            return;
+        }
+        // real words, so any vocabulary has them
+        std::string text;
+        while (text.size() < 3000) text += filler(7, 40) + " ";
+        prompt = solo.tokenize(text, true);
+        if (prompt.size() > 300) prompt.resize(300);
+        run(solo, wa, ra, wa_tps);
+    }
+    double first = 0, second = 0;
+    {
+        oa::Engine split;
+        std::string err;
+        auto t0 = std::chrono::steady_clock::now();
+        if (!split.load(path, lps, err)) {
+            std::fprintf(stderr, "  FAIL %s: split load: %s\n", label, err.c_str());
+            g_failures++;
+            return;
+        }
+        first = ms(t0);
+        const auto info = split.info();
+        std::printf("    %d of %d layers on the helper\n", info.n_remote_layers, info.n_layer);
+        run(split, wb, rb, wb_tps);
+    }
+    {
+        oa::Engine again;
+        std::string err;
+        auto t0 = std::chrono::steady_clock::now();
+        CHECK(again.load(path, lps, err), "%s: second split load: %s", label, err.c_str());
+        second = ms(t0);
+    }
+    std::printf("    one machine: read %.1f tok/s, write %.1f tok/s\n", ra, wa_tps);
+    std::printf("    split:       read %.1f tok/s, write %.1f tok/s (loading %.1f s the first time, %.1f s with the helper's copy)\n",
+                rb, wb_tps, first / 1000, second / 1000);
+    size_t same = 0;
+    while (same < wa.size() && same < wb.size() && wa[same] == wb[same]) same++;
+    std::printf("    same words for %zu of %zu\n", same, wa.size());
+    // a quantized model computed in another order can tip a near tie late in a greedy run
+    CHECK(same >= 16, "%s: split wrote other words after %zu", label, same);
+}
+
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <models dir> <llama.cpp dir>\n", argv[0]);
@@ -1606,6 +1811,28 @@ int main(int argc, char ** argv) {
         if (level >= GGML_LOG_LEVEL_ERROR) std::fputs(text, stderr);
     }, nullptr);
     oa::Engine::backend_init("");
+
+    // a helper "phone" in its own process, started before anything here has threads
+    const int helper_port = 47000 + (int) (getpid() % 2000);
+    if (argc >= 6 && std::string(argv[3]) == "--phones-real") {
+        // test_engine <tiny models dir> <llama.cpp dir> --phones-real <model.gguf> <label>
+        const std::string cache = "/tmp/oa-lend-cache-" + std::to_string(getpid());
+        std::system(("mkdir -p " + cache).c_str());
+        pid_t h = start_helper(helper_port, cache);
+        test_phones_real(argv[4], argv[5], helper_port);
+        kill(h, SIGKILL);
+        waitpid(h, nullptr, 0);
+        std::system(("rm -rf " + cache).c_str());
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+    // test_engine <tiny models dir> <llama.cpp dir> --phones: only the split with another phone
+    const bool phones_only = argc >= 4 && std::string(argv[3]) == "--phones";
+    const bool plain_run = phones_only || argc < 4 ||
+        (std::string(argv[3]).rfind("--", 0) != 0 && !(argc >= 5 && std::string(argv[4]).rfind("--", 0) == 0));
+    // (both before anything runs: a process forked after OpenMP has started cannot compute)
+    pid_t helper = plain_run ? start_helper(helper_port, "") : 0;
+    pid_t helper2 = plain_run ? start_helper(helper_port + 1, "") : 0;
 
     // test_engine <tiny models dir> <llama.cpp dir> [real models dir] [--real-only]
     // one model on its own (CI runs Bonsai 27B again under a memory limit, the way a phone has it)
@@ -1705,6 +1932,25 @@ int main(int argc, char ** argv) {
         // abliterated copies load and answer like their originals
         test_bonsai(std::string(argv[3]) + "/Huihui-Qwen3.5-2B-abliterated.Q4_K_M.gguf", "Qwen3.5 2B abliterated", 2048);
         test_bonsai(std::string(argv[3]) + "/Huihui-LFM2.5-1.2B-Instruct-abliterated.Q4_K_M.gguf", "LFM2.5 1.2B abliterated", 2048);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
+
+    if (helper > 0) {
+        test_phones(dir + "/qwen35-dense.gguf", helper_port, helper);
+        if (helper > 0) {
+            kill(helper, SIGKILL);
+            waitpid(helper, nullptr, 0);
+        }
+    }
+    if (helper2 > 0) {
+        test_phones(dir + "/llama-dense.gguf", helper_port + 1, helper2);
+        if (helper2 > 0) {
+            kill(helper2, SIGKILL);
+            waitpid(helper2, nullptr, 0);
+        }
+    }
+    if (phones_only) {
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }

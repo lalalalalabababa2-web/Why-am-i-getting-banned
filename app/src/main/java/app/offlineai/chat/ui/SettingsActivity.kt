@@ -93,6 +93,12 @@ class SettingsActivity : AppCompatActivity() {
             Settings.PROMPT_BATCHES.map { "$it" }, Settings.PROMPT_BATCHES.indexOf(s.promptBatch)) {
             s.promptBatch = Settings.PROMPT_BATCHES[it]
         }
+        val paired = app.phones.saved().count { it.enabled }
+        row("Phones together", when {
+            s.lending -> "Lending this phone to another one. Run bigger models across your phones on the same Wi-Fi."
+            paired > 0 -> "$paired other phone${if (paired > 1) "s" else ""} paired: models too big for this phone share their memory."
+            else -> "Run models bigger than this phone's memory across two phones on the same Wi-Fi."
+        }) { startActivity(Intent(this, PhonesActivity::class.java)) }
 
         section("Performance")
         choice("Mode", s.perfMode.help, PerfMode.values().map { it.label }, s.perfMode.ordinal) {

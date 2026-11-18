@@ -79,6 +79,10 @@ class AboutActivity : AppCompatActivity() {
         point(promise, "No account, no tracking", "No sign-in, no analytics, no ads, nothing collected.")
         point(promise, "Online only to download",
             "The app goes online only to download a model you pick. With Offline only on (Settings), never.")
+        point(promise, "Your phones, your Wi-Fi",
+            "Only if you pair them (Phones together): a model too big for one phone runs across your own phones on " +
+                "the same Wi-Fi. What crosses it are numbers from the middle of the model, never your words, and only " +
+                "to a phone you paired with its code.")
         point(promise, "Your chats are yours",
             "Kept in the app's private storage. Export, import or delete them any time from the Chats screen.", last = true)
         content.addView(promise)

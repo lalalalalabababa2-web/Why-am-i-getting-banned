@@ -43,6 +43,12 @@ object NativeEngine {
     /** Gentle writing while another app is in front: [threads] threads, low priority, takes effect at the next step. */
     @JvmStatic external fun nativeSetBackground(on: Boolean, threads: Int)
     @JvmStatic external fun nativeBench(threads: IntArray, nPrompt: Int, nGen: Int): ByteArray
+    /**
+     * Lends this phone to other phones' engines: serves its CPU (ggml RPC) on [endpoint], keeping
+     * the weights they send in [cacheDir]. Blocks while it serves (for good: the lending process
+     * is ended to stop it); returns why it could not start.
+     */
+    @JvmStatic external fun nativeServe(endpoint: ByteArray, cacheDir: ByteArray, threads: Int): ByteArray
 }
 
 interface LoadListener {

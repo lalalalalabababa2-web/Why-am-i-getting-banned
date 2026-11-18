@@ -29,6 +29,23 @@ browser when Android asks. New builds install over old ones and keep models and 
   step in a notification and the finished picture in another. Steps from 1 to 30 per model,
   styles, shapes, share, save to photos, make again with the same or a new seed. No content
   filter, with one line held: nothing sexual with children.
+- **Phones together**: a model too big for one phone runs across two (or more) phones on the same
+  Wi-Fi, or with one phone on the other's hotspot. On the second phone: Settings, Phones together,
+  *Let another phone use this one*; it shows a 6-digit code. On this phone the other one shows up
+  by itself (mDNS), or is added by its address; type its code once. From then on a model that does
+  not fit here takes the other phone's free memory too (or every model, if you choose *Always*).
+  How it works: llama.cpp's RPC backend. The last layers of the model, and their part of the
+  conversation memory, go to the other phone; the embeddings, the first layers and the output stay
+  here, so what crosses the Wi-Fi for each word is one row of numbers each way, never the words.
+  The lending side runs in a process of its own behind a gate that checks the code (a challenge
+  and an HMAC: the code itself never crosses the Wi-Fi); its RPC server listens on the loopback
+  only. It keeps the weights it was sent, so loading the same model again does not send them again.
+  If the other phone leaves, the reply stops with a message and the model loads again without it,
+  instead of the app closing (llama.cpp's RPC client ends the program when a server goes away;
+  `third_party/patches/0002-rpc-survives-lost-phone.patch` makes it fail the step instead).
+  Bluetooth is too slow for this (about 2 Mbit/s and 30 ms or more a round trip, with a few round
+  trips per word). It makes bigger models possible, not faster ones: a model that fits on one
+  phone is faster there, since each word waits for the Wi-Fi.
 - **Hide as a game** (Settings, Privacy): the launcher shows "Ping Pong", a real game; a secret
   code typed as the player name in its settings opens the app. It locks again a minute after
   leaving or when the screen goes off; notifications and recent apps say Ping Pong.
@@ -171,7 +188,8 @@ thread.
 ## Changes to llama.cpp
 
 `third_party/patches/` holds the app's own changes, applied to the submodule at build time by
-`apply.sh` (the Android build and the test scripts run it): faster ARM NEON dot products for the
+`apply.sh` (the Android build and the test scripts run it): the RPC client failing a step instead
+of ending the app when another phone goes away (0002), and faster ARM NEON dot products for the
 Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
 the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
 lets it call a 4x4 one. They matter most in low-memory mode, where the weights stay in the file
@@ -187,6 +205,14 @@ reply rewritten by the template, regenerate, an early edit, a stopped prompt) th
 match those of a fresh engine that read the whole prompt from the start. It also renders the
 real Qwen3.5 and Gemma 4 templates over their real vocabularies and streams replies through the
 parser. Runs under AddressSanitizer and UBSan. CI runs it on every push.
+
+It also splits the tiny models with a helper in a second process (the way the lending phone runs
+it), over the loopback: the logits must be the same as on one machine, the words written the same,
+and when the helper is killed mid-reply the next step must fail with the lost-phone message, not
+end the program, and the model must load again on its own. `real.sh` does the same with real
+models and prints how fast they write split and whole, and how long loading takes the first time
+and with the helper's kept copy. On one desktop machine the split path itself cost about 0.1 ms a
+word with a tiny model; between phones each word also waits for a few Wi-Fi round trips.
 
 It also checks drafting: with n-gram drafts and with an MTP head (a random model with one added
 by the test), greedy replies must be the same tokens as without drafting. And exactly the same

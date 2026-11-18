@@ -536,7 +536,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             app.loadModel(model)
             finish()
         }
-        if (need > free && !app.lowMemoryFor(model)) {
+        // other phones taking part of it make room the free memory here does not show
+        if (need > free && !app.lowMemoryFor(model) && app.configFor(model).rpc.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("This may not fit right now")
                 .setMessage("${model.displayName} needs about ${ModelStore.formatBytes(need)} of memory and " +

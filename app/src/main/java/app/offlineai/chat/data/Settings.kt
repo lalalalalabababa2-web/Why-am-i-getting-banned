@@ -24,6 +24,15 @@ enum class MemoryMode(val label: String, val help: String) {
     LOW("Low memory", "Leaves the weights in the file, so Android can page them. Slower, but bigger models fit."),
 }
 
+/** When a model is split with other phones on the Wi-Fi (Phones working together). */
+enum class PoolMode(val label: String, val help: String) {
+    AUTO("When it does not fit here", "Other phones take part of a model only when it is too big for this phone's free memory. " +
+        "A model that fits runs here alone, which is faster."),
+    ALWAYS("Always", "Every model is shared with the other phones by their free memory, leaving this phone's memory for other apps. " +
+        "Each word waits for the Wi-Fi, so replies are slower."),
+    OFF("Never", "Models run on this phone alone."),
+}
+
 enum class ThemeMode(val label: String) { DARK("Dark"), LIGHT("Light"), SYSTEM("Same as the phone") }
 
 /** How closely pictures are looked at: pixels kept, and tokens a picture may take for models that scale with size. */
@@ -279,6 +288,28 @@ class Settings(context: Context) {
         set(v) = put("offline_only", v)
 
     // ---- other
+    // ---- phones working together
+    var poolMode: PoolMode
+        get() = runCatching { PoolMode.valueOf(str("pool_mode", "AUTO")) }.getOrDefault(PoolMode.AUTO)
+        set(v) = put("pool_mode", v.name)
+    /** The code another phone needs to use this one; made the first time lending is turned on. */
+    var lendCode: String
+        get() = str("lend_code", "")
+        set(v) = put("lend_code", v)
+    /** What this phone is called to the others. */
+    var lendName: String
+        get() = str("lend_name", "").ifBlank { Build.MODEL ?: "Phone" }
+        set(v) = put("lend_name", v)
+    /** Lending was left on (it starts again with the app). */
+    var lending: Boolean
+        get() = bool("lending", false)
+        set(v) = put("lending", v)
+    /** This install's own id, for the other phones to tell it apart. */
+    val deviceId: String
+        get() = str("device_id", "").ifBlank {
+            java.util.UUID.randomUUID().toString().also { put("device_id", it) }
+        }
+
     var keepScreenOn: Boolean
         get() = bool("keep_screen_on", true)
         set(v) = put("keep_screen_on", v)

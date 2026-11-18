@@ -1,0 +1,162 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 49f1107..d8f0377 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -30,6 +30,11 @@ namespace fs = std::filesystem;
+ // macro for nicer error messages on server crash
+ #define RPC_STATUS_ASSERT(x) if (!(x)) GGML_ABORT("Remote RPC server crashed or returned malformed response")
+ 
++// Nyx: a remote device that goes away (a phone that leaves the Wi-Fi) is counted here instead of
++// ending the app; the engine reads the count around every step (see ggml_backend_rpc_lost_count)
++static std::atomic<uint32_t> g_rpc_lost{0};
++static uint32_t ggml_backend_rpc_lost_count(void) { return g_rpc_lost.load(); }
++
+ // all RPC structures must be packed
+ #pragma pack(push, 1)
+ // ggml_tensor is serialized into rpc_tensor
+@@ -427,7 +432,9 @@ static bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
+     sock->get_caps(request.conn_caps);
+ 
+     bool status = send_rpc_cmd(sock, RPC_CMD_HELLO, &request, sizeof(request), &response, sizeof(response));
+-    RPC_STATUS_ASSERT(status);
++    if (!status) {
++        return false;
++    }
+ 
+     if (response.major != RPC_PROTO_MAJOR_VERSION || response.minor > RPC_PROTO_MINOR_VERSION) {
+         LOG_ERROR("RPC server version mismatch: %d.%d.%d\n",
+@@ -512,6 +519,9 @@ public:
+ 
+     void start(const std::string & endpoint);
+     void work();
++    // Nyx: the connection is gone; from then on commands complete at once with zeroed answers
++    void fail(const char * why);
++    std::atomic_bool failed{false};
+ 
+     ~rpc_dispatcher();
+ 
+@@ -635,24 +645,32 @@ void rpc_dispatcher::busy_spin_release() {
+     GGML_ASSERT(previous > 0);
+ }
+ 
++void rpc_dispatcher::fail(const char * why) {
++    if (!failed.exchange(true)) {
++        g_rpc_lost.fetch_add(1);
++        LOG_ERROR("RPC connection lost: %s\n", why);
++    }
++}
++
+ void rpc_dispatcher::start(const std::string & endpoint) {
++    // Nyx: nothing here ends the app; a dispatcher that cannot connect is a failed one, and the
++    // calls made through it come back empty (no devices, no buffers)
+     std::string host;
+     int port;
+     if (!parse_endpoint(endpoint, host, port)) {
+-        GGML_ABORT("Failed to parse endpoint: %s\n", endpoint.c_str());
+-    }
+-    if (!rpc_transport_init()) {
+-        GGML_ABORT("RPC transport initialization failed\n");
+-    }
+-
+-    sock = socket_t::connect(host.c_str(), port);
+-    if (sock == nullptr) {
+-        GGML_ABORT("Failed to connect to %s\n", endpoint.c_str());
+-    }
+-    if (!negotiate_hello(sock)) {
+-        GGML_ABORT("RPC handshake failed for %s\n", endpoint.c_str());
++        fail("bad endpoint");
++    } else if (!rpc_transport_init()) {
++        fail("transport initialization failed");
++    } else {
++        sock = socket_t::connect(host.c_str(), port);
++        if (sock == nullptr) {
++            fail("could not connect");
++        } else if (!negotiate_hello(sock)) {
++            fail("handshake failed");
++        } else {
++            LOG_DBG("[%s] connected to %s\n", __func__, endpoint.c_str());
++        }
+     }
+-    LOG_DBG("[%s] connected to %s\n", __func__, endpoint.c_str());
+     running = true;
+     thread = std::thread(rpc_dispatcher_trampoline, this);
+ }
+@@ -677,12 +695,20 @@ void rpc_dispatcher::work() {
+                      rpc_log_format_size(msg_ptr->input_size).c_str(), rpc_log_format_size(msg_ptr->output_size).c_str());
+             const bool trace = rpc_log_debug_level() >= 3;
+             const auto t0 = std::chrono::steady_clock::now();
+-            if (msg_ptr->output) {
+-                bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->output, msg_ptr->output_size);
+-                RPC_STATUS_ASSERT(status);
+-            } else {
+-                bool status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
+-                RPC_STATUS_ASSERT(status);
++            bool status = false;
++            if (!failed) {
++                if (msg_ptr->output) {
++                    status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size, msg_ptr->output, msg_ptr->output_size);
++                } else {
++                    status = send_rpc_cmd(sock, msg_ptr->cmd, msg_ptr->input.get(), msg_ptr->input_size);
++                }
++            }
++            if (!status) {
++                // Nyx: the other side is gone: answer with zeros from now on instead of aborting
++                fail(rpc_cmd_name(msg_ptr->cmd));
++                if (msg_ptr->output) {
++                    memset(msg_ptr->output, 0, msg_ptr->output_size);
++                }
+             }
+             if (trace) {
+                 const std::chrono::duration<double, std::milli> elapsed = std::chrono::steady_clock::now() - t0;
+@@ -742,6 +768,10 @@ static void * ggml_backend_rpc_buffer_get_base(ggml_backend_buffer_t buffer) {
+     LOG_DBG2("[%s] remote_ptr: 0x%" PRIx64 "\n", __func__, ctx->remote_ptr);
+     rpc_msg_buffer_get_base_rsp response;
+     ctx->dispatcher->send(RPC_CMD_BUFFER_GET_BASE, request, sizeof(*request), &response, sizeof(response));
++    if (response.base_ptr == 0) {
++        // Nyx: lost connection; ggml asserts on a null base, and nothing is sent any more anyway
++        response.base_ptr = 0x10000;
++    }
+     ctx->base_ptr = reinterpret_cast<void *>(response.base_ptr);
+     return ctx->base_ptr;
+ }
+@@ -1009,7 +1039,7 @@ static size_t get_alignment(const std::shared_ptr<rpc_dispatcher> & dispatcher,
+     rpc_msg_get_alignment_rsp response;
+     dispatcher->send(RPC_CMD_GET_ALIGNMENT, request, sizeof(*request), &response, sizeof(response));
+     LOG_DBG2("[%s] device: %u, alignment: %s\n", __func__, device, rpc_log_format_size(response.alignment).c_str());
+-    return response.alignment;
++    return response.alignment != 0 ? response.alignment : 64;  // Nyx: 0 after a lost connection
+ }
+ 
+ static size_t ggml_backend_rpc_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
+@@ -1023,7 +1053,7 @@ static size_t get_max_size(const std::shared_ptr<rpc_dispatcher> & dispatcher, u
+     rpc_msg_get_max_size_rsp response;
+     dispatcher->send(RPC_CMD_GET_MAX_SIZE, request, sizeof(*request), &response, sizeof(response));
+     LOG_DBG2("[%s] device: %u, max_size: %s\n", __func__, device, rpc_log_format_size(response.max_size).c_str());
+-    return response.max_size;
++    return response.max_size != 0 ? response.max_size : SIZE_MAX;  // Nyx: 0 after a lost connection
+ }
+ 
+ static size_t ggml_backend_rpc_get_max_size(ggml_backend_buffer_type_t buft) {
+@@ -1269,6 +1299,9 @@ void rpc_dispatcher::graph_compute(uint32_t device, const ggml_cgraph * cgraph)
+ 
+ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+     ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;
++    if (rpc_ctx->dispatcher->failed) {
++        return GGML_STATUS_FAILED;  // Nyx: the remote device is gone
++    }
+     rpc_ctx->dispatcher->graph_compute(rpc_ctx->device, cgraph);
+     return GGML_STATUS_SUCCESS;
+ }
+@@ -3102,6 +3135,12 @@ static void * ggml_backend_rpc_get_proc_address(ggml_backend_reg_t reg, const ch
+     if (std::strcmp(name, "ggml_backend_rpc_start_server") == 0) {
+         return (void *)ggml_backend_rpc_start_server;
+     }
++    if (std::strcmp(name, "ggml_backend_rpc_lost_count") == 0) {
++        return (void *)ggml_backend_rpc_lost_count;
++    }
++    if (std::strcmp(name, "ggml_backend_rpc_get_device_memory") == 0) {
++        return (void *)ggml_backend_rpc_get_device_memory;
++    }
+     if (std::strcmp(name, "ggml_backend_comm_init") == 0) {
+         return (void *)ggml_backend_rpc_comm_init;
+     }

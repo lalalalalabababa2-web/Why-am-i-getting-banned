@@ -28,6 +28,9 @@ data class ModelInfo(
     val vision: Boolean,
     val audio: Boolean,
     val computeBytes: Long,
+    /** The model's layers, and how many of them are on other phones. */
+    val nLayer: Int = 0,
+    val nRemoteLayers: Int = 0,
 ) {
     companion object {
         fun parse(json: String): ModelInfo {
@@ -50,6 +53,8 @@ data class ModelInfo(
                 vision = j.optBoolean("vision"),
                 audio = j.optBoolean("audio"),
                 computeBytes = j.optLong("compute_bytes"),
+                nLayer = j.optInt("n_layer"),
+                nRemoteLayers = j.optInt("n_remote_layers"),
             )
         }
     }
@@ -72,6 +77,8 @@ data class LoadConfig(
     val imageMaxTokens: Int = 0,
     /** Full sliding-window cache (drafting and cheap rollbacks) or a compact one (less memory). */
     val swaFull: Boolean = true,
+    /** Parts of the model on other phones (Phones working together); empty: all of it here. */
+    val rpc: List<app.offlineai.chat.pool.RpcPart> = emptyList(),
 ) {
     fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
 
@@ -88,6 +95,9 @@ data class LoadConfig(
         .put("mmproj", mmprojPath)
         .put("image_max_tokens", imageMaxTokens)
         .put("swa_full", swaFull)
+        .put("rpc", org.json.JSONArray().apply {
+            rpc.forEach { put(JSONObject().put("endpoint", it.endpoint).put("share", it.share.toDouble())) }
+        })
 }
 
 data class LoadedModel(
@@ -125,6 +135,8 @@ data class ChatOutcome(
     val nMajflt: Long = 0,
     /** Separate answers a team reply was written from (0: not a team reply). */
     val team: Int = 0,
+    /** Part of the model was on another phone, and that phone went away: the model has to load again. */
+    val lostPhone: Boolean = false,
 ) {
     companion object {
         fun parse(json: String): ChatOutcome {
@@ -151,6 +163,7 @@ data class ChatOutcome(
                 tMediaMs = s.optDouble("t_media_ms", 0.0),
                 nMajflt = s.optLong("n_majflt"),
                 team = s.optInt("team"),
+                lostPhone = j.optBoolean("lost_phone"),
             )
         }
 
@@ -270,6 +283,15 @@ class EngineController {
     private fun endReadAhead() {
         aheadRequest.set(null)
         runCatching { NativeEngine.nativeAllowReadAhead(false) }
+    }
+
+    /** A load is about to start (the app is asking the other phones first): the screens say so already. */
+    fun preparing(key: String, displayName: String) {
+        loadingName = displayName
+        loadingKey = key
+        loadProgress = 0f
+        if (phase == Phase.IDLE || phase == Phase.READY) phase = Phase.LOADING
+        announce()
     }
 
     /** Loads a model, replacing the current one. [onDone] gets null on success or the reason it failed. */
