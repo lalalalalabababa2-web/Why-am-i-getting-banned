@@ -106,11 +106,14 @@ object PoolWire {
     fun status(host: String, port: Int, myId: String = "", timeoutMs: Int = 2500): LendStatus? = try {
         connect(host, port, timeoutMs).use { s ->
             val out = s.getOutputStream()
+            val t0 = System.nanoTime()
             out.write(MAGIC)
             out.write(STATUS)
             writeShort(out, myId)
             out.flush()
-            LendStatus.parse(readLine(s.getInputStream()))
+            val line = readLine(s.getInputStream())
+            // one round trip and a little work over there: about what each step of a split model waits for
+            LendStatus.parse(line)?.copy(rttMs = (System.nanoTime() - t0) / 1_000_000)
         }
     } catch (e: Exception) {
         null
@@ -179,11 +182,16 @@ data class LendStatus(
     val cacheBytes: Long,
     val version: Int,
     val error: String,
+    /** Battery percent, and whether it is charging (-1: unknown). */
+    val battery: Int = -1,
+    val charging: Boolean = false,
+    /** Round trip of the status question, measured by the phone that asked (ms). */
+    val rttMs: Long = -1,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("free", freeRam).put("total", totalRam).put("cores", cores)
         .put("busy", busy).put("peer", peer).put("peer_id", peerId).put("used", usedRam).put("cache", cacheBytes).put("v", version)
-        .put("error", error)
+        .put("error", error).put("battery", battery).put("charging", charging)
 
     companion object {
         fun parse(line: String): LendStatus? = try {
@@ -201,6 +209,8 @@ data class LendStatus(
                 cacheBytes = j.optLong("cache"),
                 version = j.optInt("v"),
                 error = j.optString("error"),
+                battery = j.optInt("battery", -1),
+                charging = j.optBoolean("charging"),
             )
         } catch (e: Exception) {
             null

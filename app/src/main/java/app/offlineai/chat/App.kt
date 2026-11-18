@@ -229,6 +229,9 @@ class App : Application() {
         return weights + settings.contextSize.toLong() * (if (kvQ8) 20_000L else 40_000L) + 300_000_000L
     }
 
+    /** What the paired phones that answer now could take of a model (Phones together); 0 without any. */
+    fun phonesFreeRam(): Long = if (!::phones.isInitialized) 0L else phones.lendable()
+
     /** Extra memory while pictures or sound are being read. */
     fun picturesRam(model: LocalModel): Long = if (model.hasPictures) model.picturesFile.length() + 150_000_000L else 0L
 

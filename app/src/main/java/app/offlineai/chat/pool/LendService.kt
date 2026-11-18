@@ -273,6 +273,15 @@ class LendService : Service() {
                 val all = synchronized(open) { open.toList().also { open.clear() } }
                 all.forEach { it.close() }
             }
+            // running this phone flat for another one helps no one: below 15% and not charging, stop
+            val (level, charging) = battery()
+            if (level in 0 until LOW_BATTERY && !charging) {
+                main.post {
+                    lowBattery()
+                    stopLending()
+                }
+                return
+            }
         }
     }
 
@@ -289,7 +298,17 @@ class LendService : Service() {
             busy = sessions.get() > 0, peer = peerName, peerId = peerId,
             usedRam = if (sessions.get() > 0) Debug.getPss() * 1024L else 0L,
             cacheBytes = cacheBytes, version = PoolWire.VERSION, error = serverError,
+            battery = battery().first, charging = battery().second,
         )
+    }
+
+    /** Battery percent and whether it charges. */
+    private fun battery(): Pair<Int, Boolean> {
+        val i = registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return -1 to false
+        val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val plugged = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+        return (if (level < 0) -1 else level * 100 / scale) to plugged
     }
 
     private fun register(port: Int) {
@@ -329,6 +348,22 @@ class LendService : Service() {
         // the RPC server cannot be told to stop: ending this process (it is the lending one only)
         // stops it and gives back everything the other phone had here
         main.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300)
+    }
+
+    /** Says lending stopped for a low battery (a notification of its own, since the service's goes). */
+    private fun lowBattery() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val hidden = Settings(this).disguised
+        runCatching {
+            nm.notify(NOTIFICATION_ID + 1, NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(R.drawable.ic_spark)
+                .setContentTitle(if (hidden) Disguise.GAME_NAME else "Lending stopped: battery low")
+                .setContentText(if (hidden) "Game over" else "Below $LOW_BATTERY% and not charging. Plug it in and turn lending on again.")
+                .setAutoCancel(true)
+                .build())
+        }
+        // the setting goes off too, so the app does not start lending again by itself
+        Settings(this).lending = false
     }
 
     override fun onDestroy() {
@@ -394,6 +429,8 @@ class LendService : Service() {
         const val PORT_FILE = "lend_port"
         /** No word from the phone using this one for this long: it is gone. */
         const val STALE_MS = 90_000L
+        /** Battery percent below which lending stops by itself (unless charging). */
+        const val LOW_BATTERY = 15
 
         fun spaced(code: String) = if (code.length == 6) code.substring(0, 3) + " " + code.substring(3) else code
 

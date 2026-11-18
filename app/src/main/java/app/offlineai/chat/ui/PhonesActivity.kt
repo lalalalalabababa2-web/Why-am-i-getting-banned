@@ -114,7 +114,7 @@ class PhonesActivity : AppCompatActivity(), Phones.Listener {
         val key = buildString {
             append(app.settings.lending).append(app.settings.lendCode).append(app.settings.poolMode)
             append(mine?.let { "${it.busy}|${it.peer}|${it.usedRam / 50_000_000}|${it.cacheBytes / 50_000_000}|${it.error}" })
-            for (h in p.saved()) append("|${h.id}${h.enabled}${h.name}${p.online(h.id)}${p.status(h.id)?.freeRam?.div(100_000_000)}${p.status(h.id)?.busy}${p.lastError[h.id]}")
+            for (h in p.saved()) append("|${h.id}${h.enabled}${h.name}${p.online(h.id)}${p.status(h.id)?.freeRam?.div(100_000_000)}${p.status(h.id)?.busy}${p.lastError[h.id]}${p.status(h.id)?.rttMs?.div(10)}${p.status(h.id)?.battery}")
             for (n in p.nearby()) append("|n${n.id}${n.host}")
             append(app.engine.loaded?.info?.nRemoteLayers).append(app.engine.phase)
         }
@@ -274,8 +274,16 @@ class PhonesActivity : AppCompatActivity(), Phones.Listener {
             st.busy && st.peerId != app.settings.deviceId -> "Lending to ${st.peer.ifBlank { "another phone" }} right now"
             st.busy -> "Holding part of this phone's model · ${ModelStore.formatBytes(st.usedRam)}"
             else -> "Ready · ${ModelStore.formatBytes(st.freeRam)} free · ${st.cores} fast cores"
-        }
+        } + (if (st != null && p.online(h.id)) extras(st) else "")
         return switchRow(h.name, line, h.enabled, onLongClick = { pairedMenu(h) }) { on -> p.setEnabled(h.id, on) }
+    }
+
+    /** The Wi-Fi delay (a few of these go into every word) and the battery. */
+    private fun extras(st: LendStatus): String {
+        val parts = mutableListOf<String>()
+        if (st.rttMs >= 0) parts += "Wi-Fi delay ${st.rttMs} ms" + if (st.rttMs > 40) " (slow: closer to the router, or use a hotspot)" else ""
+        if (st.battery >= 0) parts += "battery ${st.battery}%" + if (st.charging) ", charging" else ""
+        return if (parts.isEmpty()) "" else "\n" + parts.joinToString(" · ")
     }
 
     private fun pairedMenu(h: HelperPhone) {

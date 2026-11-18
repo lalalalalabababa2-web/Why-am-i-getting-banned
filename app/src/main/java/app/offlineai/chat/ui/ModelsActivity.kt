@@ -182,6 +182,10 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
             listOf("ornith15-9b", "lfm25-8b-a1b", "qwen35-9b-iq3", "qwen35-9b-q3km", "gemma4-12b", "bonsai-27b"))
+        group("For two or more phones",
+            "Too big for one phone: they run across your phones on the same Wi-Fi, each holding part of the model " +
+                "(Settings, Phones together). Every word waits for the Wi-Fi, so they write slowly, but they know far more.",
+            listOf("qwen35-27b", "gemma4-31b", "gemma4-26b-a4b", "qwen35-35b-a3b"))
         // anything in the catalog not placed above still shows
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
@@ -446,9 +450,15 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                         // whether it would fit before it is downloaded, from the memory free right now
                         val need = app.estimatedRam(catalog)
                         val fits = need <= freeRam
-                        status.setTextColor(if (fits) Palette.text2 else Palette.caution)
-                        status.text = "Not downloaded · needs about ${ModelStore.formatBytes(need)} of memory, " +
-                            (if (fits) "fits in what is free now" else "more than is free now (close other apps first)")
+                        val shared = app.phonesFreeRam()
+                        val fitsShared = !fits && shared > 0 && need <= freeRam + shared
+                        status.setTextColor(if (fits || fitsShared) Palette.text2 else Palette.caution)
+                        status.text = "Not downloaded · needs about ${ModelStore.formatBytes(need)} of memory, " + when {
+                            fits -> "fits in what is free now"
+                            fitsShared -> "fits with your other phones (Phones together)"
+                            catalog.phones > 1 -> "needs ${catalog.phones - 1} more phone${if (catalog.phones > 2) "s" else ""} on the same Wi-Fi (Settings, Phones together)"
+                            else -> "more than is free now (close other apps first)"
+                        }
                     } else {
                         status.text = "Not downloaded"
                     }

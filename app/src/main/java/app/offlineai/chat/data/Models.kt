@@ -56,6 +56,8 @@ data class CatalogModel(
     val mtp: Boolean = false,
     /** A copy smaller than this is an older download without the MTP head (same file name). */
     val olderBelow: Long = 0,
+    /** 8 GB phones it takes to hold it (Phones together); 1 for everything that fits one phone. */
+    val phones: Int = 1,
 ) {
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     val page: String get() = "https://huggingface.co/$repo"
@@ -357,6 +359,35 @@ object Catalog {
                 "and hears sound, but writes much slower. Close other apps first.",
             "unsloth/gemma-4-12b-it-GGUF", "gemma-4-12b-it-UD-IQ3_XXS.gguf", 4_640_000_000L, Family.GEMMA, true, large = true,
             pictures = ExtraFile("mmproj-F16.gguf", 175_000_000L, "unsloth/gemma-4-12b-it-GGUF"), hears = true,
+        ),
+        // ---- Too big for one phone: they run across two or three phones on the same Wi-Fi (Phones together).
+        CatalogModel(
+            "qwen35-27b", "Qwen3.5 27B", "Alibaba Qwen",
+            "Qwen3.5's 27B model squeezed to about 2.5 bits: much more knowledge than anything that fits one phone. " +
+                "Needs two 8 GB phones on the same Wi-Fi (Phones together). Thinks before answering; sees pictures.",
+            "unsloth/Qwen3.5-27B-GGUF", "Qwen3.5-27B-UD-IQ2_XXS.gguf", 8_573_593_504L, Family.QWEN, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 927_607_040L, "unsloth/Qwen3.5-27B-GGUF"), phones = 2,
+        ),
+        CatalogModel(
+            "gemma4-31b", "Gemma 4 31B", "Google",
+            "Google's biggest Gemma 4, squeezed to about 2.5 bits. Needs two 8 GB phones on the same Wi-Fi (Phones " +
+                "together). Thinks before answering; sees pictures.",
+            "unsloth/gemma-4-31B-it-GGUF", "gemma-4-31B-it-UD-IQ2_XXS.gguf", 8_534_295_488L, Family.GEMMA, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 1_198_957_024L, "unsloth/gemma-4-31B-it-GGUF"), phones = 2,
+        ),
+        CatalogModel(
+            "gemma4-26b-a4b", "Gemma 4 26B-A4B", "Google",
+            "A mixture of experts: 26B of knowledge, but only about 4B of it works on each word, so it writes about as " +
+                "fast as a 4B model. About 3 bits, 10 GB: three 8 GB phones, or two with 12 GB. Sees pictures.",
+            "unsloth/gemma-4-26B-A4B-it-GGUF", "gemma-4-26B-A4B-it-UD-IQ2_M.gguf", 10_014_755_296L, Family.GEMMA, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 1_193_058_784L, "unsloth/gemma-4-26B-A4B-it-GGUF"), phones = 3,
+        ),
+        CatalogModel(
+            "qwen35-35b-a3b", "Qwen3.5 35B-A3B", "Alibaba Qwen",
+            "A mixture of experts: 35B of knowledge with about 3B at work on each word, so it writes quickly for its " +
+                "size. About 2.7 bits, 11.4 GB: three 8 GB phones, or two with 12 GB. Thinks before answering.",
+            "unsloth/Qwen3.5-35B-A3B-GGUF", "Qwen3.5-35B-A3B-UD-IQ2_M.gguf", 11_391_613_568L, Family.QWEN, true, large = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 899_283_648L, "unsloth/Qwen3.5-35B-A3B-GGUF"), phones = 3,
         ),
     )
 

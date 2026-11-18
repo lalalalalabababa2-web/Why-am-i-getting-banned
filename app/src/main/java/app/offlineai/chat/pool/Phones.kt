@@ -233,6 +233,17 @@ class Phones(private val app: App) {
 
     // ------------------------------------------------------------------ how much goes where
 
+    /** What the paired phones that are on and answering could take of a model now. */
+    fun lendable(): Long {
+        if (app.settings.poolMode == PoolMode.OFF) return 0L
+        val me = app.settings.deviceId
+        return saved().filter { it.enabled && online(it.id) }.sumOf { h ->
+            val st = statuses[h.id] ?: return@sumOf 0L
+            if (st.error.isNotEmpty() || (st.busy && st.peerId.isNotEmpty() && st.peerId != me)) 0L
+            else (((st.freeRam + (if (st.busy) st.usedRam else 0L)) - 300_000_000L) * 0.8).toLong().coerceAtLeast(0L)
+        }
+    }
+
     /**
      * The phones a model should be split with, and each one's share of its layers, from what they
      * said last. [need]: what the whole model needs; [localFree]: what this phone has for it.
@@ -255,9 +266,11 @@ class Phones(private val app: App) {
         val local = (localFree * 0.75).toLong().coerceAtLeast(0L)
         if (mode == PoolMode.AUTO && need <= local) return emptyList()
         val sum = helpers.sumOf { it.third }.toDouble()
-        val remote = when (mode) {
+        val remote = when {
+            mode == PoolMode.ALWAYS -> sum / (sum + local)
             // what does not fit here, and a little more so neither side is at its edge
-            PoolMode.AUTO -> ((need - local).toDouble() / need + 0.05).coerceAtMost(sum / need)
+            need - local <= sum -> ((need - local).toDouble() / need + 0.05).coerceAtMost(sum / need)
+            // more than all of them have: the shortfall spread evenly, instead of all of it landing here
             else -> sum / (sum + local)
         }.coerceIn(0.1, 0.9)
         return helpers.map { (h, _, b) -> RpcPart(h.id, endpointFor(h), (remote * b / sum).toFloat()) }

@@ -55,7 +55,8 @@ browser when Android asks. New builds install over old ones and keep models and 
 - **First start**: the empty chat suggests one model for the phone's memory (Gemma 4 E4B on an
   8 GB phone, smaller ones on phones with less), downloads it in one tap with its progress shown,
   and loads it the moment it is on the phone.
-- **Models screen**: 41 models from 270M to 27B that fit 8 GB of memory, grouped by what they
+- **Models screen**: 41 models from 270M to 27B that fit 8 GB of memory, and 4 more (Qwen3.5 27B
+  and 35B-A3B, Gemma 4 31B and 26B-A4B) for two or three phones together, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
@@ -137,6 +138,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
 | Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Qwen3-VL 8B, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed; Spark-X2.6 4B by FrostWolfAI |
 | Bigger | Ornith 1.5 9B (Qwen3.5 9B trained further for code and agents), LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
+| For two or more phones | Qwen3.5 27B and Gemma 4 31B (about 2.5 bits, 8.5 GB: two 8 GB phones), Gemma 4 26B-A4B and Qwen3.5 35B-A3B (mixtures of experts, 10-11 GB: three 8 GB phones or two with 12 GB) |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
 Bonsai) to fit. The community ones are fine-tunes by individuals; their makers' benchmark claims
