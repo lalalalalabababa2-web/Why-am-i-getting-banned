@@ -471,6 +471,36 @@ class SmokeTest {
         onMain { app.chat.newChat() }
     }
 
+    /** Write again keeps the earlier versions of a reply; ‹ › flips between them, and they are saved with the chat. */
+    @Test
+    fun writeAgainKeepsVersions() {
+        app.settings.contextSize = 2048
+        app.settings.maxTokens = 16
+        load(installed("test-llama.gguf"))
+        onMain { app.chat.newChat() }
+        turn("Tell me something")
+        for (i in 0 until 2) {
+            onMain { app.chat.regenerate() }
+            waitFor("write again", 120_000) { !app.chat.generating }
+        }
+        var id = ""
+        onMain {
+            val m = app.chat.conversation.messages.last()
+            id = app.chat.conversation.id
+            assertEquals("three versions", 3, m.versions.size)
+            assertEquals("the newest shown", 2, m.shown)
+            assertEquals(2, app.chat.conversation.messages.size)
+            app.chat.flipVersion(m, -1)
+            assertEquals(1, m.shown)
+            assertEquals(m.versions[1].content, m.content)
+            app.chats.save(app.chat.conversation)
+        }
+        val again = app.chats.load(id)!!.messages.last()
+        assertEquals(3, again.versions.size)
+        assertEquals(1, again.shown)
+        onMain { app.chat.newChat() }
+    }
+
     /** A reply cut off by its length limit is carried on, into the same message, starting with what it had. */
     @Test
     fun aCutOffReplyContinues() {

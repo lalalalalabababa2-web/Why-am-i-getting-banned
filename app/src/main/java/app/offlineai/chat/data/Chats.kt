@@ -41,6 +41,17 @@ class Attachment(
     }
 }
 
+/** One version of a reply: Write again keeps the earlier ones, to flip back to. */
+data class Version(val content: String, val reasoning: String, val stats: String, val model: String, val team: Int) {
+    fun toJson(): JSONObject = JSONObject().put("content", content).put("reasoning", reasoning).put("stats", stats)
+        .put("model", model).put("team", team)
+
+    companion object {
+        fun fromJson(j: JSONObject) = Version(j.optString("content"), j.optString("reasoning"), j.optString("stats"),
+            j.optString("model"), j.optInt("team"))
+    }
+}
+
 class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: String,               // user or assistant
@@ -57,7 +68,35 @@ class ChatMessage(
     var team: Int = 0,
     /** A character's opening line: shown, but not sent to the model (the character's prompt says it). */
     val greeting: Boolean = false,
+    /**
+     * Every version of this reply when it was written again (empty: only ever one), with [shown]
+     * the one in [content] and the other fields, which is what the conversation goes on from.
+     */
+    val versions: MutableList<Version> = mutableListOf(),
+    var shown: Int = 0,
 ) {
+    /** This reply as it stands now, as a version. */
+    fun asVersion() = Version(content, reasoning, stats, model, team)
+
+    /** Writes what is shown back into its place among the versions (after it changed, by Continue say). */
+    fun syncVersion() {
+        if (shown in versions.indices) versions[shown] = asVersion()
+    }
+
+    /** Shows version [i]. */
+    fun show(i: Int) {
+        if (i !in versions.indices) return
+        syncVersion()
+        shown = i
+        val v = versions[i]
+        content = v.content
+        reasoning = v.reasoning
+        stats = v.stats
+        model = v.model
+        team = v.team
+        error = false
+    }
+
     fun toJson(): JSONObject {
         val j = JSONObject()
             .put("id", id).put("role", role).put("content", content).put("reasoning", reasoning)
@@ -65,6 +104,9 @@ class ChatMessage(
         if (partial) j.put("partial", true)
         if (team > 0) j.put("team", team)
         if (greeting) j.put("greeting", true)
+        if (versions.isNotEmpty()) {
+            j.put("versions", JSONArray().apply { versions.forEach { put(it.toJson()) } }).put("shown", shown)
+        }
         if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
         return j
     }
@@ -87,6 +129,10 @@ class ChatMessage(
                 partial = j.optBoolean("partial"),
                 team = j.optInt("team"),
                 greeting = j.optBoolean("greeting"),
+                versions = j.optJSONArray("versions")?.let { a ->
+                    (0 until a.length()).mapNotNull { runCatching { Version.fromJson(a.getJSONObject(it)) }.getOrNull() }.toMutableList()
+                } ?: mutableListOf(),
+                shown = j.optInt("shown"),
             )
         }
     }

@@ -67,6 +67,8 @@ browser when Android asks. New builds install over old ones and keep models and 
   Memory still applies. The opening line is shown but not sent as a message (some templates, like
   Gemma's, want the person to speak first): the character's prompt says it was said. Hold the New
   chat button, or tap the model's name, then Characters.
+- **Reply versions**: *Write again* keeps the earlier versions of the last reply (up to 10); ‹ 2/3 ›
+  in its footer flips between them, and the conversation goes on from the one shown.
 - **Continue**: a reply cut off by its length limit (or stopped) has a *Continue* button: the
   model carries on writing the same message from where it stopped (llama.cpp renders the reply
   unfinished and the model writes on; checked with the real Qwen3.5 and Gemma 4 templates).

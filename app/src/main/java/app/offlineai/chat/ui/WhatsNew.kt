@@ -10,6 +10,8 @@ object WhatsNew {
     const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Reply versions" to "Write again keeps the earlier replies: flip between them with the arrows under the last " +
+            "reply, and the chat goes on from the one you pick.",
         "Characters" to "Chat with someone: a storyteller, a study buddy, a debate partner, or anyone you make (name, " +
             "personality, how they open the chat). Hold the New chat button, or tap the model's name, then Characters.",
         "Continue" to "A reply cut off by its length limit, or stopped, has a Continue button: the model carries on " +

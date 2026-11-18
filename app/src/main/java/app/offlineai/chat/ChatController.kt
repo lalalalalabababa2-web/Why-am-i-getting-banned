@@ -4,6 +4,7 @@ import android.os.SystemClock
 import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.ChatMessage
 import app.offlineai.chat.data.Conversation
+import app.offlineai.chat.data.Version
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.Family
 import app.offlineai.chat.data.recommended
@@ -16,6 +17,9 @@ import java.util.Locale
 
 /** Pages read back from storage in one turn above which the model plainly does not fit in free memory. */
 private const val SLOW_MEMORY_FAULTS = 2000L
+
+/** Versions of one reply kept by Write again (the oldest go first). */
+private const val MAX_VERSIONS = 10
 
 /** Stands for the next message when the engine reads the conversation ahead of it (Engine::read_ahead). */
 private const val NEXT_MESSAGE = "<<the next message>>"
@@ -227,11 +231,26 @@ class ChatController(private val app: App) {
         val model = app.engine.loaded ?: return
         if (generating) return
         val msgs = conversation.messages
+        // the reply written now joins the earlier versions of the one it replaces (flip back with ‹ ›)
+        val old = msgs.lastOrNull()?.takeIf { it.role == "assistant" && !it.greeting }
+        val earlier = when {
+            old == null -> emptyList()
+            old.versions.isNotEmpty() -> old.also { if (!it.error) it.syncVersion() }.versions.toList()
+            !old.error && old.content.isNotBlank() -> listOf(old.asVersion())
+            else -> emptyList()
+        }
         // (a character's greeting stays: it is not a reply)
         while (msgs.isNotEmpty() && msgs.last().role == "assistant" && !msgs.last().greeting) msgs.removeAt(msgs.size - 1)
         if (msgs.none { it.role == "user" }) return
-        if (msgs.isEmpty()) return
-        startReply(model)
+        startReply(model, earlier = earlier.takeLast(MAX_VERSIONS - 1))
+    }
+
+    /** Shows another version of the last reply ([delta] -1: the one before, +1: the one after). */
+    fun flipVersion(m: ChatMessage, delta: Int) {
+        if (generating || conversation.messages.lastOrNull() !== m || m.versions.size < 2) return
+        m.show((m.shown + delta).coerceIn(0, m.versions.size - 1))
+        save()
+        changed()
     }
 
     /** Takes back your last message (and the reply to it) so it can be changed and sent again. */
@@ -302,7 +321,7 @@ class ChatController(private val app: App) {
         return if (content.startsWith(before)) content else before + content
     }
 
-    private fun startReply(model: LoadedModel, continuing: ChatMessage? = null) {
+    private fun startReply(model: LoadedModel, continuing: ChatMessage? = null, earlier: List<Version> = emptyList()) {
         val team = if (continuing != null) 0 else teamSize()
         val partner = app.engine.partner?.takeIf { team > 0 && it.key == app.settings.teamPartner && it.key != model.key }
         val reply = continuing?.apply { partial = true } ?: ChatMessage(
@@ -310,6 +329,10 @@ class ChatController(private val app: App) {
             model = if (partner != null) "${model.displayName} + ${partner.displayName}" else model.displayName,
         )
         continuedFrom = continuing?.let { it.content to it.reasoning }
+        if (continuing == null && earlier.isNotEmpty()) {
+            reply.versions.addAll(earlier)
+            reply.shown = earlier.size  // where the reply written now goes
+        }
         val request = buildRequest(model)
         if (continuing != null) {
             request.put("continue", true)
@@ -387,6 +410,10 @@ class ChatController(private val app: App) {
             reply.content = content
             reply.reasoning = reasoning
             reply.stats = "could not continue: ${o.error.ifBlank { "something went wrong" }}"
+        } else if (!o.ok && reply.versions.isNotEmpty()) {
+            // writing it again failed: the last version comes back, saying why there is no new one
+            reply.show(reply.versions.size - 1)
+            reply.stats = "could not write again: ${o.error.ifBlank { "something went wrong" }}"
         } else if (!o.ok) {
             reply.error = true
             reply.reasoning = ""
@@ -396,10 +423,19 @@ class ChatController(private val app: App) {
             reply.content = whole(o.content).trim()
             reply.reasoning = o.reasoning.trim().ifBlank { carried?.second?.trim() ?: "" }
             if (reply.content.isEmpty() && reply.reasoning.isEmpty() && o.stopReason == "stopped") {
-                convo?.messages?.remove(reply)
+                // stopped before a word: the earlier version stays, or the empty reply goes
+                if (reply.versions.isNotEmpty()) reply.show(reply.versions.size - 1) else convo?.messages?.remove(reply)
             } else {
                 reply.stats = describe(o) + (if (carried != null) " · continued" else "")
                 if (o.team > 0) reply.team = o.team
+                when {
+                    reply.versions.isEmpty() -> {}
+                    carried != null -> reply.syncVersion()
+                    else -> {
+                        reply.versions.add(reply.asVersion())
+                        reply.shown = reply.versions.size - 1
+                    }
+                }
             }
         }
         continuedFrom = null

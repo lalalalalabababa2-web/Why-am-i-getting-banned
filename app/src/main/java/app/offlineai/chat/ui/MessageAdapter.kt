@@ -81,7 +81,7 @@ class MessageAdapter(
     override fun getItemId(position: Int): Long = ids.getOrPut(messages[position].id) { nextId++ }
 
     private fun fingerprint(m: ChatMessage) =
-        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}|${m.attachments.size}"
+        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}|${m.attachments.size}|${m.shown}/${m.versions.size}"
 
     /** Shows the conversation as it is now, changing only what changed. */
     fun submit() {
@@ -235,6 +235,11 @@ class MessageAdapter(
             setPadding(ctx.dp(14), ctx.dp(4), ctx.dp(14), ctx.dp(4))
         }
         private val more = ctx.iconButton(R.drawable.ic_more, "More", Palette.text3) {}
+        /** The versions Write again kept of the last reply: earlier, "2/3", later. */
+        private val prevVersion = ctx.iconButton(R.drawable.ic_back, "Earlier version of this reply", Palette.text3) {}
+        private val versionLabel = ctx.text("", 12f, Palette.text3)
+        private val nextVersion = ctx.iconButton(R.drawable.ic_chevron_right, "Later version of this reply", Palette.text3) {}
+        private val versionsBar = LinearLayout(ctx)
         private val footer = LinearLayout(ctx)
         private var message: ChatMessage? = null
         private var thinkingShown = ""
@@ -267,6 +272,12 @@ class MessageAdapter(
             footer.orientation = LinearLayout.HORIZONTAL
             footer.gravity = Gravity.CENTER_VERTICAL
             footer.addView(stats, lp(0, WRAP, 1f))
+            versionsBar.orientation = LinearLayout.HORIZONTAL
+            versionsBar.gravity = Gravity.CENTER_VERTICAL
+            versionsBar.addView(prevVersion, lp(ctx.dp(32), ctx.dp(36)))
+            versionsBar.addView(versionLabel)
+            versionsBar.addView(nextVersion, lp(ctx.dp(32), ctx.dp(36)))
+            footer.addView(versionsBar, lp(WRAP, WRAP))
             footer.addView(copy, lp(ctx.dp(36), ctx.dp(36)))
             footer.addView(again, lp(ctx.dp(36), ctx.dp(36)))
             footer.addView(more, lp(ctx.dp(36), ctx.dp(36)))
@@ -412,6 +423,15 @@ class MessageAdapter(
                 again.visibility = if (isLast && !m.greeting && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
                 again.setOnClickListener { app.chat.regenerate() }
                 cont.visibility = if (isLast && app.chat.canContinue(m)) View.VISIBLE else View.GONE
+                val many = isLast && m.versions.size > 1 && !app.chat.generating
+                versionsBar.visibility = if (many) View.VISIBLE else View.GONE
+                if (many) {
+                    versionLabel.text = "${m.shown + 1}/${m.versions.size}"
+                    prevVersion.alpha = if (m.shown > 0) 1f else 0.3f
+                    nextVersion.alpha = if (m.shown < m.versions.size - 1) 1f else 0.3f
+                    prevVersion.setOnClickListener { app.chat.flipVersion(m, -1) }
+                    nextVersion.setOnClickListener { app.chat.flipVersion(m, +1) }
+                }
                 more.setOnClickListener { showMenu(it) }
             }
         }
