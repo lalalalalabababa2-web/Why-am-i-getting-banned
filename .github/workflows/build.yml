@@ -296,7 +296,7 @@ jobs:
           ls -la OfflineAI.apk
           echo "--- native libraries"
           unzip -l OfflineAI.apk 'lib/*' | awk '{print $1, $4}'
-          for lib in libofflineai.so libllama.so libllama-common.so libggml.so libggml-base.so libc++_shared.so; do
+          for lib in libofflineai.so libllama.so libllama-common.so libggml.so libggml-base.so libggml-rpc.so libc++_shared.so; do
             unzip -l OfflineAI.apk "lib/arm64-v8a/$lib" > /dev/null || { echo "::error::$lib is missing from the APK"; exit 1; }
           done
           n=$(unzip -l OfflineAI.apk 'lib/arm64-v8a/libggml-cpu-*' | grep -c 'libggml-cpu-')
