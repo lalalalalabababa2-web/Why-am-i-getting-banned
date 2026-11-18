@@ -19,6 +19,8 @@ import app.offlineai.chat.ui.Markdown
 import app.offlineai.chat.ui.RenderOptions
 import app.offlineai.chat.ui.ModelsActivity
 import app.offlineai.chat.ui.SettingsActivity
+import app.offlineai.chat.ui.PhonesActivity
+import app.offlineai.chat.pool.HelperPhone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -510,6 +512,15 @@ class SmokeTest {
         ActivityScenario.launch(SettingsActivity::class.java).use { Thread.sleep(1500) }
         ActivityScenario.launch(ChatsActivity::class.java).use { Thread.sleep(1000) }
         ActivityScenario.launch(AboutActivity::class.java).use { Thread.sleep(1000) }
+        // Phones together: with nothing paired, then with a phone paired that does not answer
+        ActivityScenario.launch(PhonesActivity::class.java).use { Thread.sleep(1500) }
+        app.phones.upsert(HelperPhone("test-id", "Test phone", "192.0.2.1", 50652, "123456"))
+        try {
+            ActivityScenario.launch(PhonesActivity::class.java).use { Thread.sleep(3000) }
+        } finally {
+            app.phones.remove("test-id")
+            app.phones.changed = false
+        }
     }
 
     /** Every license the About screen lists is in the APK, and is the license it says it is. */
