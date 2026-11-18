@@ -84,7 +84,8 @@ class AboutActivity : AppCompatActivity() {
                 "the same Wi-Fi. What crosses it are numbers from the middle of the model, never your words, and only " +
                 "to a phone you paired with its code.")
         point(promise, "Your chats are yours",
-            "Kept in the app's private storage. Export, import or delete them any time from the Chats screen.", last = true)
+            "Kept in the app's private storage, encrypted with a key that never leaves this phone's Keystore " +
+                "(Memory, characters and paired phones too). Export, import or delete them any time from the Chats screen.", last = true)
         content.addView(promise)
 
         // ---- this phone

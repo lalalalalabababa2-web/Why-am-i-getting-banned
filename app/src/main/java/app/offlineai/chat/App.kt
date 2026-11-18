@@ -40,9 +40,11 @@ class App : Application() {
     lateinit var chat: ChatController
         private set
     /** People to chat with, each with their own personality. */
-    val characters by lazy { app.offlineai.chat.data.CharacterStore(this) }
+    val characters by lazy { app.offlineai.chat.data.CharacterStore(this, crypto) }
     /** What Nyx remembers about you across chats. */
-    val memory by lazy { app.offlineai.chat.data.MemoryStore(this) }
+    val memory by lazy { app.offlineai.chat.data.MemoryStore(this, crypto) }
+    /** Encrypts what the app keeps on the phone (see DataCrypto). */
+    val crypto by lazy { app.offlineai.chat.data.DataCrypto(this) }
 
     /** The pictures made on this phone. */
     val pictures by lazy { PictureStore(this) }
@@ -74,7 +76,8 @@ class App : Application() {
         // the theme before any screen exists, so none has to be rebuilt for it
         app.offlineai.chat.ui.Palette.apply(this, settings)
         models = ModelStore(this)
-        chats = ChatStore(this)
+        chats = ChatStore(this, crypto)
+        chats.encryptOldChats()
         engine = EngineController()
         chat = ChatController(this)
         lastExit = readLastExit()
@@ -94,6 +97,12 @@ class App : Application() {
         phones.partsInUse = { engine.loaded?.config?.rpc ?: emptyList() }
         phones.onLost = { name -> phoneLost(name) }
         phones.startPolling()
+        // what was saved before encryption came in is saved again, encrypted
+        runCatching {
+            memory.reseal()
+            characters.reseal()
+            phones.reseal()
+        }
     }
 
     /**

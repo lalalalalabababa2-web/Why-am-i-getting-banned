@@ -7,6 +7,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.offlineai.chat.data.ChatMessage
+import app.offlineai.chat.data.Conversation
 import app.offlineai.chat.data.MediaImport
 import app.offlineai.chat.data.MemoryMode
 import app.offlineai.chat.data.Catalog
@@ -469,6 +470,35 @@ class SmokeTest {
         assertTrue(again.characterPrompt.contains(c.name))
         assertTrue(again.messages.first().greeting)
         onMain { app.chat.newChat() }
+    }
+
+    /**
+     * What the app keeps is encrypted: a saved chat's file holds none of its words and opens again,
+     * a chat saved before encryption came in still opens, and Memory is kept encrypted too.
+     */
+    @Test
+    fun savedDataIsEncrypted() {
+        assertTrue("the Keystore works on this device", app.crypto.enabled)
+        val c = Conversation()
+        c.messages.add(ChatMessage(role = "user", content = "a secret sentence 4471"))
+        app.chats.save(c)
+        val bytes = File(app.filesDir, "chats/${c.id}.json").readBytes()
+        assertFalse("the file holds no plain words", String(bytes, Charsets.ISO_8859_1).contains("4471"))
+        assertEquals("a secret sentence 4471", app.chats.load(c.id)!!.messages[0].content)
+
+        val old = Conversation()
+        old.messages.add(ChatMessage(role = "user", content = "plain 9928"))
+        File(app.filesDir, "chats/${old.id}.json").writeText(old.toJson().toString())
+        assertEquals("a chat from before encryption opens", "plain 9928", app.chats.load(old.id)!!.messages[0].content)
+        app.chats.delete(c.id)
+        app.chats.delete(old.id)
+
+        app.memory.clear()
+        app.memory.add("secret note 5531")
+        val raw = app.getSharedPreferences("memory", android.content.Context.MODE_PRIVATE).getString("notes", "")!!
+        assertFalse("Memory is kept encrypted", raw.contains("5531"))
+        assertTrue(app.memory.list().contains("secret note 5531"))
+        app.memory.clear()
     }
 
     /** Write again keeps the earlier versions of a reply; ‹ › flips between them, and they are saved with the chat. */

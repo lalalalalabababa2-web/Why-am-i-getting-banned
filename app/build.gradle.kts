@@ -72,7 +72,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // shrunk and renamed by R8 (app/proguard-rules.pro keeps what the engine reaches by name)
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
         debug {

@@ -31,13 +31,13 @@ data class Character(
 }
 
 /** The characters made on this phone; a few to start from on first use, which can be changed or deleted. */
-class CharacterStore(context: Context) {
+class CharacterStore(context: Context, private val crypto: DataCrypto) {
     private val prefs = context.getSharedPreferences("characters", Context.MODE_PRIVATE)
 
     fun list(): List<Character> {
         val raw = prefs.getString("list", null) ?: return STARTERS.also { store(it) }
         return try {
-            val a = JSONArray(raw)
+            val a = JSONArray(crypto.openString(raw))
             (0 until a.length()).map { Character.fromJson(a.getJSONObject(it)) }
         } catch (e: Exception) {
             emptyList()
@@ -45,12 +45,18 @@ class CharacterStore(context: Context) {
     }
 
     private fun store(list: List<Character>) {
-        prefs.edit().putString("list", JSONArray().apply { list.forEach { put(it.toJson()) } }.toString()).apply()
+        prefs.edit().putString("list", crypto.sealString(JSONArray().apply { list.forEach { put(it.toJson()) } }.toString())).apply()
     }
 
     fun save(c: Character) = store(list().filter { it.id != c.id } + c)
 
     fun delete(id: String) = store(list().filter { it.id != id })
+
+    /** Saved before encryption came in: saved again, encrypted. */
+    fun reseal() {
+        val raw = prefs.getString("list", null) ?: return
+        if (crypto.enabled && !raw.startsWith("nyxe1:")) store(list())
+    }
 
     companion object {
         val STARTERS = listOf(

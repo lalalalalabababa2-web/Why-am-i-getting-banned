@@ -179,7 +179,7 @@ class Conversation(
 data class ChatSummary(val id: String, val title: String, val updatedAt: Long, val count: Int)
 
 /** Conversations, one JSON file each, in the app's private storage. */
-class ChatStore(context: Context) {
+class ChatStore(context: Context, private val crypto: DataCrypto) {
     private val dir = File(context.filesDir, "chats").apply { mkdirs() }
     private val media = File(context.filesDir, "media")
 
@@ -225,7 +225,7 @@ class ChatStore(context: Context) {
     private fun write(id: String, text: String) {
         try {
             val tmp = File(dir, "$id.json.tmp")
-            tmp.writeText(text)
+            tmp.writeBytes(crypto.seal(text))
             if (!tmp.renameTo(File(dir, "$id.json"))) tmp.delete()
         } catch (e: Exception) {
             // storage full or unavailable: keep going; the conversation is still on screen
@@ -233,9 +233,30 @@ class ChatStore(context: Context) {
     }
 
     fun load(id: String): Conversation? = try {
-        Conversation.fromJson(JSONObject(File(dir, "$id.json").readText()))
+        Conversation.fromJson(JSONObject(read(File(dir, "$id.json"))))
     } catch (e: Exception) {
         null
+    }
+
+    /** A chat file's text: encrypted (DataCrypto), or plain from before encryption came in. */
+    private fun read(f: File): String = crypto.open(f.readBytes())
+
+    /**
+     * Encrypts the chats saved before encryption came in (once, in the background; each is also
+     * encrypted the next time it is saved anyway).
+     */
+    fun encryptOldChats() {
+        if (!crypto.enabled) return
+        io.execute {
+            for (f in dir.listFiles { x -> x.name.endsWith(".json") } ?: emptyArray()) {
+                try {
+                    val bytes = f.readBytes()
+                    if (crypto.isSealed(bytes)) continue
+                    write(f.name.removeSuffix(".json"), String(bytes, Charsets.UTF_8))
+                } catch (e: Exception) {
+                }
+            }
+        }
     }
 
     /**
@@ -260,7 +281,7 @@ class ChatStore(context: Context) {
                 continue
             }
             try {
-                val c = Conversation.fromJson(JSONObject(f.readText()))
+                val c = Conversation.fromJson(JSONObject(read(f)))
                 val text = buildString {
                     append(c.title.lowercase()).append('\n')
                     for (m in c.messages) append(m.content.lowercase()).append('\n')

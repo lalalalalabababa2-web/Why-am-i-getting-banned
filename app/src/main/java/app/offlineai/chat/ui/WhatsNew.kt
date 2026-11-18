@@ -10,6 +10,8 @@ object WhatsNew {
     const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Encrypted" to "Chats, Memory, characters and paired phones are now encrypted on the phone with a key kept in " +
+            "its Keystore, and the app's code is scrambled so it is hard to read if the APK is taken apart.",
         "Reply versions" to "Write again keeps the earlier replies: flip between them with the arrows under the last " +
             "reply, and the chat goes on from the one you pick.",
         "Characters" to "Chat with someone: a storyteller, a study buddy, a debate partner, or anyone you make (name, " +

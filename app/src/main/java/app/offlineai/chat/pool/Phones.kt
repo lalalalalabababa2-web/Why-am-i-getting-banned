@@ -89,7 +89,8 @@ class Phones(private val app: App) {
     // ------------------------------------------------------------------ paired phones
 
     fun saved(): List<HelperPhone> = try {
-        val a = JSONArray(prefs.getString("list", "[]"))
+        // the pairing codes are secrets: the list is kept encrypted (DataCrypto)
+        val a = JSONArray(app.crypto.openString(prefs.getString("list", null) ?: "[]"))
         (0 until a.length()).map { HelperPhone.fromJson(a.getJSONObject(it)) }
     } catch (e: Exception) {
         emptyList()
@@ -97,8 +98,14 @@ class Phones(private val app: App) {
 
     @Synchronized
     private fun store(list: List<HelperPhone>) {
-        prefs.edit().putString("list", JSONArray().apply { list.forEach { put(it.toJson()) } }.toString()).apply()
+        prefs.edit().putString("list", app.crypto.sealString(JSONArray().apply { list.forEach { put(it.toJson()) } }.toString())).apply()
         announce()
+    }
+
+    /** Paired before encryption came in: saved again, encrypted (the codes are secrets). */
+    fun reseal() {
+        val raw = prefs.getString("list", null) ?: return
+        if (app.crypto.enabled && !raw.startsWith("nyxe1:")) store(saved())
     }
 
     @Synchronized

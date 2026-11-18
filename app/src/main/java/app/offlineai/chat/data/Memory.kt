@@ -8,7 +8,7 @@ import org.json.JSONArray
  * from a message (Remember this). They go into every chat's system prompt, so every model sees
  * them; they stay on the phone like everything else.
  */
-class MemoryStore(context: Context) {
+class MemoryStore(context: Context, private val crypto: DataCrypto) {
     private val prefs = context.getSharedPreferences("memory", Context.MODE_PRIVATE)
 
     var enabled: Boolean
@@ -16,14 +16,14 @@ class MemoryStore(context: Context) {
         set(v) = prefs.edit().putBoolean("enabled", v).apply()
 
     fun list(): List<String> = try {
-        val a = JSONArray(prefs.getString("notes", "[]"))
+        val a = JSONArray(crypto.openString(prefs.getString("notes", null) ?: "[]"))
         (0 until a.length()).map { a.getString(it) }
     } catch (e: Exception) {
         emptyList()
     }
 
     private fun store(notes: List<String>) {
-        prefs.edit().putString("notes", JSONArray(notes).toString()).apply()
+        prefs.edit().putString("notes", crypto.sealString(JSONArray(notes).toString())).apply()
     }
 
     /** Adds a note (trimmed, at most [MAX_CHARS]); false if it is empty or already there. */
@@ -45,6 +45,12 @@ class MemoryStore(context: Context) {
     }
 
     fun clear() = store(emptyList())
+
+    /** Saved before encryption came in: saved again, encrypted. */
+    fun reseal() {
+        val raw = prefs.getString("notes", null) ?: return
+        if (crypto.enabled && !raw.startsWith("nyxe1:")) store(list())
+    }
 
     /** The part of the system prompt the notes make, or "" when there is nothing to add. */
     fun prompt(): String {

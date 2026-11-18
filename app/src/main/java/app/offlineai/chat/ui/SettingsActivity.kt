@@ -303,8 +303,9 @@ class SettingsActivity : AppCompatActivity() {
         switch("Keep the screen on while it writes", null, s.keepScreenOn) { s.keepScreenOn = it }
 
         section("Privacy and data")
-        group.addView(note("Chats and models never leave this phone. Chats are kept in the app's private storage, which " +
-            "Android encrypts along with the rest of the phone's data."))
+        group.addView(note("Chats and models never leave this phone. Chats, Memory, characters and paired phones are " +
+            "encrypted by the app (AES-256) with a key kept in this phone's Keystore, on top of Android's own encryption" +
+            (if (app.crypto.enabled) "." else ": this phone's Keystore could not be used, so they are kept as before.")))
         switch("Offline only", "Turns off model downloads too, so the app never goes online.", s.offlineOnly) { s.offlineOnly = it }
         row("Chats", "Search, rename, export, import or delete chats.") {
             startActivity(Intent(this, ChatsActivity::class.java))

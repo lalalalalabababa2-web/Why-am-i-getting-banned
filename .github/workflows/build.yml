@@ -302,6 +302,17 @@ jobs:
           n=$(unzip -l OfflineAI.apk 'lib/arm64-v8a/libggml-cpu-*' | grep -c 'libggml-cpu-')
           echo "CPU variants: $n"
           [ "$n" -ge 1 ] || { echo "::error::no ggml CPU backend in the APK"; exit 1; }
+          # R8: the names the native engine calls stay, the app's own are renamed
+          unzip -p OfflineAI.apk 'classes*.dex' | strings > dex-strings.txt
+          for name in 'Lapp/offlineai/chat/engine/NativeEngine;' nativeChat nativeLoad nativeServe nativeGenerate \
+                      'Lapp/offlineai/chat/engine/ChatListener;' onPromptProgress onUpdate onMedia \
+                      'Lapp/offlineai/chat/engine/LoadListener;' onWarmup 'Lapp/offlineai/chat/engine/PictureListener;' onPreview; do
+            grep -qF -- "$name" dex-strings.txt || { echo "::error::R8 renamed or removed $name, which the native engine calls"; exit 1; }
+          done
+          for name in 'Lapp/offlineai/chat/data/DataCrypto;' 'Lapp/offlineai/chat/ChatController;' 'Lapp/offlineai/chat/pool/PoolWire;'; do
+            if grep -qF -- "$name" dex-strings.txt; then echo "::error::$name kept its name: the code is not renamed"; exit 1; fi
+          done
+          echo "R8: engine bridge kept, the rest renamed"
           BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs OfflineAI.apk
           "$ANDROID_HOME/build-tools/$BT/aapt2" dump badging OfflineAI.apk | head -5
@@ -312,6 +323,14 @@ jobs:
           path: OfflineAI.apk
           if-no-files-found: error
           retention-days: 30
+
+      # R8's mapping, to read the stack traces of crash reports from this build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: OfflineAI-mapping
+          path: app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
+          retention-days: 90
 
   # Only a build whose on-device tests passed becomes the download, and only from this branch: a
   # run started by hand on another branch tests and builds it (the APK is in its artifacts) but

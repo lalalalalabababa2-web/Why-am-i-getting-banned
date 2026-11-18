@@ -67,6 +67,14 @@ browser when Android asks. New builds install over old ones and keep models and 
   Memory still applies. The opening line is shown but not sent as a message (some templates, like
   Gemma's, want the person to speak first): the character's prompt says it was said. Hold the New
   chat button, or tap the model's name, then Characters.
+- **Encrypted, and its code scrambled**: chats, Memory, characters and the paired phones' codes
+  are encrypted on the phone with AES-256-GCM (`data/DataCrypto.kt`). The key is random, kept
+  wrapped by a key that lives in Android's Keystore and never leaves it; files saved before this
+  still open and are encrypted on startup. Pictures and sounds attached to chats stay as files the
+  engine reads, protected by Android's own storage encryption. The release APK is shrunk and its
+  code renamed by R8 (`app/proguard-rules.pro`): only what the native engine calls by name keeps
+  its name, which CI checks in the built APK; R8's mapping is kept with each build to read crash
+  reports.
 - **Reply versions**: *Write again* keeps the earlier versions of the last reply (up to 10); ‹ 2/3 ›
   in its footer flips between them, and the conversation goes on from the one shown.
 - **Continue**: a reply cut off by its length limit (or stopped) has a *Continue* button: the
