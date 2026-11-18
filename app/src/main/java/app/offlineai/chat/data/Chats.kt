@@ -55,6 +55,8 @@ class ChatMessage(
     var partial: Boolean = false,
     /** A team reply: written from this many separate answers, which are in [reasoning] (0: an ordinary reply). */
     var team: Int = 0,
+    /** A character's opening line: shown, but not sent to the model (the character's prompt says it). */
+    val greeting: Boolean = false,
 ) {
     fun toJson(): JSONObject {
         val j = JSONObject()
@@ -62,6 +64,7 @@ class ChatMessage(
             .put("stats", stats).put("error", error).put("model", model).put("created_at", createdAt)
         if (partial) j.put("partial", true)
         if (team > 0) j.put("team", team)
+        if (greeting) j.put("greeting", true)
         if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
         return j
     }
@@ -83,6 +86,7 @@ class ChatMessage(
                 },
                 partial = j.optBoolean("partial"),
                 team = j.optInt("team"),
+                greeting = j.optBoolean("greeting"),
             )
         }
     }
@@ -94,12 +98,17 @@ class Conversation(
     val createdAt: Long = System.currentTimeMillis(),
     var updatedAt: Long = System.currentTimeMillis(),
     val messages: MutableList<ChatMessage> = mutableListOf(),
+    /** A chat with a character: its name, and the system prompt it brings (in place of the one in Settings). */
+    val characterName: String = "",
+    val characterPrompt: String = "",
 ) {
     fun toJson(): JSONObject {
         val arr = JSONArray()
         messages.forEach { arr.put(it.toJson()) }
-        return JSONObject().put("id", id).put("title", title).put("created_at", createdAt)
+        val j = JSONObject().put("id", id).put("title", title).put("created_at", createdAt)
             .put("updated_at", updatedAt).put("messages", arr)
+        if (characterName.isNotEmpty()) j.put("character_name", characterName).put("character_prompt", characterPrompt)
+        return j
     }
 
     companion object {
@@ -111,6 +120,8 @@ class Conversation(
                 // the date models are told the chat is from: fixed, or their prompt would change with the day
                 createdAt = j.optLong("created_at").takeIf { it > 0 } ?: updated.takeIf { it > 0 } ?: System.currentTimeMillis(),
                 updatedAt = updated,
+                characterName = j.optString("character_name"),
+                characterPrompt = j.optString("character_prompt"),
             )
             val arr = j.optJSONArray("messages") ?: JSONArray()
             for (i in 0 until arr.length()) c.messages.add(ChatMessage.fromJson(arr.getJSONObject(i)))
@@ -298,7 +309,7 @@ class ChatStore(context: Context) {
             }
             // the id names its file: one that could point elsewhere, or is taken, gets a new one
             val id = if (!SAFE_ID.matches(c.id) || File(dir, "${c.id}.json").exists()) UUID.randomUUID().toString() else c.id
-            val copy = Conversation(id, c.title, c.createdAt, c.updatedAt, c.messages)
+            val copy = Conversation(id, c.title, c.createdAt, c.updatedAt, c.messages, c.characterName, c.characterPrompt)
             write(id, copy.toJson().toString())
             added++
         }

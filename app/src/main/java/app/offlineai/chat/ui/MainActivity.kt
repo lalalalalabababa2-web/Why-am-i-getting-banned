@@ -188,6 +188,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         bar.addView(iconButton(R.drawable.ic_add, "New chat") {
             app.chat.newChat()
             input.setText("")
+        }.apply {
+            // held: a new chat with a character
+            setOnLongClickListener {
+                CharactersSheet.show(this@MainActivity, app) { input.setText("") }
+                true
+            }
         })
         bar.addView(iconButton(R.drawable.ic_settings, "Settings") {
             startActivity(Intent(this, SettingsActivity::class.java))
@@ -279,6 +285,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         empty.addView(starters, lp(MATCH, WRAP).apply { topMargin = dp(12) })
         talk = pill("Talk instead of typing") { startTalk() }.apply { visibility = View.GONE }
         empty.addView(talk, lp(WRAP, WRAP).apply { topMargin = dp(16); gravity = Gravity.CENTER_HORIZONTAL })
+        empty.addView(pill("Chat with a character") { CharactersSheet.show(this, app) { input.setText("") } }.apply {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_spark)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
+            compoundDrawablePadding = dp(8)
+        }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(pill("Make a picture") { openPictures() }.apply {
             setCompoundDrawablesRelativeWithIntrinsicBounds(
                 ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_image)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
@@ -1063,6 +1074,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 TeamDialog.show(this, app) { refreshAll() }
             }
             .item("All models", detail = "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
+            .item("Characters", R.drawable.ic_spark, "Chat with someone: a storyteller, a tutor, your own") {
+                CharactersSheet.show(this, app) { input.setText("") }
+            }
             .item("Phones together", detail = "Bigger models across your phones on the same Wi-Fi") {
                 startActivity(Intent(this, PhonesActivity::class.java))
             }
@@ -1126,7 +1140,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val e = app.engine
         val c = app.chat
         val loaded = e.loaded
-        title.text = loaded?.displayName ?: e.loadingName ?: "Nyx"
+        // a chat with a character is named after them; the reply footers say which model wrote what
+        title.text = c.conversation.characterName.ifBlank { null } ?: loaded?.displayName ?: e.loadingName ?: "Nyx"
         subtitle.setTextColor(Palette.text3)
         val heat = app.currentThermal()
         val hot = (if (heat >= PowerManager.THERMAL_STATUS_MODERATE) " · phone ${Device.thermalLabel(heat)}, slowed down" else "") +

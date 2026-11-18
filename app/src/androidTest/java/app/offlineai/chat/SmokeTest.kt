@@ -436,6 +436,41 @@ class SmokeTest {
         }
     }
 
+    /**
+     * A chat with a character: it opens with the character's greeting (shown, not sent: some templates
+     * want the person first), replies work, Write again keeps the greeting, and the chat keeps its
+     * character when it is saved and opened again.
+     */
+    @Test
+    fun aChatWithACharacter() {
+        app.settings.contextSize = 2048
+        app.settings.maxTokens = 24
+        load(installed("test-llama.gguf"))
+        val c = app.characters.list().first()
+        var id = ""
+        onMain {
+            app.chat.newChatWith(c)
+            id = app.chat.conversation.id
+            val first = app.chat.conversation.messages.single()
+            assertTrue("opens with the greeting", first.greeting && first.content == c.greeting)
+        }
+        turn("Hello! Who are you?")
+        onMain { app.chat.regenerate() }
+        waitFor("write again", 120_000) { !app.chat.generating }
+        onMain {
+            val ms = app.chat.conversation.messages
+            assertTrue("the greeting stays", ms.first().greeting)
+            assertEquals(3, ms.size)
+            assertFalse(ms.last().error)
+            app.chats.save(app.chat.conversation)
+        }
+        val again = app.chats.load(id)!!
+        assertEquals(c.name, again.characterName)
+        assertTrue(again.characterPrompt.contains(c.name))
+        assertTrue(again.messages.first().greeting)
+        onMain { app.chat.newChat() }
+    }
+
     /** A reply cut off by its length limit is carried on, into the same message, starting with what it had. */
     @Test
     fun aCutOffReplyContinues() {

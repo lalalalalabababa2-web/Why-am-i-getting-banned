@@ -160,6 +160,19 @@ class ChatController(private val app: App) {
         switched()
     }
 
+    /** A new chat with [c]: it brings its own system prompt, and opens with its greeting, if it has one. */
+    fun newChatWith(c: app.offlineai.chat.data.Character) {
+        if (generating) stop()
+        discardDraft()
+        conversation = Conversation(title = c.name, characterName = c.name, characterPrompt = c.prompt())
+        if (c.greeting.isNotBlank()) {
+            conversation.messages.add(ChatMessage(role = "assistant", content = c.greeting.trim(), model = c.name, greeting = true))
+            save()
+        }
+        app.settings.lastChatId = conversation.id
+        switched()
+    }
+
     /** A conversation is being deleted elsewhere: nothing may save it again. */
     fun forget(id: String) {
         if (replyConversation?.id == id) replyConversation = null
@@ -214,7 +227,9 @@ class ChatController(private val app: App) {
         val model = app.engine.loaded ?: return
         if (generating) return
         val msgs = conversation.messages
-        while (msgs.isNotEmpty() && msgs.last().role == "assistant") msgs.removeAt(msgs.size - 1)
+        // (a character's greeting stays: it is not a reply)
+        while (msgs.isNotEmpty() && msgs.last().role == "assistant" && !msgs.last().greeting) msgs.removeAt(msgs.size - 1)
+        if (msgs.none { it.role == "user" }) return
         if (msgs.isEmpty()) return
         startReply(model)
     }
@@ -460,7 +475,7 @@ class ChatController(private val app: App) {
         val turns = if (nextMessage == null) conversation.messages
         else conversation.messages + ChatMessage(role = "user", content = nextMessage)
         for (m in turns) {
-            if (m.error) continue
+            if (m.error || m.greeting) continue
             if (m.role == "assistant" && m.content.isBlank()) continue
             val media = if (m.role == "user") mediaJson(m.attachments) else null
             val prev = last
@@ -509,7 +524,8 @@ class ChatController(private val app: App) {
 
     /** The system prompt: the one set in Settings, and what Nyx remembers about you (Memory). */
     private fun systemPrompt(): String =
-        listOf(app.settings.systemPrompt.trim(), app.memory.prompt()).filter { it.isNotEmpty() }.joinToString("\n\n")
+        listOf(conversation.characterPrompt.ifBlank { app.settings.systemPrompt.trim() }, app.memory.prompt())
+            .filter { it.isNotEmpty() }.joinToString("\n\n")
 
     /** Answers a team reply is written from (0: answered once). */
     fun teamSize(): Int = app.settings.teamSize.let { if (it >= 2) it.coerceAtMost(3) else 0 }

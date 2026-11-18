@@ -409,7 +409,7 @@ class MessageAdapter(
                 note.visibility = if (warn.isEmpty()) View.GONE else View.VISIBLE
                 copy.visibility = if (m.error || m.content.isBlank()) View.GONE else View.VISIBLE
                 copy.setOnClickListener { ctx.copyText("reply", m.content) }
-                again.visibility = if (isLast && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
+                again.visibility = if (isLast && !m.greeting && !app.chat.generating && app.engine.loaded != null) View.VISIBLE else View.GONE
                 again.setOnClickListener { app.chat.regenerate() }
                 cont.visibility = if (isLast && app.chat.canContinue(m)) View.VISIBLE else View.GONE
                 more.setOnClickListener { showMenu(it) }

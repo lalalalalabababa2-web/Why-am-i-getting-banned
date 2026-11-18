@@ -10,6 +10,8 @@ object WhatsNew {
     const val VERSION = 3
 
     private val ITEMS = listOf(
+        "Characters" to "Chat with someone: a storyteller, a study buddy, a debate partner, or anyone you make (name, " +
+            "personality, how they open the chat). Hold the New chat button, or tap the model's name, then Characters.",
         "Continue" to "A reply cut off by its length limit, or stopped, has a Continue button: the model carries on " +
             "writing it from where it stopped, in the same message.",
         "Memory" to "Nyx can remember things about you across every chat: long-press a message and pick Remember " +

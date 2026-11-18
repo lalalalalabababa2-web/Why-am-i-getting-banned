@@ -61,6 +61,12 @@ browser when Android asks. New builds install over old ones and keep models and 
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
   file from the phone's storage or a pasted link.
+- **Characters**: chats with someone, each with a name, a personality and an optional opening line
+  (three to start from: a storyteller, a study buddy, a debate partner; change or delete them, or
+  make your own). A chat keeps its character as its system prompt, in place of the one in Settings;
+  Memory still applies. The opening line is shown but not sent as a message (some templates, like
+  Gemma's, want the person to speak first): the character's prompt says it was said. Hold the New
+  chat button, or tap the model's name, then Characters.
 - **Continue**: a reply cut off by its length limit (or stopped) has a *Continue* button: the
   model carries on writing the same message from where it stopped (llama.cpp renders the reply
   unfinished and the model writes on; checked with the real Qwen3.5 and Gemma 4 templates).
