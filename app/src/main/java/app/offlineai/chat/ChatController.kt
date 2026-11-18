@@ -104,26 +104,27 @@ class ChatController(private val app: App) {
 
     fun restore() {
         val id = app.settings.lastChatId ?: return
-        app.chats.load(id)?.let { conversation = it; settleInterrupted() }
+        app.chats.load(id)?.let { conversation = settleInterrupted(it) }
     }
 
     /**
      * A reply that was still being written when the app was closed (Android ended it, the phone
      * restarted) keeps what it had, marked as cut short; one with nothing yet is dropped.
      */
-    private fun settleInterrupted() {
+    private fun settleInterrupted(c: Conversation): Conversation {
         var changedAny = false
-        for (m in conversation.messages.toList()) {
+        for (m in c.messages.toList()) {
             if (!m.partial) continue
             m.partial = false
             changedAny = true
             if (m.content.isBlank() && m.reasoning.isBlank()) {
-                conversation.messages.remove(m)
+                c.messages.remove(m)
             } else {
                 m.stats = "cut short: the app was closed while it was writing · use Write again for a full reply"
             }
         }
-        if (changedAny) save()
+        if (changedAny) app.chats.saveAsync(c)
+        return c
     }
 
     /** Attachments picked but never sent are dropped, files and all, when you leave the chat. */
@@ -134,14 +135,21 @@ class ChatController(private val app: App) {
     }
 
     fun open(id: String) {
-        if (generating) return
+        // already open, with a reply being written into it
+        if (generating && id == conversation.id) return
+        val writing = replyConversation
+        // The chat a reply is still being written into (after New chat, in the second before the
+        // stop lands) is the copy in memory: the one on disk is a few seconds old and would be
+        // marked "cut short" as if the app had been closed.
+        val c = if (writing != null && writing.id == id) writing else app.chats.load(id)?.let { settleInterrupted(it) }
+        if (c == null) return
         if (id != conversation.id) discardDraft()
-        app.chats.load(id)?.let {
-            conversation = it
-            settleInterrupted()
-            app.settings.lastChatId = it.id
-            switched()
-        }
+        // Another chat while a reply is being written: the reply stops there and keeps what it
+        // has, as with New chat. Tapping a chat used to do nothing at all until the reply was done.
+        if (generating && c !== writing) stop()
+        conversation = c
+        app.settings.lastChatId = c.id
+        switched()
     }
 
     fun newChat() {
@@ -218,9 +226,9 @@ class ChatController(private val app: App) {
         val i = msgs.indexOfLast { it.role == "user" }
         if (i < 0) return null
         val text = msgs[i].content
-        // its attachments go back into the composer with the text
-        draftAttachments.clear()
-        draftAttachments.addAll(msgs[i].attachments)
+        // its attachments go back into the composer with the text, next to any already waiting
+        // there (those used to be dropped, their files left behind)
+        draftAttachments.addAll(0, msgs[i].attachments)
         while (msgs.size > i) msgs.removeAt(msgs.size - 1)
         save()
         changed()
@@ -344,8 +352,15 @@ class ChatController(private val app: App) {
         convo?.let { app.chats.saveAsync(it) }
         changed()
         status()
-        // while you read the reply, the model gets ready for your next message
-        if (!reply.error && app.inFront && convo === conversation) readAhead()
+        // a setting changed while it wrote (context size, memory mode, picture support) could not
+        // reload the model then; it does now, instead of waiting for the next visit to Settings
+        // (in the background it waits for the chat to come back: a big load there can get the app closed)
+        if (app.inFront && app.needsReload()) {
+            app.reloadIfNeeded()
+        } else if (!reply.error && app.inFront && convo === conversation) {
+            // while you read the reply, the model gets ready for your next message
+            readAhead()
+        }
         if (!app.inFront && app.settings.replyNotifications && o.stopReason != "stopped") {
             val text = (if (reply.content.isNotBlank()) reply.content else reply.reasoning).take(300)
             GenerationService.replyReady(app, if (reply.error) "The reply failed" else "Reply ready", text.ifBlank { "Open the chat to see it." })

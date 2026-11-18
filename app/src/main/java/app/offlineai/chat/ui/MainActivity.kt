@@ -207,6 +207,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 input.setText(text)
                 input.setSelection(text.length)
                 input.requestFocus()
+                // its pictures, video or sound came back into the composer too: show them there,
+                // or they went out again with the message without being seen or removable
+                refreshDraft()
+                updateSend()
             }
 
             override fun selectText(text: String) = SelectTextActivity.open(this@MainActivity, text)

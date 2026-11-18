@@ -216,18 +216,30 @@ class App : Application() {
      * the size. Otherwise Android pushes the model's pages out and reads them back from storage on
      * every word, which is what makes a reply crawl.
      */
-    private fun tightFor(model: LocalModel): Boolean {
+    private fun tightFor(model: LocalModel, fresh: Boolean): Boolean {
         if (settings.memoryMode != MemoryMode.AUTO) return false
-        // decided when the model is loaded and kept while it stays loaded: free memory moves all
-        // the time, and a changed answer would look like a changed setting and reload the model
-        engine.loaded?.takeIf { it.key == model.file.name }?.let { return it.config.kvQ8 }
+        // Decided when the model is loaded and kept while it stays loaded: free memory moves all
+        // the time, and a changed answer would look like a changed setting and reload the model.
+        // The decision itself is kept, not the loaded model's 8-bit flag: that one also holds the
+        // 8-bit setting, so turning the setting off again never took effect.
+        val name = model.file.name
+        if (!fresh) {
+            val kept = tightKept
+            if (kept != null && kept.first == name && (engine.loaded?.key == name || engine.loadingKey == name)) return kept.second
+        }
         val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
         val full = weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
         val free = availableRam() + (engine.loaded?.let { l -> models.find(l.key)?.sizeBytes } ?: 0L)
-        return full > free * 0.6
+        val tight = full > free * 0.6
+        if (fresh) tightKept = name to tight
+        return tight
     }
 
-    fun configFor(model: LocalModel): LoadConfig {
+    /** The automatic memory decision for the model last loaded: its file name, and whether memory was tight. */
+    private var tightKept: Pair<String, Boolean>? = null
+
+    /** How [model] loads with the settings as they are. [fresh]: for loading it now, deciding automatic memory anew. */
+    fun configFor(model: LocalModel, fresh: Boolean = false): LoadConfig {
         val low = lowMemoryFor(model)
         val drafts = settings.draftsFor(model.file.name)
         return LoadConfig(
@@ -236,7 +248,7 @@ class App : Application() {
             nUbatch = settings.promptBatch,
             lowMemory = low,
             // a model too big for fast mode also gets the half-size conversation memory, unless set by hand
-            kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO) || tightFor(model),
+            kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO) || tightFor(model, fresh),
             specNMax = drafts,
             specNgram = settings.copyDrafts,
             drafterPath = if (drafts > 0 && model.hasDrafter) model.drafterFile.absolutePath else "",
@@ -302,7 +314,7 @@ class App : Application() {
 
     fun loadModel(model: LocalModel, onDone: ((String?) -> Unit)? = null) {
         settings.lastModelFile = model.file.name
-        engine.load(model.file.name, model.displayName, model.file.absolutePath, configFor(model), onDone)
+        engine.load(model.file.name, model.displayName, model.file.absolutePath, configFor(model, fresh = true), onDone)
         // the team partner, unless it is now the model itself
         applyTeamPartner()
     }

@@ -36,6 +36,8 @@ class PictureService : Service() {
         val app = App.of(this)
         if (intent?.action == ACTION_STOP) {
             app.pictureJobs.cancelAll()
+            // from a notification left behind: this started the service anew, and nothing else would stop it
+            if (!running) stopSelf(startId)
             return START_NOT_STICKY
         }
         // Always first: a service started as a foreground service must show its notification

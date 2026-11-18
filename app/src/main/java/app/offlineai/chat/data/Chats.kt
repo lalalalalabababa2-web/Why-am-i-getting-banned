@@ -141,9 +141,15 @@ class ChatStore(context: Context) {
      * changes cannot tear it) and written on a background thread, in order.
      */
     fun saveAsync(c: Conversation) {
-        if (c.messages.isEmpty()) return
-        c.updatedAt = System.currentTimeMillis()
         val id = c.id
+        if (c.messages.isEmpty()) {
+            // Emptied (its only message taken back to edit, or deleted): an empty chat is not kept.
+            // Its old file has to go too, or the chat comes back with those messages, pointing at
+            // attachment files that were deleted meanwhile.
+            io.execute { File(dir, "$id.json").delete() }
+            return
+        }
+        c.updatedAt = System.currentTimeMillis()
         val text = c.toJson().toString()
         io.execute { write(id, text) }
     }

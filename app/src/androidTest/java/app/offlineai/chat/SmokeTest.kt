@@ -396,6 +396,62 @@ class SmokeTest {
         }
     }
 
+    /**
+     * A chat whose only message is taken back is not kept on disk (its old file used to stay,
+     * and came back with messages whose attachment files were gone), and another chat opens
+     * while a reply is being written (a tap on it used to do nothing until the reply was done).
+     */
+    @Test
+    fun chatFilesFollowTheChat() {
+        var a = ""
+        onMain {
+            app.chat.newChat()
+            a = app.chat.conversation.id
+            app.chat.conversation.messages.add(ChatMessage(role = "user", content = "keep me"))
+            app.chat.conversation.messages.add(ChatMessage(role = "assistant", content = "kept"))
+            app.chats.save(app.chat.conversation)
+        }
+        val file = File(app.filesDir, "chats/$a.json")
+        assertTrue("saved", file.isFile)
+        onMain {
+            assertEquals("keep me", app.chat.takeBackLast())
+            app.chats.save(app.chat.conversation)  // waits for the writes before it
+        }
+        assertFalse("an emptied chat leaves no file behind", file.exists())
+
+        var b = ""
+        onMain {
+            app.chat.newChat()
+            b = app.chat.conversation.id
+            app.chat.conversation.messages.add(ChatMessage(role = "user", content = "the other chat"))
+            app.chats.save(app.chat.conversation)
+            app.chat.newChat()
+            app.chat.testStartReply("a reply on its way")
+            app.chat.open(b)
+            assertEquals("the chat opens during a reply", b, app.chat.conversation.id)
+            app.chat.testFinish()
+            app.chat.newChat()
+        }
+    }
+
+    /** Turning 8-bit conversation memory off again reloads the model (in Automatic memory mode it never did). */
+    @Test
+    fun eightBitMemoryTurnsOffAgain() {
+        app.settings.contextSize = 2048
+        app.settings.memoryMode = MemoryMode.AUTO
+        app.settings.kvQ8 = true
+        try {
+            load(installed("test-llama.gguf"))
+            assertTrue(app.engine.loaded!!.config.kvQ8)
+            app.settings.kvQ8 = false
+            var reload = false
+            onMain { reload = app.needsReload() }
+            assertTrue("turning 8-bit memory off needs a reload", reload)
+        } finally {
+            app.settings.kvQ8 = false
+        }
+    }
+
     /** The app's shortcuts (long-press its icon) are published, and New chat opens an empty chat. */
     @Test
     fun shortcuts() {

@@ -100,6 +100,16 @@ class PictureJobs(private val app: App) {
         changed()
     }
 
+    /**
+     * A picture model is being removed: its pictures waiting in the queue go (they would fail on
+     * a missing file), and its picture being made stops. Pictures by other models carry on.
+     */
+    fun dropModel(id: String) {
+        queue.removeAll { it.model.id == id }
+        if (current?.model?.id == id) PictureEngine.cancel()
+        changed()
+    }
+
     /** The chat model was put away to make room for a picture model; it comes back after. */
     private var chatPutAway = false
 

@@ -47,6 +47,9 @@ class GenerationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_REPLY) {
             App.of(this).chat.stop()
+            // tapped on a notification left from a reply that has ended: this started the service
+            // anew, as a plain one, and nothing else would ever stop it
+            if (!started) stopSelf(startId)
             return START_NOT_STICKY
         }
         try {

@@ -342,7 +342,7 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val sheet = Sheet(this, "Remove a picture model")
         for (m in PictureCatalog.models.filter { modelFile(it).isFile }) {
             sheet.item(m.name, R.drawable.ic_close, ModelStore.formatBytes(modelFile(m).length()), danger = true) {
-                if (jobs.current?.model?.id == m.id) jobs.cancelAll()
+                jobs.dropModel(m.id)
                 PictureEngine.unload()
                 modelFile(m).delete()
                 // a decoder no model on the phone uses any more goes too
