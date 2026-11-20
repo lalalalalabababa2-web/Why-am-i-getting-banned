@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A white SIM card with a power mark, centred in the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="2.1" android:scaleY="2.1" android:translateX="28.8" android:translateY="28.8">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M8,2 H17 A3,3 0 0 1 20,5 V19 A3,3 0 0 1 17,22 H7 A3,3 0 0 1 4,19 V6 Z" />
+        <path android:strokeColor="#FF3E7BFA" android:strokeWidth="1.5" android:strokeLineCap="round"
+            android:pathData="M12,9.5 V13.2" />
+        <path android:strokeColor="#FF3E7BFA" android:strokeWidth="1.5" android:strokeLineCap="round"
+            android:pathData="M9.6,11.2 A3.5,3.5 0 1 0 14.4,11.2" />
+    </group>
+</vector>
