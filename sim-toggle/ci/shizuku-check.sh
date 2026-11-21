@@ -101,19 +101,24 @@ adb shell cmd statusbar collapse || true
 
 echo "== Data outage: cut SIM Toggle's network"
 blocked=""
-if adb shell cmd connectivity set-chain3-enabled true > /dev/null 2>&1 &&
-   adb shell cmd connectivity set-package-networking-enabled false "$PKG" > /dev/null 2>&1 &&
-   adb shell cmd connectivity get-package-networking-enabled "$PKG" 2>/dev/null | grep -qi false; then
+APP_UID=$(adb shell pm list packages -U "$PKG" | grep -o 'uid:[0-9]*' | head -1 | cut -d: -f2)
+echo "app uid: $APP_UID"
+# Without root first (Android's own per-app network switch), so Shizuku keeps running as shell.
+adb shell cmd connectivity set-chain3-enabled true 2>&1 | head -3
+adb shell cmd connectivity set-package-networking-enabled false "$PKG" 2>&1 | head -3
+if adb shell cmd connectivity get-package-networking-enabled "$PKG" 2>&1 | tee /dev/stderr | grep -qi false; then
   blocked=cmd
-else
+elif [ -n "$APP_UID" ]; then
+  adb shell cmd connectivity set-chain3-enabled false > /dev/null 2>&1
   adb root > /dev/null; sleep 3; adb wait-for-device
-  APP_UID=$(adb shell dumpsys package "$PKG" | grep -m1 -o 'userId=[0-9]*' | cut -d= -f2)
   adb shell iptables -I OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT &&
     adb shell ip6tables -I OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT && blocked=iptables
+  adb shell ps -A | grep -q shizuku_server || echo "::warning::Shizuku stopped when adb restarted as root"
 fi
 echo "network cut with: ${blocked:-nothing}"
 if [ -z "$blocked" ]; then
-  echo "::warning::couldn't cut the app's network; skipping the outage test"
+  echo "::error::couldn't cut the app's network, so the watchdog's restart wasn't tested"
+  fail=1
   finish
 fi
 adb logcat -c
