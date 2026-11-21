@@ -9,3 +9,9 @@ local.properties
 captures/
 app/src/androidTest/assets/
 ci-results/
+game/web/node_modules/
+game/web/dist/
+game/android/.gradle/
+game/android/build/
+game/android/app/build/
+game/android/local.properties

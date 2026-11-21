@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#12061f">
+<title>Neon Tide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="loading">
+  <div class="logo small"><span class="l1">NEON</span><span class="l2">TIDE</span></div>
+  <div class="loadbar"><div id="loadfill"></div></div>
+  <div id="loadtext">Building Port Solace…</div>
+</div>
+
+<!-- ================= HUD ================= -->
+<div id="hud" class="hidden">
+  <div id="tl">
+    <div id="mapwrap"><canvas id="minimap" width="300" height="300"></canvas><div id="mmN">N</div></div>
+    <div class="bar"><div id="hpbar" class="fill hp"></div></div>
+    <div class="bar"><div id="arbar" class="fill ar"></div></div>
+    <div id="district"></div>
+  </div>
+  <div id="tr">
+    <div id="clock">17:00</div>
+    <div id="money">$0</div>
+    <div id="wanted"><i>★</i><i>★</i><i>★</i><i>★</i><i>★</i></div>
+    <div id="weaponbox" data-btn="weapon">
+      <div id="weaponicon"></div>
+      <div id="ammo"></div>
+    </div>
+  </div>
+  <div id="objective"></div>
+  <div id="timer"></div>
+  <div id="subtitle"></div>
+  <div id="hint"></div>
+  <div id="toast"></div>
+  <div id="bigmsg"><div class="t"></div><div class="s"></div></div>
+  <div id="reticle"></div>
+  <div id="speedo"><span id="spd">0</span><small>KM/H</small><div id="carname"></div><div class="bar thin"><div id="carhp" class="fill car"></div></div></div>
+  <div id="radio"></div>
+  <div id="fps"></div>
+  <div id="flash"></div>
+  <div id="vignette"></div>
+</div>
+
+<!-- ================= TOUCH CONTROLS ================= -->
+<div id="controls" class="hidden">
+  <div id="lookzone"></div>
+  <div id="stickzone"><div id="stick"><div id="knob"></div></div></div>
+
+  <div class="topbtns">
+    <div class="btn sm" data-btn="map" title="Map"><svg viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z M9 4v14 M15 6v14" /></svg></div>
+    <div class="btn sm" data-btn="pause" title="Pause"><svg viewBox="0 0 24 24"><path d="M8 5v14 M16 5v14" /></svg></div>
+  </div>
+
+  <!-- on foot -->
+  <div id="footbtns" class="btnset">
+    <div class="btn xl fire" data-btn="fire"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v5 M12 17v5 M2 12h5 M17 12h5"/></svg></div>
+    <div class="btn md jump" data-btn="jump"><svg viewBox="0 0 24 24"><path d="M12 19V6 M6 11l6-6 6 6"/></svg></div>
+    <div class="btn md sprint" data-btn="sprint"><svg viewBox="0 0 24 24"><path d="M13 4a2 2 0 1 0 0.1 0 M8 21l3-6 3 2 1 4 M7 12l3-4 4 1 3 3 3 0 M11 15l-1-5"/></svg></div>
+    <div class="btn md enter" data-btn="enter"><svg viewBox="0 0 24 24"><path d="M3 14l2-6h14l2 6v4H3z M3 14h18 M7 18v2 M17 18v2 M6.5 16h1 M16.5 16h1"/></svg></div>
+  </div>
+
+  <!-- in vehicle -->
+  <div id="carbtns" class="btnset hidden">
+    <div class="btn xl gas" data-btn="gas"><svg viewBox="0 0 24 24"><path d="M12 4l7 10h-4v6H9v-6H5z"/></svg></div>
+    <div class="btn lg brake" data-btn="brake"><svg viewBox="0 0 24 24"><path d="M12 20l7-10h-4V4H9v6H5z"/></svg></div>
+    <div class="btn md hand" data-btn="handbrake"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><text x="12" y="16.5" text-anchor="middle" font-size="11" font-weight="900" fill="currentColor" stroke="none">P</text></svg></div>
+    <div class="btn md exit" data-btn="enter"><svg viewBox="0 0 24 24"><path d="M14 4h6v16h-6 M10 8l-4 4 4 4 M6 12h10"/></svg></div>
+    <div class="btn sm horn" data-btn="horn"><svg viewBox="0 0 24 24"><path d="M4 10v4h4l6 4V6l-6 4z M17 9a4 4 0 0 1 0 6"/></svg></div>
+    <div class="btn sm radio" data-btn="radio"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M7 8l10-5"/><circle cx="15" cy="14" r="3"/><path d="M6 12h4 M6 16h4"/></svg></div>
+    <div class="btn sm fire2" data-btn="fire"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M12 3v4 M12 17v4 M3 12h4 M17 12h4"/></svg></div>
+  </div>
+</div>
+
+<!-- ================= MENUS ================= -->
+<div id="title" class="screen hidden">
+  <div class="sunset"><div class="sun"></div><div class="grid"></div></div>
+  <div class="titlebox">
+    <div class="brand">
+      <div class="logo"><span class="l1">NEON</span><span class="l2">TIDE</span></div>
+      <div class="tag">PORT SOLACE · OPEN CITY</div>
+    </div>
+    <div class="menu">
+      <button id="btnContinue" class="mbtn primary">CONTINUE</button>
+      <button id="btnNew" class="mbtn">NEW GAME</button>
+      <button id="btnSettings1" class="mbtn">SETTINGS</button>
+      <button id="btnHelp1" class="mbtn">HOW TO PLAY</button>
+    </div>
+  </div>
+  <div class="ver">v1.0</div>
+</div>
+
+<div id="pause" class="screen dim hidden">
+  <div class="panel">
+    <h2>PAUSED</h2>
+    <div id="pauseStats" class="stats"></div>
+    <div class="menu">
+      <button class="mbtn primary" data-act="resume">RESUME</button>
+      <button class="mbtn" data-act="map">MAP</button>
+      <button class="mbtn" data-act="settings">SETTINGS</button>
+      <button class="mbtn" data-act="help">HOW TO PLAY</button>
+      <button class="mbtn" data-act="save">SAVE GAME</button>
+      <button class="mbtn" data-act="title">QUIT TO TITLE</button>
+    </div>
+  </div>
+</div>
+
+<div id="settings" class="screen dim hidden">
+  <div class="panel">
+    <h2>SETTINGS</h2>
+    <div class="row"><label>Graphics</label>
+      <div class="seg" data-set="quality"><span data-v="low">LOW</span><span data-v="medium">MED</span><span data-v="high">HIGH</span></div></div>
+    <div class="row"><label>Camera speed</label><input type="range" min="0.4" max="2.2" step="0.1" data-set="sensitivity"></div>
+    <div class="row"><label>Sound</label><input type="range" min="0" max="1" step="0.05" data-set="volume"></div>
+    <div class="row"><label>Radio</label><input type="range" min="0" max="1" step="0.05" data-set="music"></div>
+    <div class="row"><label>Vibration</label><div class="seg" data-set="vibrate"><span data-v="true">ON</span><span data-v="false">OFF</span></div></div>
+    <div class="row"><label>FPS counter</label><div class="seg" data-set="showFps"><span data-v="true">ON</span><span data-v="false">OFF</span></div></div>
+    <div class="menu"><button class="mbtn primary" data-act="back">BACK</button></div>
+  </div>
+</div>
+
+<div id="help" class="screen dim hidden">
+  <div class="panel wide">
+    <h2>HOW TO PLAY</h2>
+    <div class="helpgrid">
+      <div><b>Move</b> — drag anywhere on the left half (floating stick).</div>
+      <div><b>Look</b> — drag on the right half of the screen.</div>
+      <div><b>Fire</b> — auto-locks the nearest target in front of you. Tap the weapon box to switch.</div>
+      <div><b>Car button</b> — get in the nearest car (or pull the driver out). In a car it gets you out.</div>
+      <div><b>Driving</b> — stick steers (push it up to drive too), big arrow = gas, down arrow = brake/reverse, P = handbrake drift.</div>
+      <div><b>Wanted</b> — crimes bring the police. Break line of sight and stay out of the search area, or hit a Quick Coat respray.</div>
+      <div><b>Missions</b> — glowing pink markers on the map start story missions. Yellow = shops, cyan = respray, green = safehouse (save).</div>
+      <div><b>Extras</b> — 20 hidden neon shells, 6 stunt jumps, street races. Dead folks sometimes drop cash.</div>
+    </div>
+    <div class="menu"><button class="mbtn primary" data-act="back">GOT IT</button></div>
+  </div>
+</div>
+
+<div id="mapview" class="screen hidden">
+  <canvas id="bigmap"></canvas>
+  <div class="maplegend">
+    <span><i style="background:#ff2bd6"></i>Mission</span>
+    <span><i style="background:#ffd23f"></i>Shop</span>
+    <span><i style="background:#22f3ff"></i>Respray</span>
+    <span><i style="background:#7CFF7C"></i>Safehouse</span>
+    <span><i style="background:#ff8a1a"></i>Race / Jump</span>
+    <span class="tiny">Tap the map to set a GPS waypoint</span>
+  </div>
+  <button class="mbtn closebtn" data-act="closemap">✕</button>
+</div>
+
+<div id="shop" class="screen dim hidden">
+  <div class="panel">
+    <h2 id="shopTitle">SOLACE ARMS</h2>
+    <div id="shopMoney" class="stats"></div>
+    <div id="shopList" class="shoplist"></div>
+    <div class="menu"><button class="mbtn primary" data-act="closeshop">LEAVE</button></div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
