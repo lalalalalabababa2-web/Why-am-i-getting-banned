@@ -1,28 +1,26 @@
--- Volley Bomb AI v3 | Roblox executor script (Luau, no UI library, no other loadstrings)
--- Built from a real report: the ball is an anchored part the game moves itself (named after your
--- equipped ball skin), bumps go through RE/HitBall, bump and dive cooldowns are 0.5 s.
--- Aims by turning your character and, where the executor can hook calls, by turning the direction
--- inside the game's own HitBall call. Your camera is left alone unless cameraAim is true.
--- Toggle: AI button or Z. Report copies a debug dump to send back.
+-- Volley Bomb AI v4 | Roblox executor script (Luau, no UI library, no other loadstrings)
+-- Reads the ball's exact flight from the game's BallState messages (origin, velocity, gravity,
+-- landing time, squares), so it knows where and when the ball lands and whose square that is.
+-- Steers the direction inside the game's own HitBall call toward the spot in an occupied enemy
+-- square furthest from whoever stands there, using bump/spike speeds learned from your own hits.
+-- Camera untouched. Toggle: AI button or Z. Report copies a debug dump.
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local CFG = {
-	names       = { "ball", "bomb" }, -- lowercase name fragments that mark the ball
 	hitRange    = 9,     -- studs: bump when the ball is this close
+	hitHeight   = 1.5,   -- studs above your root where you meet the ball
 	diveRange   = 16,    -- studs: furthest landing spot a dive can still reach
 	diveLead    = 0.3,   -- seconds before landing to dive when you can't get under it
-	zone        = 14,    -- studs: your square's radius when the tile under you can't be found
-	standOff    = 3,     -- studs: stand behind the landing spot so it drops in front of you
+	standOff    = 2,     -- studs: stand behind the hit spot so the ball meets you in front
 	cooldown    = 0.5,   -- the game's bump cooldown
-	maxTouches  = 3,     -- shown in the status line; any touch after the ball came back is a spike
 	spike       = true,
 	spikeChance = 0.35,  -- chance to spike a fresh ball instead of bumping it
 	spikeDelay  = 0.15,  -- seconds from jump to click
-	aimMin      = 20,    -- studs: closest player worth aiming at
-	aimMax      = 140,   -- studs: furthest player worth aiming at
-	cameraAim   = false, -- true: also flick the camera to the target for a moment, then put it back
-	aimLift     = 0.3,   -- camera flick only: aim this many studs up per stud of distance
+	assist      = true,  -- also aim your own hits while the AI is off
+	zone        = 25,    -- studs: square radius used only when the game sends no squares
+	names       = { "ball", "bomb" }, -- fallback ball finder when the game sends no BallState
+	cameraAim   = false, -- true: also flick the camera to the aim for a moment, then put it back
 	key         = Enum.KeyCode.Z,
 }
 
@@ -102,9 +100,33 @@ local status = make("TextLabel", {
 	TextTruncate = Enum.TextTruncate.AtEnd, Text = "idle",
 }, frame)
 
----------------------------------------------------------------- Ball tracking
--- The ball is anchored and moved by the game, so velocity and gravity come from a least-squares fit
--- over the last few position samples. A sample far off the current fit means a hit: start a new arc.
+---------------------------------------------------------------- Flight maths
+-- A flight is { Origin, Velocity, Gravity, Time, EndTime } in server time, the same shape the
+-- game's BallState uses: position = Origin + Velocity*t + Gravity*t*t/2.
+local function ballAt(st, T)
+	local dt = T - st.Time
+	return st.Origin + st.Velocity * dt + st.Gravity * (0.5 * dt * dt)
+end
+
+local function velAt(st, T) return st.Velocity + st.Gravity * (T - st.Time) end
+
+-- Server time when the ball comes down through height H (the later crossing), or nil.
+local function timeAtHeight(st, H)
+	local a, b, c = 0.5 * st.Gravity.Y, st.Velocity.Y, st.Origin.Y - H
+	if math.abs(a) < 1e-6 then
+		if math.abs(b) < 1e-6 then return nil end
+		local t = -c / b
+		return t >= 0 and st.Time + t or nil
+	end
+	local disc = b * b - 4 * a * c
+	if disc < 0 then return nil end
+	local r = math.sqrt(disc)
+	local t = math.max((-b - r) / (2 * a), (-b + r) / (2 * a))
+	return t >= 0 and st.Time + t or nil
+end
+
+---------------------------------------------------------------- Fallback tracking
+-- Only used when the game sends no BallState: fit the ball's last half second of movement.
 local WINDOW = 0.5
 local EXCLUDE = { BallShadow = true, BallSpawn = true }
 local tracked, conns = {}, {}
@@ -119,7 +141,7 @@ end
 
 local function consider(o)
 	if not o:IsA("BasePart") or EXCLUDE[o.Name] then return end
-	local go = workspace:FindFirstChild("GameObjects") -- shop displays, NPC cosmetics, round areas
+	local go = workspace:FindFirstChild("GameObjects") -- shop displays, NPC cosmetics, zones
 	if go and o:IsDescendantOf(go) then return end
 	local sz = o.Size
 	local ballSized = o.Parent == workspace and sz.X >= 1.5 and sz.X <= 8
@@ -127,12 +149,11 @@ local function consider(o)
 	local named = matches(o.Name) or (o.Parent and o.Parent:IsA("Model") and matches(o.Parent.Name))
 	local sphere = o:IsA("Part") and o.Shape == Enum.PartType.Ball
 	if not (ballSized or named or sphere) then return end
-	for _, pl in ipairs(Players:GetPlayers()) do
-		if pl.Character and o:IsDescendantOf(pl.Character) then return end
-	end
+	local m = o:FindFirstAncestorOfClass("Model")
+	if m and m:FindFirstChildOfClass("Humanoid") then return end -- players and bots
 	tracked[o] = {
 		buf = {}, pos = o.Position, vel = Vector3.zero, g = workspace.Gravity, gUse = workspace.Gravity,
-		fitT = 0, moved = 0, arcs = 0, shadowOff = 0,
+		fitT = 0, moved = 0, arcs = 0,
 	}
 end
 
@@ -149,8 +170,6 @@ local function solve3(a11, a12, a13, a21, a22, a23, a31, a32, a33, b1, b2, b3)
 	return Da / D, Db / D, Dc / D
 end
 
--- Fit x,z as lines and y as a parabola in time, measured back from the newest sample.
--- Returns position and velocity at the newest sample, and the gravity used.
 local function fit(s)
 	local buf, n = s.buf, #s.buf
 	local last = buf[n]
@@ -179,12 +198,12 @@ local function fit(s)
 		local gf = c and -2 * c
 		if gf and gf > 5 and gf < 800 then
 			g = gf
-			if n >= 6 and span >= 0.15 then s.g = s.g + (gf - s.g) * 0.25 end -- remembered for the next arc
+			if n >= 6 and span >= 0.15 then s.g = s.g + (gf - s.g) * 0.25 end
 		else
 			a = nil
 		end
 	end
-	if not a then -- too few samples for a parabola: use the remembered gravity, fit the rest as a line
+	if not a then
 		local W0, W1 = Y0 + 0.5 * g * S2, Y1 + 0.5 * g * S3
 		b = (S0 * W1 - S1 * W0) / den
 		a = (W0 - b * S1) / S0
@@ -200,7 +219,7 @@ local function updateBall(part, s, now)
 	if last and #buf >= 3 then
 		local dt = now - s.fitT
 		local pred = s.pos + s.vel * dt - Vector3.new(0, 0.5 * s.gUse * dt * dt, 0)
-		if (p - pred).Magnitude > 1.5 then -- someone hit it
+		if (p - pred).Magnitude > 1.5 then
 			s.buf = { last }
 			buf = s.buf
 			s.arcs = s.arcs + 1
@@ -212,99 +231,179 @@ local function updateBall(part, s, now)
 	s.fitT, s.moved = now, now
 end
 
--- Where the ball will be when it falls to height y, and how long until then.
-local function intercept(p, v, g, y)
-	local a, b, c = 0.5 * g, -v.Y, y - p.Y
-	local disc = b * b - 4 * a * c
-	local t = disc >= 0 and (-b + math.sqrt(disc)) / (2 * a) or -1
-	if t < 0 then return Vector3.new(p.X, y, p.Z), 0 end
-	return Vector3.new(p.X + v.X * t, y, p.Z + v.Z * t), t
-end
-
----------------------------------------------------------------- Your square
-local zonePart, home = nil, nil
-
-local function partUnder(root)
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { lp.Character }
-	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), params)
-	return hit and hit.Instance
-end
-
--- A tile-sized part under you is your square; the 72x72 round floor or lobby is not.
-local function tileUnder(root)
-	local p = partUnder(root)
-	if p and p.Size.X >= 6 and p.Size.Z >= 6 and p.Size.X <= 40 and p.Size.Z <= 40 then return p end
-end
-
-local function setHome(root)
-	zonePart = tileUnder(root)
-	home = zonePart and Vector3.new(zonePart.Position.X, root.Position.Y, zonePart.Position.Z) or root.Position
-end
-
-local function zoneRadius()
-	return zonePart and math.max(zonePart.Size.X, zonePart.Size.Z) / 2 or CFG.zone
-end
-
-local function inZone(pos)
-	if zonePart and zonePart.Parent then
-		local l = zonePart.CFrame:PointToObjectSpace(pos)
-		return math.abs(l.X) <= zonePart.Size.X / 2 + 1.5 and math.abs(l.Z) <= zonePart.Size.Z / 2 + 1.5
-	end
-	return flat(pos - home).Magnitude <= CFG.zone
-end
-
----------------------------------------------------------------- Aiming
-local aimPoint, aimUntil, camSaved = nil, 0, nil
-local function aimActive() return aimPoint ~= nil and os.clock() < aimUntil end
-local function aimAt(pos, secs) aimPoint, aimUntil = pos, os.clock() + secs end
-
-local function face(root, pos)
-	local look = Vector3.new(pos.X, root.Position.Y, pos.Z)
-	if (look - root.Position).Magnitude > 0.1 then root.CFrame = CFrame.lookAt(root.Position, look) end
-end
-
--- Runs after the camera script, so shift lock can't turn you back before the hit goes out.
-local aimBind = "VolleyAIAim" .. tostring(os.clock())
-RunService:BindToRenderStep(aimBind, Enum.RenderPriority.Camera.Value + 1, function()
-	local cam = workspace.CurrentCamera
-	if aimActive() then
-		local root = myRoot()
-		if root then face(root, aimPoint) end
-		if CFG.cameraAim then
-			if not camSaved then camSaved = cam.CFrame - cam.CFrame.Position end
-			cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPoint)
-		end
-	elseif camSaved then
-		cam.CFrame = CFrame.new(cam.CFrame.Position) * camSaved -- put your view back
-		camSaved = nil
-	end
-end)
-
-local function pickTarget(from)
-	local best, bestScore
-	for _, pl in ipairs(Players:GetPlayers()) do
-		local c = pl ~= lp and pl.Character
-		local r = c and c:FindFirstChild("HumanoidRootPart")
-		local h = c and c:FindFirstChildOfClass("Humanoid")
-		if r and h and h.Health > 0 then
-			local d = flat(r.Position - from).Magnitude
-			if d >= CFG.aimMin and d <= CFG.aimMax then
-				local score = d + math.random() * 25
-				if not bestScore or score > bestScore then best, bestScore = r, score end
-			end
+---------------------------------------------------------------- Squares
+local function zoneAt(zones, p)
+	for _, z in ipairs(zones or {}) do
+		if z.Parent then
+			local l = z.CFrame:PointToObjectSpace(p)
+			local mx, mz = z.Size.X / 2 - math.abs(l.X), z.Size.Z / 2 - math.abs(l.Z)
+			if mx >= 0 and mz >= 0 then return z, math.min(mx, mz) end
 		end
 	end
-	return best
+end
+
+local function nearZone(z, p, pad)
+	if not (z and z.Parent) then return false end
+	local l = z.CFrame:PointToObjectSpace(p)
+	return math.abs(l.X) <= z.Size.X / 2 + pad and math.abs(l.Z) <= z.Size.Z / 2 + pad
+end
+
+local function contains(list, x)
+	for _, v in ipairs(list or {}) do
+		if v == x then return true end
+	end
+	return false
+end
+
+-- Everyone who can receive the ball: players and the game's bots.
+local function bodies()
+	local list = {}
+	for _, m in ipairs(workspace:GetChildren()) do
+		if m:IsA("Model") and m ~= lp.Character then
+			local h = m:FindFirstChildOfClass("Humanoid")
+			local r = m:FindFirstChild("HumanoidRootPart")
+			if h and r and h.Health > 0 then list[#list + 1] = r end
+		end
+	end
+	return list
 end
 
 ---------------------------------------------------------------- Game remotes
 local Net = ReplicatedStorage:FindFirstChild("Packages")
 Net = Net and Net:FindFirstChild("Net")
 local function remote(name) return Net and Net:FindFirstChild(name) end
-local HitBall = remote("RE/HitBall")
+local HitBall, BallState = remote("RE/HitBall"), remote("RE/BallState")
 
+local states = {}      -- arena -> latest flight from the server
+local learned = {}     -- hit type -> { h = flat speed, vy = up speed, g = gravity Y, n = samples }
+local arena = { zones = nil, myZone = nil, ground = nil }
+local lastSent, lastActKind, lastActT = nil, nil, 0
+local stateCount, stateLog = 0, {}
+
+local function learn(kind, st)
+	local h, vy, g = flat(st.Velocity).Magnitude, st.Velocity.Y, st.Gravity.Y
+	local L = learned[kind]
+	if not L then
+		learned[kind] = { h = h, vy = vy, g = g, n = 1 }
+	else
+		L.h, L.vy, L.g, L.n = L.h + (h - L.h) * 0.3, L.vy + (vy - L.vy) * 0.3, L.g + (g - L.g) * 0.3, L.n + 1
+	end
+end
+
+if BallState then
+	table.insert(conns, BallState.OnClientEvent:Connect(function(st)
+		stateCount = stateCount + 1
+		table.insert(stateLog, 1, st)
+		stateLog[3] = nil
+		if type(st) ~= "table" or typeof(st.Origin) ~= "Vector3" or typeof(st.Velocity) ~= "Vector3"
+			or typeof(st.Gravity) ~= "Vector3" or type(st.Time) ~= "number" then return end
+		local zones = {}
+		if type(st.Zones) == "table" then
+			for _, z in pairs(st.Zones) do
+				if typeof(z) == "Instance" and z:IsA("BasePart") then zones[#zones + 1] = z end
+			end
+		end
+		local rec = {
+			Origin = st.Origin, Velocity = st.Velocity, Gravity = st.Gravity, Time = st.Time,
+			EndTime = type(st.EndTime) == "number" and st.EndTime or st.Time + 3,
+			Hits = st.Hits, Hitter = st.Hitter, Skin = st.Skin, Arena = st.Arena,
+			HitZone = st.HitZone, zones = zones, id = st.Time,
+		}
+		rec.ground = ballAt(rec, rec.EndTime).Y
+		states[tostring(st.Arena or st.Skin or "ball")] = rec
+		if st.Hitter == lp then -- learn what your own hit types do
+			local kind = (lastSent and os.clock() - lastSent.t < 1.5) and lastSent.kind or lastActKind
+			if kind then learn(kind, rec) end
+		end
+	end))
+end
+
+-- The flight in your arena: the newest one whose squares include the one you're in.
+local function myArena(T, root)
+	local best, bestZone
+	for key, rec in pairs(states) do
+		if rec.EndTime < T - 1.5 then
+			states[key] = nil
+		else
+			local z = zoneAt(rec.zones, root.Position)
+			-- just over your own line while chasing still counts; the lobby does not
+			if not z and contains(rec.zones, arena.myZone) and nearZone(arena.myZone, root.Position, 8) then
+				z = arena.myZone
+			end
+			if z and (not best or rec.Time > best.Time) then best, bestZone = rec, z end
+		end
+	end
+	return best, bestZone
+end
+
+---------------------------------------------------------------- Aim choice
+-- Where a shot of this type lands if sent along dir from `from`, using what your hits did before.
+local function landingFor(L, from, dir, ground)
+	local a, b, c = 0.5 * L.g, L.vy, from.Y - ground
+	if a > -1e-3 then return nil end
+	local disc = b * b - 4 * a * c
+	if disc < 0 then return nil end
+	local t = (-b - math.sqrt(disc)) / (2 * a)
+	if t <= 0 then return nil end
+	return Vector3.new(from.X + dir.X * L.h * t, ground, from.Z + dir.Z * L.h * t)
+end
+
+-- Best flat direction for a hit of `kind` from `from`, or nil to leave the game's own.
+-- Scores 48 directions: lands in an occupied enemy square, far from that player, off the lines.
+local function bestDir(kind, from, jitter)
+	local zones, mine = arena.zones, arena.myZone
+	local list = bodies()
+	if not zones or #zones == 0 then
+		local best, bd
+		for _, r in ipairs(list) do
+			local d = flat(r.Position - from).Magnitude
+			if d >= 20 and d <= 140 and (not bd or d > bd) then best, bd = r, d end
+		end
+		return best and flat(best.Position - from).Unit or nil
+	end
+
+	local occ = {}
+	for _, r in ipairs(list) do
+		local z = zoneAt(zones, r.Position)
+		if z and z ~= mine and not occ[z] then occ[z] = r.Position end
+	end
+
+	local L = learned[kind] or learned.Bump
+	if not L or not arena.ground then -- nothing learned yet: the nearest occupied square's middle
+		local best, bd
+		for z in pairs(occ) do
+			local d = flat(z.Position - from).Magnitude
+			if not bd or d < bd then best, bd = z, d end
+		end
+		local v = best and flat(best.Position - from)
+		return v and v.Magnitude > 0.1 and v.Unit or nil
+	end
+
+	local best, bestScore
+	for i = 0, 47 do
+		local ang = i * math.pi / 24
+		local dir = Vector3.new(math.cos(ang), 0, math.sin(ang))
+		local land = landingFor(L, from, dir, arena.ground)
+		if land then
+			local z, margin = zoneAt(zones, land)
+			local score
+			if not z then
+				score = -100
+			elseif z == mine then
+				score = -50
+			elseif occ[z] then
+				score = 100 + math.min(flat(land - occ[z]).Magnitude, 30) * 2 + math.min(margin, 5) * 3
+			else
+				score = 10 + math.min(margin, 5)
+			end
+			if jitter then score = score + math.random() * 6 end
+			if not bestScore or score > bestScore then best, bestScore = dir, score end
+		end
+	end
+	if bestScore and bestScore > 0 then return best end
+end
+
+---------------------------------------------------------------- Hook
 local function ser(v, depth)
 	depth = depth or 0
 	local t = typeof(v)
@@ -321,9 +420,10 @@ local function ser(v, depth)
 		return string.format("%q", v:sub(1, 60))
 	elseif t == "table" then
 		if depth >= 2 then return "{...}" end
+		local cap = depth == 0 and 30 or 12
 		local parts = {}
 		for k, x in pairs(v) do
-			if #parts >= 12 then parts[#parts + 1] = "..." break end
+			if #parts >= cap then parts[#parts + 1] = "..." break end
 			parts[#parts + 1] = tostring(k) .. "=" .. ser(x, depth + 1)
 		end
 		return "{" .. table.concat(parts, ", ") .. "}"
@@ -337,27 +437,9 @@ local function serArgs(pack)
 	return "(" .. table.concat(out, ", ") .. ")"
 end
 
--- Turn a direction toward the aim point, keeping its height so the game's arc stays the same.
-local function yawToward(dir, from)
-	local h = flat(aimPoint - from)
-	if h.Magnitude < 0.1 then return dir end
-	h = h.Unit
-	local y = math.clamp(dir.Y, -0.95, 0.95)
-	local r = math.sqrt(1 - y * y)
-	return Vector3.new(h.X * r, y, h.Z * r)
-end
+local on = false
 
-local function rewrite(v, from)
-	local t = typeof(v)
-	if t == "Vector3" and math.abs(v.Magnitude - 1) < 0.15 and math.abs(v.Y) < 0.9 then
-		return yawToward(v.Unit, from), true
-	elseif t == "CFrame" then
-		return CFrame.lookAt(v.Position, v.Position + yawToward(v.LookVector, from)), true
-	end
-	return v, false
-end
-
--- Watch (and while the AI is aiming, steer) the game's own HitBall:FireServer calls.
+-- HitBall:FireServer(type, direction, ballPosition, serverTime, ...). The AI swaps the direction.
 local hook = { ok = false, fired = 0, aimed = 0, lastFire = 0, log = {} }
 if HitBall and hookmetamethod and getnamecallmethod then
 	local wrap = newcclosure or function(f) return f end
@@ -369,31 +451,21 @@ if HitBall and hookmetamethod and getnamecallmethod then
 				local args = table.pack(...)
 				pcall(function()
 					hook.fired, hook.lastFire = hook.fired + 1, os.clock()
-					local entry = { orig = serArgs(args) }
-					local root = myRoot()
-					if aimActive() and root then
-						local changed = false
-						for i = 1, args.n do
-							local v = args[i]
-							if typeof(v) == "table" then
-								local copy = {}
-								for k, x in pairs(v) do
-									local nx, c = rewrite(x, root.Position)
-									copy[k], changed = nx, changed or c
-								end
-								args[i] = copy
-							else
-								local nv, c = rewrite(v, root.Position)
-								args[i], changed = nv, changed or c
-							end
-						end
-						if changed then
+					local kind = type(args[1]) == "string" and args[1] or "?"
+					lastSent = { kind = kind, t = os.clock() }
+					local entry = { orig = serArgs(args), by = (os.clock() - lastActT < 0.6) and ("AI " .. tostring(lastActKind)) or "you" }
+					if (on or CFG.assist) and typeof(args[2]) == "Vector3" then
+						local root = myRoot()
+						local from = typeof(args[3]) == "Vector3" and args[3] or (root and root.Position)
+						local dir = from and bestDir(kind, from, true)
+						if dir then
+							args[2] = dir
 							hook.aimed = hook.aimed + 1
-							entry.sent = serArgs(args)
+							entry.sent = ser(dir)
 						end
 					end
 					table.insert(hook.log, 1, entry)
-					hook.log[4] = nil
+					hook.log[9] = nil
 				end)
 				return old(self, table.unpack(args, 1, args.n))
 			end
@@ -403,24 +475,35 @@ if HitBall and hookmetamethod and getnamecallmethod then
 	hook.ok = old ~= nil
 end
 
--- Keep the last few messages the server sends about the ball, for the report.
-local recv = {}
-for _, name in ipairs({ "RE/BallState", "RE/HitBall", "RE/BallService/Resync" }) do
-	local r = remote(name)
-	if r then
-		local rec = { count = 0, last = {} }
-		recv[name] = rec
-		table.insert(conns, r.OnClientEvent:Connect(function(...)
-			rec.count = rec.count + 1
-			table.insert(rec.last, 1, table.pack(...))
-			rec.last[4] = nil
-		end))
-	end
+---------------------------------------------------------------- Facing (camera left alone)
+local aimPoint, aimUntil, camSaved = nil, 0, nil
+local function aimActive() return aimPoint ~= nil and os.clock() < aimUntil end
+local function aimAt(pos, secs) aimPoint, aimUntil = pos, os.clock() + secs end
+
+local function face(root, pos)
+	local look = Vector3.new(pos.X, root.Position.Y, pos.Z)
+	if (look - root.Position).Magnitude > 0.1 then root.CFrame = CFrame.lookAt(root.Position, look) end
 end
 
+-- After the camera script, so shift lock can't turn you back before the hit goes out.
+local aimBind = "VolleyAIAim" .. tostring(os.clock())
+RunService:BindToRenderStep(aimBind, Enum.RenderPriority.Camera.Value + 1, function()
+	local cam = workspace.CurrentCamera
+	if aimActive() then
+		local root = myRoot()
+		if root then face(root, aimPoint) end
+		if CFG.cameraAim then
+			if not camSaved then camSaved = cam.CFrame - cam.CFrame.Position end
+			cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPoint)
+		end
+	elseif camSaved then
+		cam.CFrame = CFrame.new(cam.CFrame.Position) * camSaved
+		camSaved = nil
+	end
+end)
+
 ---------------------------------------------------------------- Input
--- Several ways to press bump/dive. With the hook on, three presses in a row that never reach
--- HitBall switch to the next way.
+-- With the hook on, three presses in a row that never reach HitBall switch to the next way.
 local METHODS = { "center", "tap", "signal", "exec" }
 local method, misses, pending = 1, 0, nil
 
@@ -481,17 +564,18 @@ local function pressKey(key)
 end
 
 local function act(kind)
-	if kind == "bump" then pending = os.clock() end
+	lastActKind, lastActT = kind, os.clock()
+	if kind ~= "Dive" then pending = os.clock() end
 	task.spawn(function()
 		local m = METHODS[method]
-		local b = hudButton(kind == "dive" and "AbilityButton" or "BumpSpikeButton")
+		local b = hudButton(kind == "Dive" and "AbilityButton" or "BumpSpikeButton")
 		if m == "tap" and b then
 			vimClick(guiCenter(b))
 		elseif m == "signal" and fireButton(b) then
 			return
-		elseif m == "exec" and kind == "bump" and mouse1click then
+		elseif m == "exec" and kind ~= "Dive" and mouse1click then
 			mouse1click()
-		elseif kind == "dive" then
+		elseif kind == "Dive" then
 			pressKey(Enum.KeyCode.E)
 		else
 			vimClick(screenCenter())
@@ -500,43 +584,18 @@ local function act(kind)
 end
 
 ---------------------------------------------------------------- AI
-local on = false
-local lastAct, lastTouch, lastText, lastTileCheck = 0, 0, 0, 0
-local touches, possession, spikeRoll, aimTgt = 0, false, false, nil
+local lastAct, lastTouch, lastText = 0, 0, 0
+local fallbackHome, arcId, arcDir, spikeRoll = nil, nil, nil, false
 local stats = { bumps = 0, spikes = 0, dives = 0, cameBack = 0, confirmed = 0 }
-local lastErr, curBall = nil, nil
+local lastErr, cur = nil, nil
 
 local function setOn(v)
 	on = v
 	local r = myRoot()
-	if r then setHome(r) end
-	touches, possession, aimTgt = 0, false, nil
+	fallbackHome = r and r.Position
+	arcId = nil
 	btn.Text = on and "AI ON" or "AI OFF"
 	btn.BackgroundColor3 = on and GREEN or RED
-end
-
-local function touched(kind)
-	if touches >= 1 then stats.cameBack = stats.cameBack + 1 end
-	touches = touches + 1
-	stats[kind] = stats[kind] + 1
-	lastTouch, lastAct = os.clock(), os.clock()
-end
-
-local function bump(root, tgt)
-	if tgt then
-		local d = flat(tgt.Position - root.Position).Magnitude
-		aimAt(tgt.Position + Vector3.new(0, d * CFG.aimLift, 0), 0.35)
-		task.delay(0.05, act, "bump") -- let the turn reach the server first
-	else
-		act("bump")
-	end
-end
-
-local function spike(hum, tgt)
-	if tgt then aimAt(tgt.Position, CFG.spikeDelay + 0.35) end
-	task.spawn(pressKey, Enum.KeyCode.Space)
-	hum.Jump = true
-	task.delay(CFG.spikeDelay, act, "bump")
 end
 
 local function setStatus(text)
@@ -546,19 +605,33 @@ local function setStatus(text)
 	end
 end
 
-local function step()
-	local now = os.clock()
-	local count = 0
+-- Fallback flight built from the tracked ball when the game sends none.
+local function trackedFlight(root, T, now)
+	local ball, best
 	for part, s in pairs(tracked) do
-		if not part.Parent then
-			tracked[part] = nil
-		else
-			count = count + 1
-			updateBall(part, s, now)
+		if now - s.moved < 0.25 and s.vel.Magnitude > 1 then
+			local d = (s.pos - root.Position).Magnitude
+			if not best or d < best then ball, best = part, d end
 		end
 	end
+	if not ball then return nil end
+	local s = tracked[ball]
+	local shadow = workspace:FindFirstChild("BallShadow")
+	local ground = arena.ground or (shadow and shadow.Position.Y + 1.5) or root.Position.Y - 1.5
+	local rec = {
+		Origin = s.pos, Velocity = s.vel, Gravity = Vector3.new(0, -math.clamp(s.gUse, 10, 800), 0),
+		Time = T, Skin = ball.Name, id = tostring(ball) .. s.arcs, zones = {},
+	}
+	rec.EndTime = timeAtHeight(rec, ground) or T
+	return rec
+end
 
-	-- Did the last press reach the game? (needs the hook)
+local function step()
+	local now = os.clock()
+	for part, s in pairs(tracked) do
+		if not part.Parent then tracked[part] = nil else updateBall(part, s, now) end
+	end
+
 	if pending and hook.ok and now - pending > 0.45 then
 		if hook.lastFire >= pending then
 			misses, stats.confirmed = 0, stats.confirmed + 1
@@ -572,97 +645,110 @@ local function step()
 	local ch = lp.Character
 	local root = ch and ch:FindFirstChild("HumanoidRootPart")
 	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-	if not (on and root and hum and hum.Health > 0) then
-		curBall = nil
-		setStatus(on and "waiting for character" or ("idle | " .. count .. " ball candidates"))
+	if not root then
+		setStatus("waiting for character")
 		return
 	end
 
+	local T = workspace:GetServerTimeNow()
+	local st, zone = myArena(T, root)
+	if st then
+		arena.zones, arena.myZone, arena.ground = st.zones, zone, st.ground
+	end
+
+	if not (on and hum and hum.Health > 0) then
+		cur = nil
+		setStatus(arena.myZone and "idle | square found" or "idle | no square yet")
+		return
+	end
 	if aimActive() then face(root, aimPoint) end
 
-	-- Find your square again after a new round or a teleport.
-	if not home then setHome(root) end
-	if not possession and now - lastTileCheck > 2 then
-		lastTileCheck = now
-		local t = tileUnder(root)
-		if (t and t ~= zonePart) or (not t and flat(root.Position - home).Magnitude > zoneRadius() * 2 + 6) then
-			setHome(root)
-		end
-	end
+	local home = arena.myZone and Vector3.new(arena.myZone.Position.X, root.Position.Y, arena.myZone.Position.Z)
+		or fallbackHome or root.Position
+	if not st and stateCount == 0 then st = trackedFlight(root, T, now) end
+	cur = st
 
-	local ball, best
-	for part, s in pairs(tracked) do
-		if now - s.moved < 0.25 and s.vel.Magnitude > 1 then
-			local d = (s.pos - root.Position).Magnitude
-			if not best or d < best then ball, best = part, d end
-		end
-	end
-	curBall = ball
-
-	if not ball then
-		touches, possession = 0, false
-		if flat(root.Position - home).Magnitude > 2 then hum:MoveTo(home) end
-		setStatus("no moving ball | " .. count .. " candidates")
+	if not st or T > st.EndTime then
+		-- back to the middle of your square between rallies; out of the arena, leave you alone
+		local inSquare = arena.myZone and nearZone(arena.myZone, root.Position, 8)
+			or (stateCount == 0 and flat(root.Position - home).Magnitude < CFG.zone * 2)
+		if inSquare and flat(root.Position - home).Magnitude > 2 then hum:MoveTo(home) end
+		setStatus(stateCount > 0 and "waiting for a rally" or "no ball | no BallState yet")
 		return
 	end
 
-	local s = tracked[ball]
-	local bpos, vel, g = s.pos, s.vel, math.clamp(s.gUse, 10, 800)
-
-	-- BallShadow: if it sits away from the ball while it flies, it marks the landing spot. Use it.
-	local shadow = workspace:FindFirstChild("BallShadow")
-	if shadow then s.shadowOff = s.shadowOff + (flat(shadow.Position - bpos).Magnitude - s.shadowOff) * 0.1 end
-	local marker = shadow and s.shadowOff > 3
-	local groundY = shadow and shadow.Position.Y or root.Position.Y - 3
-
-	local target = intercept(bpos, vel, g, root.Position.Y + 1)
-	local landing, tLand = intercept(bpos, vel, g, groundY + 1.5)
-	if marker then
-		target = Vector3.new(shadow.Position.X, root.Position.Y + 1, shadow.Position.Z)
-		landing = Vector3.new(shadow.Position.X, groundY, shadow.Position.Z)
+	local bpos, bvel = ballAt(st, T), velAt(st, T)
+	local landing = ballAt(st, st.EndTime)
+	local mine
+	if arena.myZone and #st.zones > 0 then
+		mine = zoneAt({ arena.myZone }, landing) ~= nil
+	else
+		mine = flat(landing - home).Magnitude <= CFG.zone
 	end
-	local mine = inZone(landing)
 
-	-- Possession: starts when the ball is coming down in your square, ends once it has left it.
-	if mine and not possession then
-		possession, touches = true, 0
+	local ours = st.Hitter == lp or (stateCount == 0 and now - lastTouch < 3)
+	if st.id ~= arcId then -- a new flight: decide once how to play it
+		arcId = st.id
 		spikeRoll = math.random() < CFG.spikeChance
-		aimTgt = pickTarget(home)
-	elseif possession and not mine and not inZone(bpos) then
-		possession, touches, aimTgt = false, 0, nil
+		arcDir = nil
+		if mine then
+			if ours then stats.cameBack = stats.cameBack + 1 end
+			local hitT = timeAtHeight(st, root.Position.Y + CFG.hitHeight)
+			local from = hitT and hitT <= st.EndTime and ballAt(st, hitT) or landing
+			arcDir = bestDir((CFG.spike and (ours or spikeRoll)) and "Spike" or "Bump", from, false)
+		end
 	end
-	if aimTgt and not aimTgt.Parent then aimTgt = pickTarget(home) end
+	local wantSpike = CFG.spike and (ours or spikeRoll)
 
-	-- Stand so the ball drops in front of you, toward your target, never straight onto your head.
+	-- Where to meet it: the point it comes down through your hitting height, if you can get there.
+	local tHit = timeAtHeight(st, root.Position.Y + CFG.hitHeight)
+	if tHit and (tHit < T or tHit > st.EndTime) then tHit = nil end
+	local hitPoint = tHit and ballAt(st, tHit) or landing
+	local timeLeft = (tHit or st.EndTime) - T
+	local canReach = flat(hitPoint - root.Position).Magnitude
+		<= math.max(hum.WalkSpeed, 1) * timeLeft + CFG.hitRange * 0.5
+
 	local moveTo = home
 	if mine then
-		local away = aimTgt and flat(aimTgt.Position - target) or -flat(vel)
-		moveTo = away.Magnitude > 0.1 and (target - away.Unit * CFG.standOff) or target
+		if canReach then
+			local back = arcDir or -flat(bvel)
+			moveTo = back.Magnitude > 0.1 and (hitPoint - back.Unit * CFG.standOff) or hitPoint
+		else
+			moveTo = landing -- too far to get under it: run for the dive
+		end
 	end
 	if flat(moveTo - root.Position).Magnitude > 0.5 then hum:MoveTo(moveTo) end
 
 	local rel = bpos - root.Position
-	local fr = flat(rel).Magnitude
-	local approaching = rel:Dot(vel) < 0
-	local ownHitRising = now - lastTouch < 0.8 and vel.Y > 0 -- your last touch is still going up: leave it
-	if mine and now - lastAct >= CFG.cooldown and not ownHitRising then
-		local wantSpike = CFG.spike and (touches >= 1 or spikeRoll)
-		if approaching and wantSpike and fr <= 6 and rel.Y >= 2 and rel.Y <= 10 then
-			touched("spikes")
-			spike(hum, aimTgt)
+	local approaching = rel:Dot(bvel) < 0
+	local ownRising = ours and bvel.Y > 0 -- your own touch is still going up: leave it
+	if mine and now - lastAct >= CFG.cooldown and not ownRising then
+		local soon = ballAt(st, math.min(T + CFG.spikeDelay, st.EndTime)) - root.Position
+		if approaching and wantSpike and flat(soon).Magnitude <= 6 and soon.Y >= 2 and soon.Y <= 10 then
+			stats.spikes, lastTouch, lastAct = stats.spikes + 1, now, now
+			if arcDir then aimAt(root.Position + arcDir * 30, CFG.spikeDelay + 0.35) end
+			task.spawn(pressKey, Enum.KeyCode.Space)
+			hum.Jump = true
+			task.delay(CFG.spikeDelay, act, "Spike")
 		elseif approaching and rel.Magnitude <= CFG.hitRange and not (wantSpike and rel.Y > 4) then
-			touched("bumps")
-			bump(root, aimTgt)
-		elseif vel.Y < 0 and tLand > 0 and tLand <= CFG.diveLead and rel.Magnitude > CFG.hitRange
+			stats.bumps, lastTouch, lastAct = stats.bumps + 1, now, now
+			if arcDir then
+				aimAt(root.Position + arcDir * 30, 0.35)
+				task.delay(0.05, act, "Bump") -- let the turn reach the server first
+			else
+				act("Bump")
+			end
+		elseif st.EndTime - T <= CFG.diveLead and rel.Magnitude > CFG.hitRange
 			and flat(landing - root.Position).Magnitude <= CFG.diveRange then
-			touched("dives")
-			lastAct = now + 0.2 -- dive recovery on top of the cooldown
+			stats.dives, lastTouch, lastAct = stats.dives + 1, now, now + 0.2
+			aimAt(landing, 0.4)
 			face(root, landing)
-			act("dive")
+			act("Dive")
 		end
 	end
 
-	setStatus(string.format("%s %.0f | t%d/%d%s", ball.Name, best, touches, CFG.maxTouches, mine and "" or " | out"))
+	setStatus(string.format("%s %.0f | %s%s", tostring(st.Skin or "ball"), rel.Magnitude,
+		type(st.Hits) == "number" and ("h" .. st.Hits) or "", mine and " | yours" or ""))
 end
 
 ---------------------------------------------------------------- Report
@@ -676,90 +762,58 @@ local function buildReport()
 	local L = {}
 	local function add(line) L[#L + 1] = line end
 	local okE, exec = pcall(function() return (identifyexecutor()) end)
-	local root = myRoot()
-	add("Volley AI v3 report " .. os.date("%Y-%m-%d %H:%M:%S"))
+	add("Volley AI v4 report " .. os.date("%Y-%m-%d %H:%M:%S"))
 	add("place " .. game.PlaceId .. " | executor " .. (okE and tostring(exec) or "?") .. " | AI " .. (on and "on" or "off"))
-	add(string.format("bumps %d spikes %d dives %d came-back %d confirmed %d | touches now %d",
-		stats.bumps, stats.spikes, stats.dives, stats.cameBack, stats.confirmed, touches))
-	add(string.format("hook %s | HitBall fired %d, aimed %d | input %s",
-		hook.ok and "on" or "unavailable", hook.fired, hook.aimed, METHODS[method]))
+	add(string.format("bumps %d spikes %d dives %d came-back %d confirmed %d",
+		stats.bumps, stats.spikes, stats.dives, stats.cameBack, stats.confirmed))
+	add(string.format("hook %s | HitBall fired %d, aimed %d | input %s | BallState %d",
+		hook.ok and "on" or "unavailable", hook.fired, hook.aimed, METHODS[method], stateCount))
 	add("last error: " .. tostring(lastErr or "none"))
 
-	add("-- square --")
-	add("zone: " .. (zonePart and string.format("tile %s size %.0fx%.0f", zonePart:GetFullName(), zonePart.Size.X, zonePart.Size.Z)
-		or ("radius " .. CFG.zone)))
-	local under = root and partUnder(root)
-	add("standing on: " .. (under and string.format("%s size %.1f,%.1f,%.1f {%s}",
-		under:GetFullName(), under.Size.X, under.Size.Y, under.Size.Z, attrs(under)) or "nothing"))
-	local idStr, owned = tostring(lp.UserId), 0
-	for _, o in ipairs(workspace:GetDescendants()) do
-		if owned >= 15 then break end
-		for k, v in pairs(o:GetAttributes()) do
-			local sv = tostring(v)
-			if sv == lp.Name or sv == idStr or sv == lp.DisplayName then
-				owned = owned + 1
-				add("tagged with you: " .. o:GetFullName() .. " ." .. k)
-			end
-		end
-		if o:IsA("ObjectValue") and o.Value == lp then
-			owned = owned + 1
-			add("points at you: " .. o:GetFullName())
+	add("-- arena --")
+	local z = arena.myZone
+	add("my square: " .. (z and string.format("%s size %.1f,%.1f,%.1f at %.1f,%.1f,%.1f",
+		z:GetFullName(), z.Size.X, z.Size.Y, z.Size.Z, z.Position.X, z.Position.Y, z.Position.Z) or "not found"))
+	add(string.format("squares %d | ground %s", arena.zones and #arena.zones or 0, tostring(arena.ground)))
+	local occupied = 0
+	for _, r in ipairs(bodies()) do
+		local oz = zoneAt(arena.zones, r.Position)
+		if oz then
+			occupied = occupied + 1
+			add("  " .. r.Parent.Name .. " in " .. (oz == z and "your square" or ("square at " .. string.format("%.0f,%.0f", oz.Position.X, oz.Position.Z))))
 		end
 	end
+	add("bodies in squares: " .. occupied)
+	for kind, Ls in pairs(learned) do
+		add(string.format("learned %s: flat speed %.1f, up %.1f, gravity %.1f (%d hits)", kind, Ls.h, Ls.vy, Ls.g, Ls.n))
+	end
 
-	add("-- ball --")
-	if curBall and tracked[curBall] then
-		local s = tracked[curBall]
-		add(string.format("%s | speed %.1f | gravity fit %.0f (remembered %.0f) | arcs %d | shadow offset %.1f",
-			curBall:GetFullName(), s.vel.Magnitude, s.gUse, s.g, s.arcs, s.shadowOff))
-		for _, d in ipairs(curBall:GetDescendants()) do
-			if d:IsA("TextLabel") and #d.Text > 0 then add("ball text: " .. d.Text) end
-		end
+	add("-- current flight --")
+	if cur then
+		local landing = ballAt(cur, cur.EndTime)
+		local lz = zoneAt(cur.zones, landing)
+		add(string.format("%s | lands %.1f,%.1f,%.1f in %.2fs | landing square %s | HitZone is landing square: %s | Hits %s by %s",
+			tostring(cur.Skin), landing.X, landing.Y, landing.Z, cur.EndTime - workspace:GetServerTimeNow(),
+			lz and (lz == z and "yours" or "someone else's") or "none", tostring(cur.HitZone ~= nil and cur.HitZone == lz),
+			tostring(cur.Hits), cur.Hitter and tostring(cur.Hitter) or "?"))
 	else
-		add("no ball in play")
-	end
-	local n = 0
-	for part, s in pairs(tracked) do
-		n = n + 1
-		if n > 20 then add("...") break end
-		add(string.format("candidate %s [%s] size %.1f anchored %s speed %.1f {%s}",
-			part:GetFullName(), part.ClassName, part.Size.X, tostring(part.Anchored), s.vel.Magnitude, attrs(part)))
+		add("none")
 	end
 
-	add("-- HitBall calls (what the game sent, => what the AI changed it to) --")
-	for _, e in ipairs(hook.log) do add(e.orig .. (e.sent and ("  =>  " .. e.sent) or "")) end
-	add("-- from the server --")
-	for name, rec in pairs(recv) do
-		add(name .. " received " .. rec.count)
-		for _, pk in ipairs(rec.last) do add("  " .. serArgs(pk)) end
-	end
+	add("-- HitBall calls (who pressed: what the game sent => direction the AI put in) --")
+	for _, e in ipairs(hook.log) do add(e.by .. ": " .. e.orig .. (e.sent and ("  =>  " .. e.sent) or "")) end
+	add("-- BallState (latest first) --")
+	for _, st in ipairs(stateLog) do add(ser(st)) end
 
-	add("-- numbers on screen --")
-	n = 0
-	local pg = lp:FindFirstChild("PlayerGui")
-	for _, o in ipairs(pg and pg:GetDescendants() or {}) do
-		if (o:IsA("TextLabel") or o:IsA("TextButton")) and o.Visible and #o.Text > 0 and #o.Text < 40 then
-			local low = o.Text:lower()
-			if o.Text:find("%d") or low:find("touch") or low:find("hit") then
-				n = n + 1
-				if n > 25 then add("...") break end
-				add(o:GetFullName():gsub("^Players%.[^%.]+%.PlayerGui%.", "") .. " = " .. o.Text)
-			end
+	if stateCount == 0 then
+		add("-- fallback ball candidates --")
+		local n = 0
+		for part, s in pairs(tracked) do
+			n = n + 1
+			if n > 10 then add("...") break end
+			add(string.format("%s [%s] size %.1f speed %.1f {%s}", part:GetFullName(), part.ClassName,
+				part.Size.X, s.vel.Magnitude, attrs(part)))
 		end
-	end
-
-	local names = {}
-	for _, c in ipairs(workspace:GetChildren()) do
-		if #names >= 80 then break end
-		names[#names + 1] = c.Name
-	end
-	add("-- workspace --")
-	add(table.concat(names, ", "))
-	local go = workspace:FindFirstChild("GameObjects")
-	if go then
-		names = {}
-		for _, c in ipairs(go:GetChildren()) do names[#names + 1] = c.Name end
-		add("GameObjects: " .. table.concat(names, ", "))
 	end
 	return table.concat(L, "\n")
 end
@@ -802,5 +856,5 @@ table.insert(conns, gui.Destroying:Connect(function()
 	RunService:UnbindFromRenderStep(aimBind)
 end))
 
-notify((gui.Parent and "loaded. tap AI or press Z" or "loaded, GUI could not be placed. Z still toggles")
+notify("v4 " .. (gui.Parent and "loaded. tap AI or press Z" or "loaded, GUI could not be placed. Z still toggles")
 	.. (hook.ok and "" or " (no hook: aiming by turning only)"))
