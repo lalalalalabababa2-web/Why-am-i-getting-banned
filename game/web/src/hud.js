@@ -55,30 +55,30 @@ export class HUD {
     c.height = Math.ceil(MAP_H * MPX);
     const g = c.getContext('2d');
     const X = (x) => (x - MAP_X0) * MPX, Z = (z) => (z - MAP_Z0) * MPX;
-    g.fillStyle = '#123a58';
+    g.fillStyle = '#2b4a5a';
     g.fillRect(0, 0, c.width, c.height);
     // sand
-    g.fillStyle = '#8d7a52';
+    g.fillStyle = '#8f8467';
     roundRect(g, X(LAND.minX), Z(LAND.minZ), (LAND.maxX - LAND.minX) * MPX, (LAND.maxZ - LAND.minZ) * MPX, LAND.r * MPX);
     g.fill();
     // city slab
-    g.fillStyle = '#353a46';
+    g.fillStyle = '#34363a';
     g.fillRect(X(CITY.minX), Z(CITY.minZ), (CITY.maxX - CITY.minX) * MPX, (CITY.maxZ - CITY.minZ) * MPX);
     // lots by district
-    const lotCol = { R: '#3b4a3a', P: '#2f6a34', D: '#3d3d42', S: '#3a3f4a', T: '#33363f', B: '#3a3a40', M: '#373b45', O: '#45384a' };
+    const lotCol = { R: '#3c4239', P: '#3e5a37', D: '#3b3c3e', S: '#3a3c40', T: '#393b3f', B: '#393b3f', M: '#3a3c40', O: '#3d3c40' };
     for (const lot of G.city.lots) {
       g.fillStyle = lotCol[lot.d] || '#373b45';
       g.fillRect(X(lot.ox0), Z(lot.oz0), (lot.ox1 - lot.ox0) * MPX, (lot.oz1 - lot.oz0) * MPX);
     }
     // buildings
-    g.fillStyle = '#23262e';
+    g.fillStyle = '#26282c';
     for (const b of G.city.buildings) {
       if (b.collide === false) continue;
       g.fillRect(X(b.x - b.w / 2), Z(b.z - b.d / 2), b.w * MPX, b.d * MPX);
     }
     for (const e of G.city.extras) {
       if (e.type === 'pond') {
-        g.fillStyle = '#1d5a78';
+        g.fillStyle = '#2b4a5a';
         g.beginPath(); g.ellipse(X(e.x), Z(e.z), e.rx * MPX, e.rz * MPX, 0, 0, Math.PI * 2); g.fill();
       } else if (e.type === 'stadium') {
         g.fillStyle = '#5a6070';
@@ -88,7 +88,7 @@ export class HUD {
       }
     }
     // roads
-    g.fillStyle = '#9aa1ad';
+    g.fillStyle = '#8e9296';
     for (const n of G.city.nodes) {
       if (!n.nb.length) continue;
       g.fillRect(X(n.x - ROAD_HALF), Z(n.z - ROAD_HALF), ROAD_HALF * 2 * MPX, ROAD_HALF * 2 * MPX);
@@ -115,7 +115,7 @@ export class HUD {
       else if (a === 'map') this.openMap();
       else if (a === 'settings') this.openSettings('pause');
       else if (a === 'help') this.openHelp('pause');
-      else if (a === 'save') { G.saveGame(); this.toast('GAME SAVED'); }
+      else if (a === 'save') { G.saveGame(); this.toast('Saved'); }
       else if (a === 'title') G.toTitle();
     });
     act(this.el.settings, (a) => { if (a === 'back') this.closeSub('settings'); });
@@ -158,7 +158,8 @@ export class HUD {
   openPause() {
     const s = G.stats;
     const story = Math.min(G.save.story || 0, 6);
-    this.el.pauseStats.innerHTML = `${formatMoney(G.player.money)} · Story ${story}/6 · Shells ${(G.save.shells || []).length}/20 · Jumps ${(G.save.jumps || []).length}/6<br>Kills ${s.kills} · Cars stolen ${s.carsStolen} · Driven ${(s.distance / 1000).toFixed(1)} km`;
+    const sp = '&nbsp;&nbsp;&nbsp;';
+    this.el.pauseStats.innerHTML = `${formatMoney(G.player.money)}${sp}Story ${story}/6${sp}Shells ${(G.save.shells || []).length}/20${sp}Jumps ${(G.save.jumps || []).length}/6<br>Kills ${s.kills}${sp}Cars stolen ${s.carsStolen}${sp}Driven ${(s.distance / 1000).toFixed(1)} km`;
     this.show('pause', true);
   }
 
@@ -219,14 +220,14 @@ export class HUD {
     const s = Math.min(W / MAP_W, H / MAP_H) * 0.98;
     const ox = (W - MAP_W * s) / 2, oy = (H - MAP_H * s) / 2;
     this.bm = { s, ox, oy };
-    g.fillStyle = '#123a58';
+    g.fillStyle = '#2b4a5a';
     g.fillRect(0, 0, W, H);
     g.drawImage(this.mapImg, ox, oy, MAP_W * s, MAP_H * s);
     const P = (x, z) => [ox + (x - MAP_X0) * s, oy + (z - MAP_Z0) * s];
     // gps
     const path = this.gpsPath;
     if (path && path.length > 1) {
-      g.strokeStyle = 'rgba(255,43,214,0.9)';
+      g.strokeStyle = G.missions.gps ? 'rgba(242,194,48,0.95)' : 'rgba(163,92,240,0.95)';
       g.lineWidth = 4;
       g.lineJoin = 'round';
       g.beginPath();
@@ -239,16 +240,16 @@ export class HUD {
     }
     if (this.waypoint) {
       const [x, y] = P(this.waypoint.x, this.waypoint.z);
-      drawBlip(g, x, y, { color: '#ff2bd6', icon: 'way' }, 1.6);
+      drawBlip(g, x, y, { color: '#a35cf0', icon: 'way' }, 1.6);
     }
     const pp = G.player.pos();
     const [px, py] = P(pp.x, pp.z);
     drawArrow(g, px, py, G.player.human.vehicle ? G.player.human.vehicle.h : G.player.human.h, 1.6);
     // district labels
-    g.font = 'bold 12px Arial';
+    g.font = '700 14px "Barlow Condensed", Arial';
     g.textAlign = 'center';
     g.fillStyle = 'rgba(255,255,255,0.75)';
-    const labels = [['DOWNTOWN', nodeX(8), nodeZ(2)], ['OCEAN DRIVE', nodeX(13), nodeZ(5)], ['MIDTOWN', nodeX(5), nodeZ(5)], ['PALM HEIGHTS', nodeX(3), nodeZ(8)], ['THE DOCKS', nodeX(2), nodeZ(2)], ['CORAL BEACH', CITY.maxX + 70, nodeZ(8)], ['STARLIGHT PARK', nodeX(8), nodeZ(7)]];
+    const labels = [['Downtown', nodeX(8), nodeZ(2)], ['Ocean Drive', nodeX(13), nodeZ(5)], ['Midtown', nodeX(5), nodeZ(5)], ['Palm Heights', nodeX(3), nodeZ(8)], ['The Docks', nodeX(2), nodeZ(2)], ['Coral Beach', CITY.maxX + 70, nodeZ(8)], ['Starlight Park', nodeX(8), nodeZ(7)]];
     for (const [t, x, z] of labels) { const [lx, ly] = P(x, z); g.fillText(t, lx, ly); }
   }
 
@@ -291,26 +292,26 @@ export class HUD {
     this.el.shopMoney.textContent = 'Cash: ' + formatMoney(P.money);
     const items = [];
     if (this.shopKind === 'guns') {
-      this.el.shopTitle.textContent = 'SOLACE ARMS';
+      this.el.shopTitle.textContent = 'Solace Arms';
       for (const w of ['pistol', 'smg', 'shotgun', 'rifle']) {
         const W = WEAPONS[w];
         if (!P.owns(w)) items.push({ label: `${W.name} + ${W.ammoPack} rounds`, price: W.price, buy: () => P.giveWeapon(w, W.ammoPack) });
         else items.push({ label: `${W.name} ammo +${W.ammoPack} (have ${P.inv[w]})`, price: W.ammoPrice, buy: () => P.giveWeapon(w, W.ammoPack) });
       }
-      items.push({ label: 'Body armor (full)', price: 250, owned: P.human.armor >= 100, buy: () => { P.human.armor = 100; } });
-      items.push({ label: 'First aid (full health)', price: 100, owned: P.human.health >= P.human.maxHealth, buy: () => { P.human.health = P.human.maxHealth; } });
+      items.push({ label: 'Body armor', price: 250, owned: P.human.armor >= 100, buy: () => { P.human.armor = 100; } });
+      items.push({ label: 'First aid', price: 100, owned: P.human.health >= P.human.maxHealth, buy: () => { P.human.health = P.human.maxHealth; } });
     } else {
-      this.el.shopTitle.textContent = 'SUNSET MOTORS';
+      this.el.shopTitle.textContent = 'Sunset Motors';
       const cars = [['suv', 3000], ['muscle', 4500], ['sports', 7500], ['super', 18000]];
       for (const [t, price] of cars) {
-        items.push({ label: `${VTYPES[t].name} — delivered out front`, price, buy: () => { G.pickups.buyCar(t, 0); this.closeShop(); this.toast(`${VTYPES[t].name.toUpperCase()} IS YOURS`); } });
+        items.push({ label: `${VTYPES[t].name}, parked out front`, price, buy: () => { G.pickups.buyCar(t, 0); this.closeShop(); this.toast(`${VTYPES[t].name} bought`); } });
       }
     }
     for (const it of items) {
       const d = document.createElement('div');
       const can = P.money >= it.price && !it.owned;
       d.className = 'shopitem' + (can ? '' : it.owned ? ' owned' : ' cant');
-      d.innerHTML = `<span>${it.label}</span><span class="p">${it.owned ? 'FULL' : formatMoney(it.price)}</span>`;
+      d.innerHTML = `<span>${it.label}</span><span class="p">${it.owned ? 'Full' : formatMoney(it.price)}</span>`;
       d.addEventListener('click', () => {
         if (!can) { G.audio.click(); return; }
         P.addMoney(-it.price);
@@ -351,7 +352,7 @@ export class HUD {
     b.querySelector('.s').textContent = sub || '';
     this.bigT = dur;
   }
-  radio(name) { this.el.radio.textContent = name ? '♪ ' + name : ''; this.radioT = 2.5; }
+  radio(st) { this.el.radio.innerHTML = st ? `${st[0]}${st[1] ? `<small>${st[1]}</small>` : ''}` : ''; this.radioT = 2.5; }
   carName(name) { this.el.carname.textContent = name.toUpperCase(); }
   weaponChanged() { this.textT = 0; }
   moneyChanged(n) {
@@ -452,7 +453,7 @@ export class HUD {
         r.style.display = 'block';
         r.style.left = s.x + 'px';
         r.style.top = s.y + 'px';
-        r.classList.toggle('friendly', !(t.kind === 'cop' || t.kind === 'gang' || (t.ai && t.ai.hostile)));
+        r.classList.toggle('hostile', !!(t.kind === 'cop' || t.kind === 'gang' || (t.ai && t.ai.hostile)));
         r.style.transform = this.hitT > 0 ? 'scale(1.35)' : '';
         return;
       }
@@ -466,7 +467,7 @@ export class HUD {
     if (!dest) { this.gpsPath = null; return; }
     if (this.waypoint && !G.missions.gps) {
       const p = G.player.pos();
-      if (Math.hypot(p.x - this.waypoint.x, p.z - this.waypoint.z) < 25) { this.waypoint = null; this.toast('ARRIVED'); return; }
+      if (Math.hypot(p.x - this.waypoint.x, p.z - this.waypoint.z) < 25) { this.waypoint = null; this.toast('Arrived'); return; }
     }
     const key = dest.x.toFixed(0) + ',' + dest.z.toFixed(0);
     if (this.gpsT > 0 && key === this.gpsKey) return;
@@ -488,7 +489,7 @@ export class HUD {
     const s = zoom; // canvas px per metre
     const rot = G.cam.yaw - Math.PI;
     g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = '#123a58';
+    g.fillStyle = '#2b4a5a';
     g.fillRect(0, 0, W, H);
     g.save();
     g.translate(W / 2, H / 2);
@@ -503,15 +504,15 @@ export class HUD {
     if (sw > 0 && sh > 0) g.drawImage(this.mapImg, sx, sy, sw, sh, sx, sy, sw, sh);
     // wanted search area
     if (G.police.level > 0 && !G.police.seen) {
-      g.fillStyle = 'rgba(255,40,60,0.18)';
+      g.fillStyle = 'rgba(216,56,47,0.22)';
       g.beginPath();
       g.arc(G.police.lastSeen.x - MAP_X0, G.police.lastSeen.z - MAP_Z0, G.police.searchRadius, 0, Math.PI * 2);
       g.fill();
     }
     // GPS route
     if (this.gpsPath && this.gpsPath.length > 1) {
-      g.strokeStyle = G.missions.gps ? 'rgba(255,210,63,0.95)' : 'rgba(255,43,214,0.95)';
-      g.lineWidth = 7 / s * 1.0;
+      g.strokeStyle = G.missions.gps ? 'rgba(242,194,48,0.95)' : 'rgba(163,92,240,0.95)';
+      g.lineWidth = 6 / s;
       g.lineJoin = 'round';
       g.lineCap = 'round';
       g.beginPath();
@@ -525,16 +526,17 @@ export class HUD {
       const dx = (x - p.x) * s, dz = (z - p.z) * s;
       return [W / 2 + dx * cosr - dz * sinr, H / 2 + dx * sinr + dz * cosr];
     };
-    const rr = W / 2 - 12;
+    const rr = Math.min(W, H) / 2 - 10;
+    const hw = W / 2 - 10, hh = H / 2 - 10;
     const list = this.blips();
-    if (this.waypoint) list.push({ x: this.waypoint.x, z: this.waypoint.z, color: '#ff2bd6', icon: 'way', edge: true });
+    if (this.waypoint) list.push({ x: this.waypoint.x, z: this.waypoint.z, color: '#a35cf0', icon: 'way', edge: true });
     for (const b of list) {
       let [x, y] = toScreen(b.x, b.z);
       const dx = x - W / 2, dy = y - H / 2;
-      const d = Math.hypot(dx, dy);
-      if (d > rr) {
+      const k = Math.max(Math.abs(dx) / hw, Math.abs(dy) / hh);
+      if (k > 1) {
         if (!b.edge) continue;
-        x = W / 2 + (dx / d) * rr; y = H / 2 + (dy / d) * rr;
+        x = W / 2 + dx / k; y = H / 2 + dy / k;
         drawBlip(g, x, y, b, 1.5, true);
       } else drawBlip(g, x, y, b, 1.8);
     }
@@ -544,10 +546,10 @@ export class HUD {
     drawArrowScreen(g, W / 2, H / 2, ah, 2);
     // north marker on the ring
     const [nx, ny] = toScreen(p.x, p.z - 1000);
-    const nd = Math.hypot(nx - W / 2, ny - H / 2) || 1;
+    const nk = Math.max(Math.abs(nx - W / 2) / (hw + 2), Math.abs(ny - H / 2) / (hh + 2)) || 1;
     const nE = this.el.mmN;
-    nE.style.left = ((W / 2 + (nx - W / 2) / nd * (rr + 4)) / W * 100) + '%';
-    nE.style.top = ((H / 2 + (ny - H / 2) / nd * (rr + 4)) / H * 100) + '%';
+    nE.style.left = ((W / 2 + (nx - W / 2) / nk) / W * 100) + '%';
+    nE.style.top = ((H / 2 + (ny - H / 2) / nk) / H * 100) + '%';
     nE.style.transform = 'translate(-50%,-50%)';
   }
 }

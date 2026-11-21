@@ -29,5 +29,16 @@ await build({
 });
 
 for (const f of ['index.html', 'style.css']) copyFileSync(join(here, f), join(dist, f));
+const fonts = {
+  'anton-400.woff2': '@fontsource/anton/files/anton-latin-400-normal.woff2',
+  'barlow-500.woff2': '@fontsource/barlow-condensed/files/barlow-condensed-latin-500-normal.woff2',
+  'barlow-600.woff2': '@fontsource/barlow-condensed/files/barlow-condensed-latin-600-normal.woff2',
+  'barlow-700.woff2': '@fontsource/barlow-condensed/files/barlow-condensed-latin-700-normal.woff2',
+};
+for (const dir of [dist, out]) mkdirSync(join(dir, 'fonts'), { recursive: true });
+for (const [name, src] of Object.entries(fonts)) {
+  copyFileSync(join(here, 'node_modules', src), join(dist, 'fonts', name));
+  copyFileSync(join(here, 'node_modules', src), join(out, 'fonts', name));
+}
 for (const f of ['index.html', 'style.css', 'game.js']) copyFileSync(join(dist, f), join(out, f));
 console.log('web build ->', out);

@@ -75,7 +75,7 @@ export class Police {
 
   clear(silent = false) {
     if (this.level > 0 && !silent) {
-      G.hud.toast('LOST THE COPS');
+      G.hud.toast('Lost them');
       G.audio.chime();
     }
     this.level = 0;
@@ -443,7 +443,7 @@ class Heli {
       this.deadT = 0;
       this.spinV = 3;
       G.fx.explosion(this.x, this.y, this.z, 1);
-      if (by && by.isPlayer) G.hud.toast('HELICOPTER DOWN');
+      if (by && by.isPlayer) G.hud.toast('Chopper down');
     }
   }
 

@@ -314,7 +314,7 @@ export class Peds {
       const x = rand(CITY.maxX + 25, LAND.maxX - 25), z = p.z + rand(-140, 140);
       const d = Math.hypot(x - p.x, z - p.z);
       if (d > 30 && d < 150 && z > LAND.minZ + 20 && z < LAND.maxZ - 20) {
-        const h = spawnHuman('ped', x, z, { shirt: pick([0xff5a5f, 0x22d3ee, 0xffd23f, 0xf472b6, 0xffffff, 0xa3e635]), pants: pick([0x22d3ee, 0xff5a5f, 0x1f2a44, 0xffd23f, 0xf4f4f4]) });
+        const h = spawnHuman('ped', x, z, { shirt: pick([0xf2f0ea, 0xc8423a, 0x3a6ea5, 0xe0b84a, 0x2f6f6a, 0xd9cbb0]), pants: pick([0x3a6ea5, 0xc8423a, 0x2a3550, 0xd8c070, 0xe6e2d8, 0x5b6b3a]) });
         h.ai = new PedBrain(h);
         h.ai.mode = 'wander';
         h.ai.home = { x, z };
@@ -364,7 +364,7 @@ export class Peds {
         const n = randInt(2, 4);
         for (let k = 0; k < n; k++) {
           const h = spawnHuman('gang', s.x + rand(-4, 4), s.z + rand(-3, 1), {
-            shirt: pick([0x7b2cbf, 0x5a189a, 0x9d4edd]), pants: 0x1b1b1b, hair: 0x0c0c0c, health: 90,
+            shirt: pick([0x4a2a5e, 0x3a2248, 0x5c3570]), pants: 0x1b1b1b, hair: 0x0c0c0c, health: 90,
             weapon: chance(0.6) ? 'pistol' : chance(0.5) ? 'smg' : 'fist', money: randInt(30, 120),
           });
           h.ai = new CombatBrain(h, { accuracy: 0.28, aggro: 18, group });

@@ -33,7 +33,8 @@ export class GeoBuilder {
   /** a,b,c,d counter-clockwise seen from the normal side. */
   quad(a, b, c, d, nrm, u0, v0, u1, v1, color, tileName = 'white', mode = 2, seed = 0) {
     const tile = tileOrigin(tileName);
-    const tz = mode + Math.min(seed, 0.999);
+    // seed is quantised to bucket centres so interpolation noise can't flip it per pixel
+    const tz = mode + 0.05 + 0.9 * (Math.floor((seed % 1) * 200) + 0.5) / 200;
     const i0 = this.vert(a[0], a[1], a[2], nrm[0], nrm[1], nrm[2], u0, v0, color, tile, tz);
     this.vert(b[0], b[1], b[2], nrm[0], nrm[1], nrm[2], u1, v0, color, tile, tz);
     this.vert(c[0], c[1], c[2], nrm[0], nrm[1], nrm[2], u1, v1, color, tile, tz);
@@ -50,7 +51,7 @@ export class GeoBuilder {
     }
     // (x0,z1) (x1,z1) (x1,z0) (x0,z0)
     const tile = tileOrigin(tileName);
-    const tz = mode;
+    const tz = mode + 0.5;
     const nrm = [0, 1, 0];
     const i0 = this.vert(x0, y, z1, 0, 1, 0, u0, v1, color, tile, tz);
     this.vert(x1, y, z1, 0, 1, 0, u1, v1, color, tile, tz);
@@ -102,9 +103,9 @@ export class GeoBuilder {
       n.fromBufferAttribute(nor, k).applyMatrix3(nm).normalize();
       if (colAttr) {
         cc.setRGB(colAttr.getX(k) * color.r, colAttr.getY(k) * color.g, colAttr.getZ(k) * color.b);
-        this.vert(v.x, v.y, v.z, n.x, n.y, n.z, 0.5, 0.5, cc, tile, mode);
+        this.vert(v.x, v.y, v.z, n.x, n.y, n.z, 0.5, 0.5, cc, tile, mode + 0.5);
       } else {
-        this.vert(v.x, v.y, v.z, n.x, n.y, n.z, 0.5, 0.5, color, tile, mode);
+        this.vert(v.x, v.y, v.z, n.x, n.y, n.z, 0.5, 0.5, color, tile, mode + 0.5);
       }
     }
     for (let k = 0; k < pos.count; k++) this.i.push(base + k);
@@ -440,10 +441,10 @@ function buildCoast(chunkOf, city) {
       const l = Math.hypot(nxv, 1, nzv);
       const nrm = [nxv / l, 1 / l, nzv / l];
       const tileO = tileOrigin(tile);
-      const i0 = gb.vert(x0, h01, z1, nrm[0], nrm[1], nrm[2], u0, v1, c, tileO, 2);
-      gb.vert(x1, h11, z1, nrm[0], nrm[1], nrm[2], u1, v1, c, tileO, 2);
-      gb.vert(x1, h10, z0, nrm[0], nrm[1], nrm[2], u1, v0, c, tileO, 2);
-      gb.vert(x0, h00, z0, nrm[0], nrm[1], nrm[2], u0, v0, c, tileO, 2);
+      const i0 = gb.vert(x0, h01, z1, nrm[0], nrm[1], nrm[2], u0, v1, c, tileO, 2.5);
+      gb.vert(x1, h11, z1, nrm[0], nrm[1], nrm[2], u1, v1, c, tileO, 2.5);
+      gb.vert(x1, h10, z0, nrm[0], nrm[1], nrm[2], u1, v0, c, tileO, 2.5);
+      gb.vert(x0, h00, z0, nrm[0], nrm[1], nrm[2], u0, v0, c, tileO, 2.5);
       gb.i.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
     }
   }
@@ -591,7 +592,7 @@ function buildExtras(city, chunkOf, scene, rng) {
           gb.quad([i0[0], 2, i0[1]], [i1[0], 2, i1[1]], [o1[0], e.h, o1[1]], [o0[0], e.h, o0[1]], [-nx / nl * 0.6, 0.8, -nz / nl * 0.6], 0.5, 0.5, 0.5, 0.5, k % 3 ? seats : inner);
           // inner wall
           gb.quad([i0[0], 0, i0[1]], [i1[0], 0, i1[1]], [i1[0], 2, i1[1]], [i0[0], 2, i0[1]], [-nx / nl, 0, -nz / nl], 0.5, 0.5, 0.5, 0.5, inner);
-          neonGB.box(Math.min(o0[0], o1[0]) - 0.2, e.h - 0.4, Math.min(o0[1], o1[1]) - 0.2, Math.max(o0[0], o1[0]) + 0.2, e.h, Math.max(o0[1], o1[1]) + 0.2, col(k % 2 ? 0x22f3ff : 0xff2bd6));
+          neonGB.box(Math.min(o0[0], o1[0]) - 0.2, e.h - 0.4, Math.min(o0[1], o1[1]) - 0.2, Math.max(o0[0], o1[0]) + 0.2, e.h, Math.max(o0[1], o1[1]) + 0.2, col(k % 2 ? 0xf2efe6 : 0xd6d3cb));
         }
         M.makeScale(e.ax * 0.62, 1, e.az * 0.62).premultiply(new THREE.Matrix4().makeTranslation(e.x, 0.3, e.z));
         gb.geo(new THREE.CylinderGeometry(1, 1, 0.1, 40), M, col(0x3f9a3a));
@@ -608,7 +609,7 @@ function buildExtras(city, chunkOf, scene, rng) {
         const gb = chunkOf(e.x, e.z);
         for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) box(gb, e.x + dx * 1.4, 0, e.z + dz * 1.4, 0.25, 2.6, 0.25, 0xf0f0f0);
         box(gb, e.x, 2.6, e.z, 3.4, 0.25, 3.4, 0xf4f0e6);
-        const c = rng.pick([0xffd23f, 0xff4f7b, 0x22d3ee, 0xa8f0d8]);
+        const c = rng.pick([0xe8c23a, 0xd84a3a, 0x4a9ac8, 0xf4f1ea]);
         box(gb, e.x, 2.85, e.z, 3.0, 2.2, 3.0, c);
         M.makeRotationY(Math.PI / 4).premultiply(new THREE.Matrix4().makeTranslation(e.x, 5.5, e.z));
         gb.geo(new THREE.ConeGeometry(2.7, 1.2, 4), M, col(0xff4040));
@@ -658,10 +659,10 @@ function buildExtras(city, chunkOf, scene, rng) {
         wheel.position.set(e.x, PIER.y + H, e.z);
         const R = 24;
         const ringGeo = new THREE.TorusGeometry(R, 0.35, 6, 64);
-        const ringMat = new THREE.MeshBasicMaterial({ color: 0xff2bd6 });
+        const ringMat = new THREE.MeshLambertMaterial({ color: 0xdedede });
         const ring1 = new THREE.Mesh(ringGeo, ringMat);
         ring1.position.z = 1.2;
-        const ring2 = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0x22f3ff }));
+        const ring2 = new THREE.Mesh(ringGeo, ringMat);
         ring2.position.z = -1.2;
         wheel.add(ring1, ring2);
         const spokeGB = new GeoBuilder();
@@ -678,7 +679,7 @@ function buildExtras(city, chunkOf, scene, rng) {
         const cabGeo = new THREE.BoxGeometry(2.2, 2.4, 2.0);
         cabGeo.translate(0, -1.4, 0);
         const cabins = new THREE.InstancedMesh(cabGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), 16);
-        const cols = [0xff4f7b, 0x22d3ee, 0xfff23d, 0x9dff2e, 0xff9f1c, 0xb14bff];
+        const cols = [0xc8423a, 0x2f6fa8, 0xe0b83a, 0x3f8f5a, 0xe07a2a, 0xe8e8e8];
         for (let k = 0; k < 16; k++) cabins.setColorAt(k, new THREE.Color(cols[k % cols.length]));
         cabins.frustumCulled = false;
         scene.add(wheel);

@@ -12,7 +12,7 @@ export class Audio {
     this.ctx = null;
     this.ready = false;
     this.station = 0;
-    this.stations = ['NEON FM 88.3 · synthwave', 'TIDE 102 · beach house', 'SOLACE LO-FI 94.7', 'RADIO OFF'];
+    this.stations = [['Neon 88.3', 'Synthwave'], ['Tide 102', 'House'], ['K-Solace 94.7', 'Lo-fi'], ['Radio off', '']];
   }
 
   init() {

@@ -10,8 +10,8 @@ android {
         applicationId = "app.neontide.game"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // A fixed key kept in the repo, so every rebuild installs over the previous one

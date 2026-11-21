@@ -30,8 +30,8 @@ class Ctx {
   say(lines) { G.hud.subtitles(lines); }
   next(stage) { this.stage = stage ?? this.stage + 1; this.stageT = 0; }
   marker(x, z, opts = {}) {
-    const m = G.pickups.addMarker(x, z, { color: 0xffd23f, ...opts });
-    m.blip = opts.blip ?? { color: '#ffd23f', icon: 'dot' };
+    const m = G.pickups.addMarker(x, z, { color: 0xf2c230, ...opts });
+    m.blip = opts.blip ?? { color: '#f2c230', icon: 'dot' };
     m.route = opts.route ?? true;
     this.tracked.markers.push(m);
     G.missions.setGps(x, z);
@@ -63,7 +63,7 @@ class Ctx {
   }
   enemy(x, z, opts = {}) {
     const h = spawnHuman(opts.kind || 'gang', x, z, {
-      shirt: opts.shirt ?? pick([0x7b2cbf, 0x5a189a, 0x9d4edd]), pants: opts.pants ?? 0x1b1b1b, hair: opts.hair ?? 0x0c0c0c,
+      shirt: opts.shirt ?? pick([0x4a2a5e, 0x3a2248, 0x5c3570]), pants: opts.pants ?? 0x1b1b1b, hair: opts.hair ?? 0x0c0c0c,
       weapon: opts.weapon ?? 'pistol', health: opts.health ?? 90, armor: opts.armor ?? 0, money: opts.money ?? 60, scale: opts.scale,
     });
     h.persistent = true;
@@ -165,13 +165,13 @@ class RaceDriver {
 
 const RACES = {
   kings: {
-    title: 'STREET KINGS',
+    title: 'Ocean Drive Run',
     nodes: [[13, 3], [13, 5], [13, 8], [11, 8], [9, 8], [9, 6], [9, 4], [9, 1], [11, 1], [13, 1]],
     start: { i: 13, j: 1, dirZ: 1 },
     reward: 3000,
   },
   coastal: {
-    title: 'COASTAL SPRINT',
+    title: 'Coastal Sprint',
     nodes: [[14, 7], [14, 5], [14, 3], [14, 1], [14, 0], [12, 0], [10, 0], [8, 0], [6, 0]],
     start: { i: 14, j: 9, dirZ: -1 },
     reward: 1200,
@@ -183,64 +183,64 @@ const RACES = {
 // ---------------------------------------------------------------------------------------------
 const STORY = [
   {
-    id: 'welcome', title: 'WELCOME TO PORT SOLACE', giver: 'club', reward: 500,
+    id: 'welcome', title: 'Ride Along', giver: 'club', reward: 500,
     start(c) {
-      c.say([[ROSA + 'So you\'re Kai. Dex says you can drive.', 3.2], [ROSA + 'Prove it. Grab any ride and get to Dex Auto in Midtown.', 3.8]]);
-      c.objective('Get a vehicle (tap the car button near one).');
+      c.say([[ROSA + 'You\'re Kai? You\'re late.', 2.6], [ROSA + 'Dex needs a driver. His shop\'s in Midtown. Find something with wheels and get over there.', 4.2]]);
+      c.objective('Get in a car. Walk up to one and tap the car button.');
     },
     update(c) {
       if (c.stage === 0 && G.player.human.vehicle) {
         c.next(1);
         const g = G.city.places.garage;
         c.m = c.marker(g.x, g.z, { vehicleOnly: true, r: 3, onEnter: () => c.next(2) });
-        c.objective('Drive to <b>Dex Auto</b> (yellow marker, follow the GPS).');
+        c.objective('Drive to <b>Dex Auto</b>.');
       }
-      if (c.stage === 1 && !G.player.human.vehicle && c.stageT > 1) c.objective('Get back in a vehicle and drive to <b>Dex Auto</b>.');
-      else if (c.stage === 1 && G.player.human.vehicle) c.objective('Drive to <b>Dex Auto</b> (yellow marker, follow the GPS).');
+      if (c.stage === 1 && !G.player.human.vehicle && c.stageT > 1) c.objective('Get a car and drive to <b>Dex Auto</b>.');
+      else if (c.stage === 1 && G.player.human.vehicle) c.objective('Drive to <b>Dex Auto</b>.');
       if (c.stage === 2) {
-        c.say([[DEX + 'Not bad. Rosa sent you? Come by when you want real work.', 3.5]]);
+        c.say([[DEX + 'Rosa\'s guy? Huh. Thought you\'d be taller.', 2.8], [DEX + 'Come back when you want to make some actual money.', 3]]);
         c.pass();
       }
     },
   },
   {
-    id: 'hotwheels', title: 'HOT WHEELS', giver: 'garage', reward: 1500,
+    id: 'hotwheels', title: 'Repo Man', giver: 'garage', reward: 1500,
     start(c) {
-      c.say([[DEX + 'There\'s a Stingray parked at Solace Plaza, downtown.', 3], [DEX + 'Owner owes me. Bring it here — try not to wreck it.', 3.5]]);
+      c.say([[DEX + 'Guy downtown bought a Stingray with money he owes me.', 3.2], [DEX + 'It\'s parked on the plaza by the bank. Bring it back in one piece. Mostly one piece.', 4]]);
       const pl = G.city.places.plaza;
       c.data.car = c.car('super', pl.x + 6, pl.z - 2, Math.PI / 2, 0xff2020);
-      c.data.arrow = c.arrow(c.data.car, 0xffd23f);
-      c.blip(c.data.car, '#ffd23f');
+      c.data.arrow = c.arrow(c.data.car, 0xf2c230);
+      c.blip(c.data.car, '#f2c230');
       G.missions.setGps(pl.x, pl.z);
-      c.objective('Steal the <b>Stingray</b> at Solace Plaza.');
+      c.objective('Steal the <b>Stingray</b> parked at Solace Plaza.');
     },
     update(c) {
       const car = c.data.car;
-      if (car.wrecked || car.removed || car.sinkT > 0) return c.fail('The Stingray was destroyed.');
+      if (car.wrecked || car.removed || car.sinkT > 0) return c.fail('The Stingray got wrecked.');
       if (c.stage === 0 && c.playerIn(car)) {
         c.next(1);
         c.dropArrow(c.data.arrow);
         car.blip = null;
         G.police.setLevel(Math.max(1, G.police.level));
-        G.hud.toast('CAR ALARM!');
+        G.hud.toast('Car alarm');
         const g = G.city.places.garage;
         c.data.m = c.marker(g.x, g.z, { r: 3, onEnter: (veh) => { if (veh === car) c.data.arrived = true; } });
       }
       if (c.stage === 1) {
         if (!c.playerIn(car)) {
           c.objective('Get back in the <b>Stingray</b>.');
-          if (!c.data.arrow2) c.data.arrow2 = c.arrow(car, 0xffd23f);
+          if (!c.data.arrow2) c.data.arrow2 = c.arrow(car, 0xf2c230);
         } else {
           if (c.data.arrow2) { c.dropArrow(c.data.arrow2); c.data.arrow2 = null; }
-          c.objective(G.police.level > 0 ? 'Lose the cops, then bring the Stingray to <b>Dex Auto</b>.' : 'Bring the Stingray to <b>Dex Auto</b>.');
+          c.objective(G.police.level > 0 ? 'Lose the cops, then take the Stingray to <b>Dex Auto</b>.' : 'Take the Stingray to <b>Dex Auto</b>.');
         }
         if (c.data.arrived) {
           c.data.arrived = false;
-          if (G.police.level > 0) G.hud.hint('Lose the cops first! Dex doesn\'t want heat at the shop.', 3);
+          if (G.police.level > 0) G.hud.hint('Dex won\'t open the door with cops on your tail.', 3);
           else {
             G.player.exitVehicle();
             car.locked = true;
-            c.say([[DEX + 'Beautiful. She\'s worth a lot more than you\'d think.', 3]]);
+            c.say([[DEX + 'Look at her. Ok, there\'s a dent. I\'ll pretend I didn\'t see it.', 3.4]]);
             c.pass();
           }
         }
@@ -248,67 +248,67 @@ const STORY = [
     },
   },
   {
-    id: 'delivery', title: 'SPECIAL DELIVERY', giver: 'club', reward: 2000,
+    id: 'delivery', title: 'Pickup at the Docks', giver: 'club', reward: 2000,
     start(c) {
-      c.say([[ROSA + 'A package is waiting at the docks.', 2.6], [ROSA + 'The Purple Kings think it\'s theirs. It isn\'t.', 3], [ROSA + 'Take this, you\'ll need it.', 2.5]]);
+      c.say([[ROSA + 'There\'s a bag at the container yard with my name on it.', 3.2], [ROSA + 'The Purple Kings have been sitting on it all week.', 3], [ROSA + 'Here. Take this, and don\'t make me regret it.', 3]]);
       G.player.giveWeapon('pistol', 48);
       const d = G.city.places.docksYard;
       const px = d.x, pz = d.z - 14;
       c.data.pkg = { x: px, z: pz };
-      c.data.m = c.marker(px, pz, { footOnly: true, color: 0xff2bd6, onEnter: () => { c.data.got = true; } });
+      c.data.m = c.marker(px, pz, { footOnly: true, color: 0xf2c230, onEnter: () => { c.data.got = true; } });
       const group = [];
       for (let k = 0; k < 5; k++) {
         c.enemy(px + rand(-12, 12), pz + rand(-10, 8), { weapon: k < 2 ? 'smg' : 'pistol', group, accuracy: 0.22, aggro: 28 });
       }
-      c.objective('Get the <b>package</b> at the docks. Watch out for the Purple Kings.');
+      c.objective('Get the <b>bag</b> from the container yard at the docks.');
     },
     update(c) {
       if (c.stage === 0 && c.data.got) {
         c.next(1);
         c.dropMarker(c.data.m);
-        G.hud.toast('GOT THE PACKAGE');
+        G.hud.toast('Got the bag');
         const cl = G.city.places.club;
-        c.data.m2 = c.marker(cl.x, cl.z, { color: 0xff2bd6, r: 2.5, onEnter: () => { c.data.done = true; } });
-        c.timer(180, () => c.fail('Too slow. Rosa\'s buyer walked.'));
-        c.objective('Deliver the package to <b>Club Mirage</b>.');
+        c.data.m2 = c.marker(cl.x, cl.z, { color: 0xf2c230, r: 2.5, onEnter: () => { c.data.done = true; } });
+        c.timer(180, () => c.fail('Too slow. The buyer left.'));
+        c.objective('Bring the bag to <b>Club Mirage</b>.');
         for (const h of c.tracked.humans) if (h.ai) { h.ai.hostile = true; h.ai.target = G.player.human; }
       }
       if (c.stage === 1 && c.data.done) {
         c.clearTimer();
-        c.say([[ROSA + 'Smooth. I think we\'re going to get along, Kai.', 3]]);
+        c.say([[ROSA + 'Good. You didn\'t open it, right?', 2.6], [ROSA + 'Don\'t answer that.', 2]]);
         c.pass();
       }
     },
   },
   {
-    id: 'kings', title: 'STREET KINGS', giver: 'garage', reward: 3000,
+    id: 'kings', title: 'Ocean Drive Run', giver: 'garage', reward: 3000,
     start(c) {
-      c.say([[DEX + 'Ocean Drive. The Kings race there every night.', 3], [DEX + 'Win, and people start saying your name.', 3]]);
+      c.say([[DEX + 'The Kings race up Ocean Drive most nights. Winner gets paid.', 3.4], [DEX + 'I put money on you, so don\'t embarrass me.', 3]]);
       G.missions.setupRace(c, RACES.kings, true);
     },
     update(c, dt) { G.missions.updateRace(c, dt); },
   },
   {
-    id: 'viper', title: 'VIPER\'S NEST', giver: 'club', reward: 5000,
+    id: 'viper', title: 'Viper', giver: 'club', reward: 5000,
     start(c) {
-      c.say([[ROSA + 'Viper runs the Purple Kings out of the stadium lot.', 3], [ROSA + 'Make it so he doesn\'t.', 2.5]]);
+      c.say([[ROSA + 'Viper runs the Kings out of the stadium parking lot.', 3], [ROSA + 'He\'s been leaning on my people. Go have a word with him. A final one.', 3.8]]);
       const st = G.city.places.stadium;
       // keep Viper's way to his car clear of parked cars
       for (const s of G.city.parking) if (Math.hypot(s.x - st.x, s.z - st.z) < 45) s.noSpawn = true;
       for (const v of G.vehicles) if (v.parkSpot && v.parkSpot.noSpawn) G.traffic.remove(v);
       const group = [];
-      c.data.boss = c.enemy(st.x, st.z - 3, { weapon: 'smg', health: 260, armor: 60, shirt: 0x2b0a3d, pants: 0x2b0a3d, hair: 0xff2bd6, group, accuracy: 0.3, money: 800, scale: 1.1 });
-      c.data.boss.blip = { color: '#ff2bd6' };
+      c.data.boss = c.enemy(st.x, st.z - 3, { weapon: 'smg', health: 260, armor: 60, shirt: 0x2b0a3d, pants: 0x2b0a3d, hair: 0xd8c070, group, accuracy: 0.3, money: 800, scale: 1.1 });
+      c.data.boss.blip = { color: '#d8382f' };
       c.data.arrow = c.arrow(c.data.boss, 0xff3b3b);
       for (let k = 0; k < 5; k++) c.enemy(st.x + rand(-14, 14), st.z + rand(-6, 2), { weapon: k % 2 ? 'smg' : 'pistol', group });
       c.data.car = c.car('muscle', st.x + 10, nodeZ(1) - LANES[1], -Math.PI / 2, 0x111111);
       G.missions.setGps(st.x, st.z);
-      c.objective('Take out <b>Viper</b> at the stadium.');
+      c.objective('Find <b>Viper</b> at the stadium lot.');
     },
     update(c) {
       const b = c.data.boss;
       if (!b.alive) {
-        c.say([[ROSA + 'Viper\'s gone? Then the stadium lot is ours. Lay low — the cops will be all over this.', 4]]);
+        c.say([[ROSA + 'Viper\'s done? Keep your head down for a while. Cops are going to be everywhere.', 4]]);
         G.police.setLevel(Math.max(2, G.police.level));
         return c.pass();
       }
@@ -317,7 +317,7 @@ const STORY = [
       // Viper runs for his car once you show up
       if (c.stage === 0 && (d < 40 || b.health < b.maxHealth * 0.8)) {
         c.next(1);
-        G.hud.toast('VIPER IS RUNNING!');
+        G.hud.toast('He\'s running'); c.objective('Don\'t let <b>Viper</b> get away.');
         b.ai = { update: () => {
           const car = c.data.car;
           if (!b.alive || b.state !== 'normal' || b.vehicle) return;
@@ -340,13 +340,13 @@ const STORY = [
     },
   },
   {
-    id: 'bigscore', title: 'THE BIG SCORE', giver: 'club', reward: 25000,
+    id: 'bigscore', title: 'The Bank Job', giver: 'club', reward: 25000,
     start(c) {
-      c.say([[ROSA + 'Solace National Bank. My crew is already inside.', 3], [ROSA + 'They need someone to hold the door while the vault opens.', 3.2], [ROSA + 'Then you drive like your life depends on it. Because it does.', 3.5]]);
+      c.say([[ROSA + 'My crew is going into Solace National tonight.', 3], [ROSA + 'They need someone on the door while they work the vault.', 3.2], [ROSA + 'When it opens, you drive. Fast.', 2.6]]);
       G.player.giveWeapon('smg', 128);
       const b = G.city.places.bank;
-      c.data.m = c.marker(b.x, b.z, { footOnly: true, color: 0xff2bd6, r: 4, onEnter: () => {} });
-      c.objective('Go to the <b>Solace National Bank</b> downtown.');
+      c.data.m = c.marker(b.x, b.z, { footOnly: true, color: 0xf2c230, r: 4, onEnter: () => {} });
+      c.objective('Go to <b>Solace National Bank</b> downtown.');
       c.data.hold = 0;
     },
     update(c, dt) {
@@ -354,29 +354,29 @@ const STORY = [
       if (c.stage === 0 && c.near(b.x, b.z, 4.5) && !G.player.human.vehicle) {
         c.next(1);
         G.police.setLevel(3);
-        G.hud.toast('ALARM! HOLD THE DOOR');
-        c.objective('Stay at the bank door while the vault opens.');
+        G.hud.toast('Silent alarm tripped');
+        c.objective('Hold the door while the crew works on the vault.');
       }
       if (c.stage === 1) {
         if (c.near(b.x, b.z, 7) && !G.player.human.vehicle) c.data.hold += dt;
         else c.objective('Get back to the bank door!');
-        if (c.near(b.x, b.z, 7)) c.objective(`Vault cracking… <b>${Math.min(100, Math.floor(c.data.hold / 20 * 100))}%</b> — keep the cops off.`);
+        if (c.near(b.x, b.z, 7)) c.objective(`Vault <b>${Math.min(100, Math.floor(c.data.hold / 20 * 100))}%</b>. Keep the cops off the door.`);
         if (c.data.hold >= 20) {
           c.next(2);
           c.dropMarker(c.data.m);
           G.police.setLevel(4);
-          G.hud.bigMessage('VAULT OPEN', '$25,000 in the bag — now lose the cops', 'info', 2.4);
-          c.objective('Escape! <b>Lose the cops.</b>');
+          G.hud.bigMessage('Vault open', '$25,000. Now lose the cops.', 'info', 2.4);
+          c.objective('<b>Lose the cops.</b>');
         }
       }
       if (c.stage === 2 && G.police.level === 0) {
         c.next(3);
         const cl = G.city.places.club;
-        c.data.m2 = c.marker(cl.x, cl.z, { color: 0xff2bd6, r: 2.5, onEnter: () => { c.data.done = true; } });
+        c.data.m2 = c.marker(cl.x, cl.z, { color: 0xf2c230, r: 2.5, onEnter: () => { c.data.done = true; } });
         c.objective('Bring the money to <b>Club Mirage</b>.');
       }
       if (c.stage === 3 && c.data.done) {
-        c.say([[ROSA + 'Twenty-five grand and not a scratch on you.', 3], [ROSA + 'Port Solace belongs to us now, Kai.', 3.5]]);
+        c.say([[ROSA + 'Twenty-five grand. Not bad for a guy who showed up late.', 3.4], [ROSA + 'Stick around, Kai. There\'s always more work.', 3]]);
         c.pass();
       }
     },
@@ -400,7 +400,7 @@ export class Missions {
     this.placeGiver();
     const st = RACES.coastal.start;
     this.raceMarker = G.pickups.addMarker(nodeX(st.i) - LANES[1], nodeZ(st.j) - 18, {
-      color: 0xff8a1a, r: 3, vehicleOnly: true, blip: { color: '#ff8a1a', icon: 'flag' }, label: 'Coastal Sprint — street race',
+      color: 0xe07a2a, r: 3, vehicleOnly: true, blip: { color: '#e07a2a', icon: 'flag' }, label: 'Coastal Sprint. Street race, $1,200 to the winner.',
       onEnter: () => this.startSide('coastal'),
     });
   }
@@ -411,27 +411,27 @@ export class Missions {
     if (!def) return;
     const p = G.city.places[def.giver];
     this.giver = G.pickups.addMarker(p.x, p.z, {
-      color: 0xff2bd6, footOnly: true, r: 1.7, blip: { color: '#ff2bd6', icon: def.giver === 'club' ? 'R' : 'D' },
-      label: `${def.title} — ${def.giver === 'club' ? 'Rosa at Club Mirage' : 'Dex at Dex Auto'}`,
+      color: 0xf2c230, footOnly: true, r: 1.7, blip: { color: '#f2c230', icon: def.giver === 'club' ? 'R' : 'D' },
+      label: `${def.title}. ${def.giver === 'club' ? 'Rosa, Club Mirage' : 'Dex, Dex Auto'}`,
       onEnter: () => this.start(def),
     });
   }
 
   start(def) {
     if (this.active || this.cool > 0) return;
-    if (G.police.level > 0) { G.hud.hint('Lose the cops before starting a mission.', 3); return; }
+    if (G.police.level > 0) { G.hud.hint('Nobody wants to talk while the cops are after you.', 3); return; }
     G.pickups.removeMarker(this.giver);
     this.giver = null;
     if (this.raceMarker) this.raceMarker.hidden = true;
     this.active = new Ctx(this, def);
-    G.hud.bigMessage(def.title, def.id === 'welcome' ? 'Story mission' : 'Mission', 'info', 2.2);
+    G.hud.bigMessage(def.title, '', 'info', 2.2);
     G.audio.missionStart();
     def.start(this.active);
   }
 
   startSide(key) {
     if (this.active || this.cool > 0) return;
-    if (G.police.level > 0) { G.hud.hint('Lose the cops first.', 3); return; }
+    if (G.police.level > 0) { G.hud.hint('Lose the cops before the race.', 3); return; }
     const r = RACES[key];
     const def = {
       id: 'race-' + key, title: r.title, reward: r.reward, side: true,
@@ -441,7 +441,7 @@ export class Missions {
     if (this.giver) this.giver.hidden = true;
     this.raceMarker.hidden = true;
     this.active = new Ctx(this, def);
-    G.hud.bigMessage(r.title, 'Street race', 'info', 2);
+    G.hud.bigMessage(r.title, '', 'info', 2);
     def.start(this.active);
   }
 
@@ -472,13 +472,13 @@ export class Missions {
     this.active = null;
     this.race = null;
     G.player.addMoney(def.reward);
-    G.hud.bigMessage('MISSION PASSED', formatMoney(def.reward), 'pass', 3.2);
+    G.hud.bigMessage('Mission passed', formatMoney(def.reward), 'pass', 3.2);
     G.audio.missionPassed();
     vibrate(80);
     if (!def.side) {
       G.save.story = this.storyIndex + 1;
       if (G.save.story >= STORY.length) {
-        setTimeout(() => G.hud.bigMessage('PORT SOLACE IS YOURS', 'Story complete — the city is your playground', 'pass', 5), 3600);
+        setTimeout(() => G.hud.bigMessage('Story complete', 'The rest of the city is yours to mess around in.', 'pass', 5), 3600);
       }
     } else {
       G.save.races = (G.save.races || 0) + 1;
@@ -495,7 +495,7 @@ export class Missions {
     c.cleanup(false);
     this.active = null;
     this.race = null;
-    G.hud.bigMessage('MISSION FAILED', reason || '', 'fail', 3);
+    G.hud.bigMessage('Mission failed', reason || '', 'fail', 3);
     G.audio.missionFailed();
     this.cool = 4;
     this.placeGiver();
@@ -526,7 +526,7 @@ export class Missions {
     }
     const racers = [];
     const types = ['sports', 'muscle', 'super'];
-    const cols = [0x22f3ff, 0xff7a1a, 0xfff23d];
+    const cols = [0x2b6cb0, 0xe0702a, 0xe8d24a];
     for (let k = 0; k < 3; k++) {
       const v = c.car(types[k], slots[k].x, slots[k].z, h, cols[k]);
       const d = spawnHuman('ped', v.x, v.z, { shirt: 0x111111 });
@@ -534,7 +534,7 @@ export class Missions {
       c.tracked.humans.push(d);
       d.enterVehicle(v, 1);
       v.ai = new RaceDriver(v, pts, [0.9, 0.95, 0.88][k]);
-      v.blip = { color: '#ff8a1a' };
+      v.blip = { color: '#e07a2a' };
       c.blips.push(v);
       racers.push(v);
     }
@@ -542,7 +542,7 @@ export class Missions {
     let pv = G.player.human.vehicle;
     const slot = slots[3];
     if (!pv || pv.wrecked) {
-      pv = c.car(story ? 'sports' : 'muscle', slot.x, slot.z, h, 0xff2bd6);
+      pv = c.car(story ? 'sports' : 'muscle', slot.x, slot.z, h, 0xc81d25);
       if (G.player.human.vehicle) G.player.exitVehicle();
       G.player.enterNow(pv);
     } else {
@@ -561,7 +561,7 @@ export class Missions {
     this.race = race;
     c.data.race = race;
     this.placeCheckpoint(c);
-    c.objective(`${R.title}: win the race. Checkpoint 1/${pts.length}`);
+    c.objective(`Win the race. Checkpoint 1/${pts.length}`);
     G.police.noCops = false;
   }
 
@@ -570,7 +570,7 @@ export class Missions {
     if (race.cpMarker) c.dropMarker(race.cpMarker);
     const cp = race.pts[race.i];
     if (!cp) return;
-    race.cpMarker = c.marker(cp.x, cp.z, { color: race.i === race.pts.length - 1 ? 0xffffff : 0xff8a1a, r: 7, h: 6, blip: { color: '#ff8a1a', icon: 'flag' } });
+    race.cpMarker = c.marker(cp.x, cp.z, { color: race.i === race.pts.length - 1 ? 0xffffff : 0xe07a2a, r: 7, h: 6, blip: { color: '#e07a2a', icon: 'flag' } });
   }
 
   updateRace(c, dt) {
@@ -600,8 +600,8 @@ export class Missions {
     if (pv.wrecked || pv.removed) return c.fail('Your car is wrecked.');
     if (G.player.human.vehicle !== pv) {
       race.outT += dt;
-      c.objective(`Get back in your car! ${Math.ceil(10 - race.outT)}`);
-      if (race.outT > 10) return c.fail('You left the race.');
+      c.objective(`Get back in your car (${Math.ceil(10 - race.outT)})`);
+      if (race.outT > 10) return c.fail('You left your car.');
       return;
     }
     race.outT = 0;
@@ -612,17 +612,17 @@ export class Missions {
       if (race.i >= race.pts.length) {
         const place = 1 + race.racers.filter((v) => v.ai && v.ai.done).length;
         if (place === 1) {
-          c.say([[(c.def.side ? '' : DEX) + 'First place! The whole strip saw that.', 3]]);
+          if (!c.def.side) c.say([[DEX + 'First! Ha. I had twenty bucks on you.', 3]]);
           return c.pass();
         }
-        return c.fail(`You finished ${place === 2 ? '2nd' : place === 3 ? '3rd' : '4th'}. Only first counts.`);
+        return c.fail(`You came ${place === 2 ? '2nd' : place === 3 ? '3rd' : 'last'}. Only the winner gets paid.`);
       }
       this.placeCheckpoint(c);
     }
     // position
     const pp = race.playerProgress();
     const place = 1 + race.racers.filter((v) => v.ai && v.ai.race && (v.ai.done || v.ai.progress() > pp)).length;
-    c.objective(`${race.R.title} · Position <b>${place}/4</b> · Checkpoint ${race.i + 1}/${race.pts.length}`);
+    c.objective(`Position <b>${place}/4</b>   Checkpoint ${race.i + 1}/${race.pts.length}`);
   }
 
   // ------------------------------------------------------------------ hooks
@@ -650,7 +650,7 @@ export class Missions {
     if (first) G.save.jumps.push(idx);
     G.stats.jumps++;
     G.player.addMoney(cash);
-    G.hud.bigMessage(first ? 'UNIQUE STUNT JUMP' : 'STUNT JUMP', `${ramp.name} · ${dist.toFixed(0)}m · ${airTime.toFixed(1)}s · ${formatMoney(cash)}`, 'info', 2.4);
+    G.hud.bigMessage(first ? 'Stunt jump' : 'Nice jump', `${dist.toFixed(0)} m, ${airTime.toFixed(1)} s in the air. ${formatMoney(cash)}`, 'info', 2.4);
     G.audio.chime();
   }
 }

@@ -102,7 +102,7 @@ export function buildAtlas() {
   });
 
   tile('sidewalk', (g) => {
-    g.fillStyle = '#bdb9b1';
+    g.fillStyle = '#aaa59c';
     g.fillRect(0, 0, T, T);
     noise(g, 0, 0, T, T, rng, 2500, 0.12, 2);
     g.strokeStyle = 'rgba(80,76,70,0.45)';
@@ -124,7 +124,7 @@ export function buildAtlas() {
   });
 
   tile('sand', (g) => {
-    g.fillStyle = '#ecd9a8';
+    g.fillStyle = '#e2c992';
     g.fillRect(0, 0, T, T);
     noise(g, 0, 0, T, T, rng, 7000, 0.15, 1.5);
   });
@@ -380,13 +380,15 @@ export function makeCityMaterial(atlas) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = nightUniform;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 tinfo;\nvarying vec3 vTinfo;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTinfo = tinfo;');
+      .replace('#include <common>', '#include <common>\nattribute vec3 tinfo;\nvarying vec3 vTinfo;\nvarying vec3 vWpos;\nvarying float vUp;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvTinfo = tinfo;\n\tvWpos = position;\n\tvUp = normal.y;');
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
 varying vec3 vTinfo;
+varying vec3 vWpos;
+varying float vUp;
 uniform float uNight;
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * .1031);
@@ -406,12 +408,19 @@ float hash12(vec2 p) {
     winMask = texel.a;
     diffuseColor.rgb *= texel.rgb;
     float mode = floor(vTinfo.z);
-    float sd = fract(vTinfo.z);
+    float sd = floor((fract(vTinfo.z) - 0.05) / 0.9 * 200.0) / 200.0;
     vec2 cellId = floor(vMapUv * 2.0);
     float h = hash12(cellId + sd * 731.0);
     float lit = mode > 1.5 ? 0.0 : (mode > 0.5 ? 1.0 : step(0.62, h));
     vec3 wc = mix(vec3(1.0, 0.70, 0.36), vec3(0.62, 0.84, 1.0), step(0.7, hash12(cellId.yx + sd * 91.0)));
     winGlow = wc * lit * winMask * uNight * (mode > 0.5 ? 0.55 : 1.05);
+    // weathering: dirt and shade near the ground, streaks, broad colour drift
+    float facade = 1.0 - step(0.5, abs(vUp));
+    float ground = smoothstep(0.0, 3.2, vWpos.y);
+    float streak = hash12(floor(vec2(vWpos.x + vWpos.z, 0.0) * 0.9) + sd) * 0.12;
+    float drift = hash12(floor(vWpos.xz / 23.0)) * 0.14;
+    diffuseColor.rgb *= mix(1.0, (0.72 + 0.28 * ground) * (1.0 - streak * (1.0 - winMask)) * (0.93 + drift), facade);
+    diffuseColor.rgb *= mix(0.9 + drift * 0.7, 1.0, facade);
   #endif
 `,
       )
@@ -434,25 +443,27 @@ export function makeSignTexture(text, color, bg) {
   const c = document.createElement('canvas');
   const h = 128;
   const ctx0 = c.getContext('2d');
-  ctx0.font = 'bold 84px Arial Black, Arial, sans-serif';
+  ctx0.font = '86px Anton, Impact, Arial Black, sans-serif';
   const w = Math.min(2048, Math.max(256, Math.ceil(ctx0.measureText(text).width + 80)));
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
+  // a plain lit box sign: painted panel, frame, block letters
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 6;
-  ctx.strokeRect(6, 6, w - 12, h - 12);
-  ctx.font = 'bold 84px Arial Black, Arial, sans-serif';
+  const gr = ctx.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, 'rgba(255,255,255,0.10)');
+  gr.addColorStop(1, 'rgba(0,0,0,0.18)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, w - 8, h - 8);
+  ctx.font = '86px Anton, Impact, Arial Black, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 18;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillText(text, w / 2 + 3, h / 2 + 7);
   ctx.fillStyle = color;
-  ctx.fillText(text, w / 2, h / 2 + 4);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  ctx.font = 'bold 80px Arial Black, Arial, sans-serif';
   ctx.fillText(text, w / 2, h / 2 + 4);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;

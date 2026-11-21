@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#12061f">
+<meta name="theme-color" content="#050506">
 <title>Neon Tide</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -11,17 +11,17 @@
 <canvas id="game"></canvas>
 
 <div id="loading">
-  <div class="logo small"><span class="l1">NEON</span><span class="l2">TIDE</span></div>
+  <div class="logo small"><span class="l1">Neon</span><span class="l2">Tide</span></div>
+  <div id="loadtip"></div>
   <div class="loadbar"><div id="loadfill"></div></div>
-  <div id="loadtext">Building Port Solace…</div>
+  <div id="loadtext">Loading</div>
 </div>
 
 <!-- ================= HUD ================= -->
 <div id="hud" class="hidden">
   <div id="tl">
-    <div id="mapwrap"><canvas id="minimap" width="300" height="300"></canvas><div id="mmN">N</div></div>
-    <div class="bar"><div id="hpbar" class="fill hp"></div></div>
-    <div class="bar"><div id="arbar" class="fill ar"></div></div>
+    <div id="mapwrap"><canvas id="minimap" width="312" height="224"></canvas><div id="mmN">N</div></div>
+    <div class="bars"><div class="bar"><div id="hpbar" class="fill hp"></div></div><div class="bar"><div id="arbar" class="fill ar"></div></div></div>
     <div id="district"></div>
   </div>
   <div id="tr">
@@ -78,80 +78,73 @@
 </div>
 
 <!-- ================= MENUS ================= -->
-<div id="title" class="screen hidden">
-  <div class="sunset"><div class="sun"></div><div class="grid"></div></div>
-  <div class="titlebox">
-    <div class="brand">
-      <div class="logo"><span class="l1">NEON</span><span class="l2">TIDE</span></div>
-      <div class="tag">PORT SOLACE · OPEN CITY</div>
-    </div>
-    <div class="menu">
-      <button id="btnContinue" class="mbtn primary">CONTINUE</button>
-      <button id="btnNew" class="mbtn">NEW GAME</button>
-      <button id="btnSettings1" class="mbtn">SETTINGS</button>
-      <button id="btnHelp1" class="mbtn">HOW TO PLAY</button>
-    </div>
+<div id="title" class="hidden">
+  <div class="logo"><span class="l1">Neon</span><span class="l2">Tide</span><span class="bar"></span><span class="sub">Port Solace, Florida coast</span></div>
+  <div class="menu">
+    <button id="btnContinue" class="tbtn primary">Continue</button>
+    <button id="btnNew" class="tbtn">New game</button>
+    <button id="btnSettings1" class="tbtn">Settings</button>
+    <button id="btnHelp1" class="tbtn">Controls</button>
   </div>
-  <div class="ver">v1.0</div>
+  <div class="ver">v1.1</div>
 </div>
 
 <div id="pause" class="screen dim hidden">
   <div class="panel">
-    <h2>PAUSED</h2>
+    <h2>Paused</h2>
     <div id="pauseStats" class="stats"></div>
     <div class="menu">
-      <button class="mbtn primary" data-act="resume">RESUME</button>
-      <button class="mbtn" data-act="map">MAP</button>
-      <button class="mbtn" data-act="settings">SETTINGS</button>
-      <button class="mbtn" data-act="help">HOW TO PLAY</button>
-      <button class="mbtn" data-act="save">SAVE GAME</button>
-      <button class="mbtn" data-act="title">QUIT TO TITLE</button>
+      <button class="mbtn primary" data-act="resume">Resume</button>
+      <button class="mbtn" data-act="map">Map</button>
+      <button class="mbtn" data-act="settings">Settings</button>
+      <button class="mbtn" data-act="help">Controls</button>
+      <button class="mbtn" data-act="save">Save</button>
+      <button class="mbtn" data-act="title">Quit to title</button>
     </div>
   </div>
 </div>
 
 <div id="settings" class="screen dim hidden">
   <div class="panel">
-    <h2>SETTINGS</h2>
+    <h2>Settings</h2>
     <div class="row"><label>Graphics</label>
-      <div class="seg" data-set="quality"><span data-v="low">LOW</span><span data-v="medium">MED</span><span data-v="high">HIGH</span></div></div>
-    <div class="row"><label>Camera speed</label><input type="range" min="0.4" max="2.2" step="0.1" data-set="sensitivity"></div>
-    <div class="row"><label>Sound</label><input type="range" min="0" max="1" step="0.05" data-set="volume"></div>
-    <div class="row"><label>Radio</label><input type="range" min="0" max="1" step="0.05" data-set="music"></div>
-    <div class="row"><label>Vibration</label><div class="seg" data-set="vibrate"><span data-v="true">ON</span><span data-v="false">OFF</span></div></div>
-    <div class="row"><label>FPS counter</label><div class="seg" data-set="showFps"><span data-v="true">ON</span><span data-v="false">OFF</span></div></div>
-    <div class="menu"><button class="mbtn primary" data-act="back">BACK</button></div>
+      <div class="seg" data-set="quality"><span data-v="low">Low</span><span data-v="medium">Medium</span><span data-v="high">High</span></div></div>
+    <div class="row"><label>Camera sensitivity</label><input type="range" min="0.4" max="2.2" step="0.1" data-set="sensitivity"></div>
+    <div class="row"><label>Effects volume</label><input type="range" min="0" max="1" step="0.05" data-set="volume"></div>
+    <div class="row"><label>Radio volume</label><input type="range" min="0" max="1" step="0.05" data-set="music"></div>
+    <div class="row"><label>Vibration</label><div class="seg" data-set="vibrate"><span data-v="true">On</span><span data-v="false">Off</span></div></div>
+    <div class="row"><label>Show FPS</label><div class="seg" data-set="showFps"><span data-v="true">On</span><span data-v="false">Off</span></div></div>
+    <div class="menu"><button class="mbtn primary" data-act="back">Back</button></div>
   </div>
 </div>
 
 <div id="help" class="screen dim hidden">
   <div class="panel wide">
-    <h2>HOW TO PLAY</h2>
+    <h2>Controls</h2>
     <div class="helpgrid">
-      <div><b>Move</b> — drag anywhere on the left half (floating stick).</div>
-      <div><b>Look</b> — drag on the right half of the screen.</div>
-      <div><b>Fire</b> — auto-locks the nearest target in front of you. Tap the weapon box to switch.</div>
-      <div><b>Car button</b> — get in the nearest car (or pull the driver out). In a car it gets you out.</div>
-      <div><b>Driving</b> — stick steers (push it up to drive too), big arrow = gas, down arrow = brake/reverse, P = handbrake drift.</div>
-      <div><b>Wanted</b> — crimes bring the police. Break line of sight and stay out of the search area, or hit a Quick Coat respray.</div>
-      <div><b>Missions</b> — glowing pink markers on the map start story missions. Yellow = shops, cyan = respray, green = safehouse (save).</div>
-      <div><b>Extras</b> — 20 hidden neon shells, 6 stunt jumps, street races. Dead folks sometimes drop cash.</div>
+      <div><b>Move</b>Put your thumb anywhere on the left side and drag.</div>
+      <div><b>Camera</b>Drag on the right side.</div>
+      <div><b>Shoot / punch</b>Aims at whoever is closest in front of you. Tap the weapon name to switch.</div>
+      <div><b>Car button</b>Gets you into the nearest car. If someone's driving, they're getting out.</div>
+      <div><b>Driving</b>Stick steers. Big arrow is gas, down arrow brakes and reverses, P is the handbrake.</div>
+      <div><b>Cops</b>Get out of their sight and leave the red circle on the map, or pay for a respray.</div>
+      <div><b>Map icons</b>R and D start story jobs. $ is the gun shop, S is a respray, H is your hotel room (saves).</div>
+      <div><b>Other stuff</b>20 shells hidden around town, 6 ramps, and a street race on the east side.</div>
     </div>
-    <div class="menu"><button class="mbtn primary" data-act="back">GOT IT</button></div>
+    <div class="menu"><button class="mbtn primary" data-act="back">Back</button></div>
   </div>
 </div>
 
 <div id="mapview" class="screen hidden">
   <canvas id="bigmap"></canvas>
   <div class="maplegend">
-    <span><i style="background:#ff2bd6"></i>Mission</span>
-    <span><i style="background:#ffd23f"></i>Shop</span>
-    <span><i style="background:#22f3ff"></i>Respray</span>
-    <span><i style="background:#7CFF7C"></i>Safehouse</span>
-    <span><i style="background:#ff8a1a"></i>Race / Jump</span>
-    <span class="tiny">Tap the map to set a GPS waypoint</span>
+    <span><i style="background:#f2c230"></i>Story</span>
+    <span><i style="background:#e8e8e8"></i>Shops</span>
+    <span><i style="background:#6cc04a"></i>Hotel</span>
+    <span><i style="background:#e07a2a"></i>Race</span>
+    <span class="tiny">Tap to set a waypoint, tap it again to clear</span>
   </div>
-  <button class="mbtn closebtn" data-act="closemap">✕</button>
+  <button class="mbtn closebtn" data-act="closemap">Close</button>
 </div>
 
 <div id="shop" class="screen dim hidden">
@@ -159,7 +152,7 @@
     <h2 id="shopTitle">SOLACE ARMS</h2>
     <div id="shopMoney" class="stats"></div>
     <div id="shopList" class="shoplist"></div>
-    <div class="menu"><button class="mbtn primary" data-act="closeshop">LEAVE</button></div>
+    <div class="menu"><button class="mbtn primary" data-act="closeshop">Leave</button></div>
   </div>
 </div>
 

@@ -10,9 +10,9 @@ import { CURB } from './world/citygen.js';
 const PICKUP_LOOK = {
   health: { color: 0xff3b6b, glow: [1, 0.25, 0.4] },
   armor: { color: 0x2aa8ff, glow: [0.2, 0.6, 1] },
-  cash: { color: 0x7cff7c, glow: [0.4, 1, 0.4] },
-  weapon: { color: 0xffd23f, glow: [1, 0.85, 0.3] },
-  shell: { color: 0xff2bd6, glow: [1, 0.2, 0.9] },
+  cash: { color: 0x6cc04a, glow: [0.4, 1, 0.4] },
+  weapon: { color: 0xf2c230, glow: [1, 0.85, 0.3] },
+  shell: { color: 0xff8a7a, glow: [1, 0.55, 0.45] },
 };
 
 function pickupGeometry(type) {
@@ -102,12 +102,12 @@ export class Pickups {
       case 'health':
         if (h.health >= h.maxHealth) return false;
         h.health = Math.min(h.maxHealth, h.health + it.amount);
-        G.hud.toast('+HEALTH');
+        G.hud.toast('Health');
         break;
       case 'armor':
         if (h.armor >= 100) return false;
         h.armor = Math.min(100, h.armor + it.amount);
-        G.hud.toast('+ARMOR');
+        G.hud.toast('Armor');
         break;
       case 'cash':
         P.addMoney(it.amount);
@@ -116,7 +116,7 @@ export class Pickups {
         const w = it.weapon;
         const first = !P.owns(w);
         P.giveWeapon(w, it.amount);
-        G.hud.toast(`${WEAPONS[w].name}${first ? '' : ' AMMO'} +${it.amount}`);
+        G.hud.toast(`${WEAPONS[w].name}${first ? '' : ' ammo'} +${it.amount}`);
         break;
       }
       case 'shell': {
@@ -125,7 +125,7 @@ export class Pickups {
         if (!s.shells.includes(it.id)) s.shells.push(it.id);
         const n = s.shells.length;
         P.addMoney(100);
-        G.hud.bigMessage(`NEON SHELL ${n}/20`, n >= 20 ? 'All shells found! +$10,000' : 'Hidden collectible found', 'info', 2.2);
+        G.hud.bigMessage(`Shell ${n} of 20`, n >= 20 ? 'That was the last one. $10,000 bonus.' : '', 'info', 2.2);
         if (n >= 20) P.addMoney(10000);
         G.saveGame();
         break;
@@ -141,7 +141,7 @@ export class Pickups {
   // -------------------------------------------------- markers
   /** A glowing cylinder in the world. onEnter(veh) is called when the player stands/drives in it. */
   addMarker(x, z, opts = {}) {
-    const color = new THREE.Color(opts.color ?? 0xff2bd6);
+    const color = new THREE.Color(opts.color ?? 0xf2c230);
     const mat = new THREE.ShaderMaterial({
       uniforms: { uColor: { value: color }, uTime: { value: 0 } },
       vertexShader: `varying float vY; void main(){ vY = position.y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
@@ -174,7 +174,7 @@ export class Pickups {
   }
 
   /** Bobbing arrow above an entity (mission targets). */
-  addArrow(target, color = 0xff2bd6) {
+  addArrow(target, color = 0xf2c230) {
     const mesh = new THREE.Mesh(this.arrowGeo, new THREE.MeshBasicMaterial({ color }));
     this.scene.add(mesh);
     const a = { target, mesh, color };
@@ -191,28 +191,28 @@ export class Pickups {
   // -------------------------------------------------- services (shops, respray, safehouse)
   setupServices() {
     const pl = G.city.places;
-    this.addMarker(pl.gunshop.x, pl.gunshop.z, { color: 0xffd23f, footOnly: true, blip: { color: '#ffd23f', icon: 'gun' }, label: 'Solace Arms — guns & armor', kind: 'shop', onEnter: () => G.hud.openShop('guns') });
-    this.addMarker(pl.carlot.x, pl.carlot.z, { color: 0x9dff2e, footOnly: true, blip: { color: '#9dff2e', icon: 'car' }, label: 'Sunset Motors — buy a ride', kind: 'shop', onEnter: () => G.hud.openShop('cars') });
+    this.addMarker(pl.gunshop.x, pl.gunshop.z, { color: 0xe8e8e8, footOnly: true, blip: { color: '#e8e8e8', icon: 'gun' }, label: 'Solace Arms. Guns, ammo and armor.', kind: 'shop', onEnter: () => G.hud.openShop('guns') });
+    this.addMarker(pl.carlot.x, pl.carlot.z, { color: 0xe8e8e8, footOnly: true, blip: { color: '#e8e8e8', icon: 'car' }, label: 'Sunset Motors. Cars for sale.', kind: 'shop', onEnter: () => G.hud.openShop('cars') });
     for (const k of ['respray1', 'respray2']) {
-      this.addMarker(pl[k].x, pl[k].z, { color: 0x22f3ff, r: 3, blip: { color: '#22f3ff', icon: 'spray' }, label: 'Quick Coat respray ($100)', kind: 'respray', onEnter: (veh) => this.respray(veh) });
+      this.addMarker(pl[k].x, pl[k].z, { color: 0xe8e8e8, r: 3, blip: { color: '#e8e8e8', icon: 'spray' }, label: 'Quick Coat. Respray for $100.', kind: 'respray', onEnter: (veh) => this.respray(veh) });
     }
-    this.addMarker(pl.safehouse.x, pl.safehouse.z, { color: 0x7cff7c, footOnly: true, blip: { color: '#7CFF7C', icon: 'home' }, label: 'Safehouse — save & heal', kind: 'save', onEnter: () => this.safehouse() });
+    this.addMarker(pl.safehouse.x, pl.safehouse.z, { color: 0x6cc04a, footOnly: true, blip: { color: '#6cc04a', icon: 'home' }, label: 'Hotel Flamingo. Your room: save and heal.', kind: 'save', onEnter: () => this.safehouse() });
   }
 
   respray(veh) {
     const P = G.player;
-    if (!veh) { G.hud.hint('Bring a car to get a fresh coat (and lose the cops).', 3); return; }
+    if (!veh) { G.hud.hint('You need a car for a respray.', 3); return; }
     if (this.serviceCool > 0) return;
-    if (veh.isPolice) { G.hud.hint('They won\'t touch a police car.', 3); return; }
-    if (P.money < 100) { G.hud.hint('Respray costs $100.', 3); return; }
+    if (veh.isPolice) { G.hud.hint('They won\'t touch a cop car.', 3); return; }
+    if (P.money < 100) { G.hud.hint('A respray costs $100.', 3); return; }
     this.serviceCool = 6;
     P.addMoney(-100);
     veh.health = veh.maxHealth;
     veh.burnT = 0;
-    veh.color.setHex(pick(veh.T.colors.length > 1 ? veh.T.colors : [0xff2bd6, 0x22f3ff, 0xffffff, 0x101012]));
+    veh.color.setHex(pick(veh.T.colors.length > 1 ? veh.T.colors : [0x8a1c24, 0x1f3b73, 0xf4f4f4, 0x101012]));
     if (G.police.level > 0) G.police.clear(true);
     G.hud.fade();
-    G.hud.bigMessage('FRESH COAT', 'Car repaired · Heat gone', 'info', 2);
+    G.hud.bigMessage('Resprayed', 'Car fixed. The cops lost you.', 'info', 2);
     G.audio.spray();
   }
 
@@ -222,7 +222,7 @@ export class Pickups {
     const h = G.player.human;
     h.health = h.maxHealth;
     G.saveGame();
-    G.hud.bigMessage('GAME SAVED', 'Health restored at the Hotel Flamingo', 'info', 2);
+    G.hud.bigMessage('Game saved', 'Health restored', 'info', 2);
     G.audio.chime();
   }
 

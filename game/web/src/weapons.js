@@ -4,11 +4,11 @@ import { G, vibrate } from './state.js';
 import { rand, chance, clamp } from './util.js';
 
 export const WEAPONS = {
-  fist: { name: 'FISTS', melee: true, dmg: 14, range: 1.8, rate: 0.42, price: 0 },
-  pistol: { name: 'PISTOL', dmg: 26, range: 55, rate: 0.24, clip: 12, spread: 0.025, auto: false, reload: 1.1, price: 300, ammoPack: 48, ammoPrice: 60 },
+  fist: { name: 'Fists', melee: true, dmg: 14, range: 1.8, rate: 0.42, price: 0 },
+  pistol: { name: 'Pistol', dmg: 26, range: 55, rate: 0.24, clip: 12, spread: 0.025, auto: false, reload: 1.1, price: 300, ammoPack: 48, ammoPrice: 60 },
   smg: { name: 'SMG', dmg: 15, range: 45, rate: 0.085, clip: 32, spread: 0.06, auto: true, reload: 1.5, price: 1000, ammoPack: 128, ammoPrice: 120 },
-  shotgun: { name: 'SHOTGUN', dmg: 15, pellets: 8, range: 24, rate: 0.85, clip: 6, spread: 0.12, auto: false, reload: 1.9, price: 1400, ammoPack: 24, ammoPrice: 100 },
-  rifle: { name: 'RIFLE', dmg: 34, range: 85, rate: 0.12, clip: 30, spread: 0.022, auto: true, reload: 1.8, price: 3000, ammoPack: 120, ammoPrice: 200 },
+  shotgun: { name: 'Shotgun', dmg: 15, pellets: 8, range: 24, rate: 0.85, clip: 6, spread: 0.12, auto: false, reload: 1.9, price: 1400, ammoPack: 24, ammoPrice: 100 },
+  rifle: { name: 'Rifle', dmg: 34, range: 85, rate: 0.12, clip: 30, spread: 0.022, auto: true, reload: 1.8, price: 3000, ammoPack: 120, ammoPrice: 200 },
 };
 export const WEAPON_ORDER = ['fist', 'pistol', 'smg', 'shotgun', 'rifle'];
 

@@ -1,4 +1,4 @@
-// Neon Tide — boot, main loop, game states.
+// Neon Tide: boot, main loop, game states.
 
 import * as THREE from 'three';
 import { G } from './state.js';
@@ -41,7 +41,27 @@ function pixelRatio() {
   return Math.min(dpr, 1.25);
 }
 
+const TIPS = [
+  '<b>Quick Coat</b> resprays get the cops off your back for $100.',
+  'Cops lose track of you faster once you are out of their sight and outside the red circle on the map.',
+  'The handbrake swings the back end out. Handy for tight corners.',
+  'People sometimes drop cash when they go down.',
+  'There are 20 shells hidden around Port Solace. Each one is worth $100.',
+  'Your room at the <b>Hotel Flamingo</b> saves the game and patches you up.',
+  'Hit one of the orange ramps fast enough and it pays out.',
+  'Solace Arms sells body armor. Worth it before the bank job.',
+  'Tap anywhere on the big map to set a waypoint.',
+];
+
+async function loadFonts() {
+  if (!document.fonts || !document.fonts.load) return;
+  const t = new Promise((r) => setTimeout(r, 2500));
+  await Promise.race([Promise.all(['40px Anton', '600 20px "Barlow Condensed"', '700 20px "Barlow Condensed"', '500 20px "Barlow Condensed"'].map((f) => document.fonts.load(f))), t]).catch(() => {});
+}
+
 async function boot() {
+  $('loadtip').innerHTML = TIPS[Math.floor(Math.random() * TIPS.length)];
+  await loadFonts();
   const saved = readSettings();
   if (saved) Object.assign(G.settings, saved);
   if (!saved) {
@@ -49,7 +69,7 @@ async function boot() {
     const mem = navigator.deviceMemory || 4;
     G.settings.quality = mem <= 3 ? 'low' : 'medium';
   }
-  await setLoad(0.05, 'Starting engine…');
+  await setLoad(0.05, 'Loading');
   const canvas = $('game');
   let renderer;
   try {
@@ -70,18 +90,18 @@ async function boot() {
   const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 2200);
   G.camera = camera;
 
-  await setLoad(0.12, 'Drawing the streets…');
+  await setLoad(0.12, 'Loading map');
   G.city = generateCity(1337);
   G.physics = new Physics(G.city);
-  await setLoad(0.25, 'Raising the skyline…');
+  await setLoad(0.25, 'Loading city');
   G.cityMesh = buildCity(G.city, scene, G.settings.quality);
-  await setLoad(0.55, 'Painting the sunset…');
+  await setLoad(0.55, 'Loading city');
   G.sky = new Sky(scene, G.settings.quality);
   G.water = new Water(scene);
-  await setLoad(0.65, 'Planting palm trees…');
+  await setLoad(0.65, 'Loading props');
   G.props = new Props(scene, G.city);
   G.pools = new LightPools(scene);
-  await setLoad(0.75, 'Waking up the city…');
+  await setLoad(0.75, 'Loading people');
   G.vehicleRenderer = new VehicleRenderer(scene);
   G.humanRenderer = new HumanRenderer(scene);
   G.fx = new FX(scene);
@@ -108,13 +128,13 @@ async function boot() {
   G.toTitle = toTitle;
   G.applySettings = applySettings;
 
-  await setLoad(0.9, 'Warming up shaders…');
+  await setLoad(0.9, 'Compiling shaders');
   // a first frame compiles the shaders while the loading screen is still up
   G.sky.update(G.hour, { x: 0, y: 0, z: 0 }, camera.position);
   G.cam.update(0.016, G.input);
   renderer.compile(scene, camera);
   renderer.render(scene, camera);
-  await setLoad(1, 'Ready');
+  await setLoad(1, 'Done');
 
   window.addEventListener('resize', onResize);
   window.__onAndroidBack = onBack;
@@ -151,7 +171,7 @@ function spawnPlayerFromSave() {
   if (s.stats) Object.assign(G.stats, s.stats);
   if (s.weapon && P.owned[s.weapon]) P.selectWeapon(s.weapon);
   // a ride waiting outside the hotel
-  const car = spawnVehicle('muscle', nodeX(13) - 10.3, pl.safehouse.z + 6.5, 0, 0xff2bd6);
+  const car = spawnVehicle('muscle', nodeX(13) - 10.3, pl.safehouse.z + 6.5, 0, 0xe6e1d4);
   car.handbrake = true;
   G.cam.yaw = Math.PI;
 }
@@ -214,7 +234,7 @@ function setupTitle() {
   $('title').classList.remove('hidden');
   const hasSave = !!readSave();
   $('btnContinue').classList.toggle('disabled', !hasSave);
-  $('btnContinue').textContent = hasSave ? 'CONTINUE' : 'CONTINUE';
+  $('btnContinue').textContent = 'Continue';
   if (!setupTitle.bound) {
     setupTitle.bound = true;
     $('btnContinue').addEventListener('click', () => startGame(false));
@@ -244,9 +264,9 @@ function startGame(fresh) {
     G.started = true;
     if ((G.save.story || 0) === 0) {
       G.hud.subtitles([
-        ['Port Solace. Neon, palm trees and easy money.', 3],
-        ['Rosa at <b>Club Mirage</b> has work for you — follow the pink <b>R</b> on the map.', 4.2],
-        ['Drag the left side to move, the right side to look. Car button gets you in a ride.', 4.5],
+        ['Rosa wants to see you at <b>Club Mirage</b>. Follow the <b>R</b> on your map.', 4.2],
+        ['Left side of the screen moves you, right side moves the camera.', 4],
+        ['There\'s a car parked right behind you.', 3],
       ]);
       const cl = G.city.places.club;
       G.missions.setGps(cl.x, cl.z);
@@ -386,7 +406,7 @@ function frame(now) {
   G.vehicleRenderer.update(G.vehicles, G.sky.night, cam.position);
   G.humanRenderer.update(G.humans, cam.position);
   updateCityDynamic(G.cityMesh.dynamic, dt, G.sky.night);
-  G.cityMesh.neonMat.color.setScalar(0.75 + G.sky.night * 0.25);
+  G.cityMesh.neonMat.color.setScalar(0.32 + G.sky.night * 0.68);
   if (G.state !== 'title') G.hud.update(dt);
   if (G.audio.ready) G.audio.update(dt);
   G.renderer.render(G.scene, cam);

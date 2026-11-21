@@ -80,7 +80,7 @@ export const VTYPES = {
   compact: {
     name: 'Pico', len: 3.9, wid: 1.76, hgt: 1.48, clear: 0.28, belt: 0.86, wheelR: 0.32, wheelbase: 2.45,
     cab: [-1.5, 0.95, -1.05, 0.35], maxSpeed: 37, accel: 9.5, brake: 24, grip: 7.6, steer: 0.62, mass: 0.9,
-    health: 700, price: 0, colors: [0xff5a5f, 0x3fa7ff, 0xffd23f, 0x7bd389, 0xf4f4f4, 0xff9f1c, 0xb07cff],
+    health: 700, price: 0, colors: [0xc8423a, 0x3a6ea5, 0xe8c64a, 0x6a9a6a, 0xf4f4f4, 0xd98a3a, 0x7a6a9a, 0x9aa0a6],
   },
   sedan: {
     name: 'Cruiser', len: 4.7, wid: 1.86, hgt: 1.46, clear: 0.28, belt: 0.88, wheelR: 0.34, wheelbase: 2.8,
@@ -100,7 +100,7 @@ export const VTYPES = {
   sports: {
     name: 'Vortex GT', len: 4.45, wid: 1.96, hgt: 1.22, clear: 0.22, belt: 0.74, wheelR: 0.35, wheelbase: 2.65,
     cab: [-1.35, 0.85, -0.85, 0.2], maxSpeed: 64, accel: 17, brake: 30, grip: 9.6, steer: 0.58, mass: 0.95,
-    health: 800, spoiler: true, colors: [0xff2bd6, 0x22f3ff, 0xff3b3b, 0xfff23d, 0x9dff2e, 0xff7a1a, 0x101012],
+    health: 800, spoiler: true, colors: [0xc81d25, 0x1f4fa0, 0xe8c22a, 0xf4f4f4, 0x101012, 0xe0702a, 0x2f6b4a, 0x8a8f96],
   },
   muscle: {
     name: 'Bruiser', len: 4.9, wid: 1.98, hgt: 1.36, clear: 0.26, belt: 0.86, wheelR: 0.36, wheelbase: 2.9,
@@ -125,7 +125,7 @@ export const VTYPES = {
   super: {
     name: 'Stingray', len: 4.55, wid: 2.04, hgt: 1.12, clear: 0.2, belt: 0.68, wheelR: 0.36, wheelbase: 2.7,
     cab: [-1.0, 0.55, -0.45, 0.05], maxSpeed: 74, accel: 21, brake: 33, grip: 10.4, steer: 0.56, mass: 0.95,
-    health: 750, spoiler: true, colors: [0xff2020, 0xfff23d, 0x22f3ff, 0xff2bd6, 0xf4f4f4],
+    health: 750, spoiler: true, colors: [0xd81e1e, 0xf0c419, 0x2a5db0, 0xf4f4f4, 0x111111, 0xff7a1a],
   },
 };
 export const VTYPE_KEYS = Object.keys(VTYPES);
@@ -313,6 +313,6 @@ export function buildHumanParts() {
 }
 
 export const SKIN_TONES = [0xffdbb5, 0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0x5c3a21, 0xffe0c4, 0xd8a47f];
-export const HAIR_COLORS = [0x1b1410, 0x3b2314, 0x6a4a2a, 0xb89060, 0xe8d28a, 0x9a3a1a, 0x101010, 0xd0d0d0, 0xff4fa0, 0x22c3ff];
-export const SHIRT_COLORS = [0xffffff, 0xff5a5f, 0x3fa7ff, 0xffd23f, 0x7bd389, 0xff9f1c, 0xb07cff, 0x22d3ee, 0xf472b6, 0x1f2937, 0xa3e635, 0xfb7185, 0x60a5fa, 0xfacc15];
-export const PANTS_COLORS = [0x1f2a44, 0x2b2f36, 0x3b3f46, 0x6b5b45, 0xc2b280, 0xf4f4f4, 0x4a5a6a, 0x223344, 0x8a6a4a];
+export const HAIR_COLORS = [0x1b1410, 0x3b2314, 0x6a4a2a, 0xb89060, 0xd8c070, 0x7a3a1e, 0x101010, 0xbdbdbd, 0x2a1a12];
+export const SHIRT_COLORS = [0xf2f0ea, 0xa8322d, 0x2c3e5c, 0x5b6b3a, 0xc9b48a, 0x7a7d80, 0x1c1c1e, 0x4f7ca8, 0x8c2f39, 0xd8a83a, 0x2f6f6a, 0xd9cbb0, 0x6b4a3a, 0xc46a4a];
+export const PANTS_COLORS = [0x2a3550, 0x3b4a66, 0x2b2b2d, 0x4a4b4e, 0x6b5b45, 0xc2b38c, 0xe6e2d8, 0x55604a, 0x7a6248];

@@ -58,8 +58,8 @@ export const DISTRICT_NAMES = {
   P: 'Starlight Park',
 };
 
-export const PASTELS = [0xffb3c7, 0xa8f0d8, 0xc9b6ff, 0xffd3a8, 0xa8d8ff, 0xfff1b8, 0xffc0e8, 0xb8fff0, 0xffffff];
-export const NEONS = [0xff2bd6, 0x22f3ff, 0xff7a1a, 0x9dff2e, 0xff3b6b, 0xb14bff, 0xfff23d];
+export const PASTELS = [0xf2c4c8, 0xbfe0d2, 0xd5ccea, 0xf3d6b6, 0xc2dcec, 0xf4ead0, 0xeec9d8, 0xffffff, 0xf0efe8];
+export const NEONS = [0xff4fa8, 0x3fc8ff, 0xff5a3c, 0x7ce86a, 0xffe08a];
 const CAR_SAFE_STYLES = ['glass', 'office', 'darkglass'];
 
 export function generateCity(seed = 1337) {
@@ -267,10 +267,9 @@ export function generateCity(seed = 1337) {
         roof: 'flat', seed: rng(), collide: false,
       });
     }
-    if (rng() < 0.6) {
-      const c = rng.pick(NEONS);
-      neonRing(top.x, top.z, top.w + 0.3, top.d + 0.3, roofY - 0.6, c);
-      if (rng() < 0.4) neonRing(top.x, top.z, top.w + 0.3, top.d + 0.3, roofY - 2.2, c);
+    if (rng() < 0.12) {
+      // a few towers get a lit crown, in plain architectural colours
+      neonRing(top.x, top.z, top.w + 0.3, top.d + 0.3, roofY - 0.6, rng.pick([0xf4f0e6, 0xbfd8ff, 0xffd28a]));
     }
     return { roofY };
   };
@@ -392,7 +391,7 @@ export function generateCity(seed = 1337) {
             x: s.cx, z: s.cz, w, d, h: floors(n), style, color: rng.pick(midTints),
             shop: rng() < 0.8, roof: 'flat',
           });
-          if (rng() < 0.35) neonRing(b.x, b.z, b.w + 0.3, b.d + 0.3, b.y0 + 4.2, rng.pick(NEONS));
+          if (rng() < 0.06) neonRing(b.x, b.z, b.w + 0.3, b.d + 0.3, b.y0 + 4.2, rng.pick(NEONS));
           if (rng() < 0.4) {
             buildings.push({
               x: b.x + rng.range(-w / 4, w / 4), z: b.z + rng.range(-d / 4, d / 4), w: 3, d: 3, h: 2.5,
@@ -415,9 +414,7 @@ export function generateCity(seed = 1337) {
             x: s.cx, z: s.cz, w: s.w - rng.range(1, 3), d: s.d - rng.range(1, 3), h: floors(n), style: rng() < 0.75 ? 'deco' : 'hotel',
             color, shop: rng() < 0.7, roof: 'flat',
           });
-          const nc = rng.pick(NEONS);
-          neonRing(b.x, b.z, b.w + 0.3, b.d + 0.3, b.y0 + b.h - 0.9, nc);
-          if (n > 3 && rng() < 0.6) neonRing(b.x, b.z, b.w + 0.3, b.d + 0.3, b.y0 + 4.0, rng.pick(NEONS));
+          if (rng() < 0.4) neonRing(b.x, b.z, b.w + 0.3, b.d + 0.3, b.y0 + b.h - 0.9, rng.pick(NEONS));
           // parapet
           buildings.push({
             x: b.x, z: b.z, w: b.w * 0.5, d: b.d * 0.5, h: 2.2, y0: b.y0 + b.h, style: 'plain', color,
@@ -425,7 +422,7 @@ export function generateCity(seed = 1337) {
           });
           // vertical neon blade on the corner facing the street
           const ex = s.a === 0 ? b.x - b.w / 2 : b.x + b.w / 2;
-          if (rng() < 0.5) {
+          if (rng() < 0.22) {
             neon.push({ x0: ex - 0.2, x1: ex + 0.2, y0: b.y0 + 5, y1: b.y0 + b.h - 1.5, z0: b.z - 0.2, z1: b.z + 0.2, color: rng.pick(NEONS) });
           }
         }
@@ -672,7 +669,7 @@ export function generateCity(seed = 1337) {
   for (let k = 0; k < 70; k++) {
     const x = CITY.maxX + 45 + rng() * 85, z = CITY.minZ + 20 + rng() * (CITY.maxZ - CITY.minZ - 40);
     if (Math.abs(z) < 16) continue;
-    props.umbrellas.push({ x, z, rot: rng() * 6.28, color: rng.pick([0xff4f7b, 0x22d3ee, 0xfff23d, 0xff9f1c, 0x9b5de5, 0xffffff]) });
+    props.umbrellas.push({ x, z, rot: rng() * 6.28, color: rng.pick([0xd84a3a, 0x2a7ab8, 0xf0c040, 0xf4f1ea, 0x3a8a6a, 0xe07a3a]) });
   }
   for (let z = -420; z <= 420; z += 140) {
     if (Math.abs(z) < 30) continue;

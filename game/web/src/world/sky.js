@@ -7,17 +7,17 @@ import { nightUniform } from './textures.js';
 
 // Key frames by hour: zenith, horizon, sun colour, sun intensity, hemi sky, hemi ground, hemi intensity
 const KEYS = [
-  { h: 0, zen: 0x05061a, hor: 0x1a1440, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
-  { h: 4.8, zen: 0x07081f, hor: 0x241a4a, sun: 0x8aa0e0, si: 0.5, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
-  { h: 6.0, zen: 0x2a2f6a, hor: 0xff8a5c, sun: 0xffa060, si: 1.0, hs: 0x8a7aa0, hg: 0x3a2a30, hi: 0.8 },
-  { h: 7.5, zen: 0x3f7ad6, hor: 0xffc9a0, sun: 0xffd9a8, si: 2.0, hs: 0x9ec4ef, hg: 0x5a4a3a, hi: 1.0 },
-  { h: 10, zen: 0x2f78e0, hor: 0xbfe3ff, sun: 0xfff4e0, si: 2.8, hs: 0xb8dcff, hg: 0x6a5a48, hi: 1.15 },
-  { h: 15, zen: 0x2f74dc, hor: 0xc8e4ff, sun: 0xfff0d8, si: 2.7, hs: 0xb8dcff, hg: 0x6a5a48, hi: 1.1 },
-  { h: 17.2, zen: 0x3c4fa8, hor: 0xffb27a, sun: 0xffb070, si: 2.2, hs: 0xd0a0c0, hg: 0x5a3a3a, hi: 1.0 },
-  { h: 18.3, zen: 0x2c2a78, hor: 0xff5e7e, sun: 0xff6a40, si: 1.3, hs: 0xb070b0, hg: 0x3a2030, hi: 0.85 },
-  { h: 19.3, zen: 0x120f40, hor: 0x7a2f7a, sun: 0x9a7ad8, si: 0.6, hs: 0x6a5aaa, hg: 0x2a1a38, hi: 0.9 },
-  { h: 20.5, zen: 0x06071c, hor: 0x251648, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
-  { h: 24, zen: 0x05061a, hor: 0x1a1440, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
+  { h: 0, zen: 0x05071a, hor: 0x161c36, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
+  { h: 4.8, zen: 0x070a1f, hor: 0x1e2440, sun: 0x8aa0e0, si: 0.5, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
+  { h: 6.0, zen: 0x2f3c6a, hor: 0xe89a6a, sun: 0xffa868, si: 1.0, hs: 0x8a8aa0, hg: 0x3a3030, hi: 0.8 },
+  { h: 7.5, zen: 0x3f7ad6, hor: 0xffc9a0, sun: 0xffd9a8, si: 1.8, hs: 0x8eb4df, hg: 0x4a3a2a, hi: 0.8 },
+  { h: 10, zen: 0x2a6ed8, hor: 0xb4dcff, sun: 0xfff1da, si: 2.25, hs: 0x9cc6f0, hg: 0x5a4a38, hi: 0.82 },
+  { h: 15, zen: 0x2a6cd6, hor: 0xbcdcff, sun: 0xffecd0, si: 2.2, hs: 0x9cc6f0, hg: 0x5a4a38, hi: 0.8 },
+  { h: 17.2, zen: 0x3a5c9c, hor: 0xf2c08a, sun: 0xffb070, si: 2.0, hs: 0xa8a8c0, hg: 0x4a3a30, hi: 0.85 },
+  { h: 18.3, zen: 0x2e3f6e, hor: 0xef9058, sun: 0xff7a3c, si: 1.3, hs: 0x9a88a8, hg: 0x3a2a28, hi: 0.85 },
+  { h: 19.3, zen: 0x141c3c, hor: 0x6a4a5a, sun: 0x8a8ac8, si: 0.6, hs: 0x5a6094, hg: 0x2a2230, hi: 0.9 },
+  { h: 20.5, zen: 0x070a1c, hor: 0x1e2440, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
+  { h: 24, zen: 0x05071a, hor: 0x161c36, sun: 0x8aa0e0, si: 0.55, hs: 0x5a6ab0, hg: 0x2a2038, hi: 0.95 },
 ];
 const KC = KEYS.map((k) => ({
   ...k,

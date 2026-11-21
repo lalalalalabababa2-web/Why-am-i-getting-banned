@@ -28,7 +28,7 @@ export class Player {
 
   spawn(x, z, h) {
     this.human = spawnHuman('player', x, z, {
-      skin: 0xc68642, hair: 0x1b1410, shirt: 0x22d3ee, pants: 0xf4f4f4, h, scale: 1.02, bald: false, money: 0,
+      skin: 0xc68642, hair: 0x1b1410, shirt: 0x2f7f86, pants: 0xe2ddd0, h, scale: 1.02, bald: false, money: 0,
     });
     this.human.persistent = true;
     this.human.health = 100;
@@ -170,7 +170,7 @@ export class Player {
       if (h.weapon === 'fist') G.weapons.fire(h, { target: t && !t.T ? t : null });
       else G.weapons.fire(h, { target: t, dir, moving: h.speed > 2.5 });
       if (h.weapon !== 'fist' && h.clip <= 0 && this.inv[h.weapon] <= 0) {
-        G.hud.hint('Out of ammo — buy more at Solace Arms.', 2);
+        G.hud.hint('Out of ammo. Solace Arms sells more.', 2);
         this.selectWeapon('fist');
       }
     }
@@ -308,7 +308,7 @@ export class Player {
         h.h = save;
       }
     } else if (!dbWeapon && input.pressed('fire')) {
-      G.hud.hint('You need a gun for drive-bys.', 2);
+      G.hud.hint('You need a gun to shoot from a car.', 2);
     }
     void W;
     if (input.pressed('enter')) {
@@ -317,7 +317,7 @@ export class Player {
     }
     if (v.burnT > 0 && !this.burnHint) {
       this.burnHint = true;
-      G.hud.hint('Your car is on fire — get out!', 2.5);
+      G.hud.hint('Your car is on fire. Get out!', 2.5);
     }
     if (v.burnT === 0) this.burnHint = false;
   }
@@ -384,7 +384,7 @@ export class Player {
     this.dead = true;
     this.endT = 0;
     G.cam.mode = 'dead';
-    G.hud.bigMessage('WIPED OUT', 'Hospital bills: $200', 'dead', 4);
+    G.hud.bigMessage('Wasted', 'Hospital bill: $200', 'dead', 4);
     G.audio.death();
     vibrate(200);
     if (G.missions.active) G.missions.fail('You died.');
@@ -398,7 +398,7 @@ export class Player {
     if (h.vehicle) this.exitVehicle();
     h.moveSpeed = 0;
     G.cam.mode = 'dead';
-    G.hud.bigMessage('CUFFED', 'Bail: 10% of your cash', 'fail', 4);
+    G.hud.bigMessage('Arrested', 'Bail cost you 10% of your cash', 'fail', 4);
     G.audio.busted();
     if (G.missions.active) G.missions.fail('You were arrested.');
   }
