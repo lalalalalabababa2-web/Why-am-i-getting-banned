@@ -203,7 +203,9 @@ object Sims {
 
     // A short history, newest first, shared by the app and the tile.
 
+    @Synchronized
     fun log(ctx: Context, line: String) {
+        android.util.Log.i("SimToggle", line)
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val old = prefs(ctx).getString("log", "").orEmpty().lines().filter { it.isNotBlank() }
         prefs(ctx).edit().putString("log", (listOf("$time  $line") + old).take(40).joinToString("\n")).apply()

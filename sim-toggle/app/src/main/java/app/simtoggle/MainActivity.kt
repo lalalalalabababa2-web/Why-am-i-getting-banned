@@ -11,6 +11,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -32,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var shizukuCard: LinearLayout
     private lateinit var simCard: LinearLayout
     private lateinit var settingsCard: LinearLayout
+    private lateinit var watchdogCard: LinearLayout
     private lateinit var logText: TextView
 
     private var rows: List<SimRow> = emptyList()
@@ -39,11 +42,19 @@ class MainActivity : Activity() {
     private var askedPermission = false
     private var askedPhonePermission = false
     private var lastState: ShizukuGate.State? = null
+    private var testing = false
 
     private val binderReceived = Shizuku.OnBinderReceivedListener { refresh() }
     private val binderDead = Shizuku.OnBinderDeadListener { refresh() }
     private val permissionResult = Shizuku.OnRequestPermissionResultListener { _, _ -> refresh() }
     private val refreshTask = Runnable { refresh() }
+    private val watchdogTick = object : Runnable {
+        override fun run() {
+            renderWatchdog()
+            renderLog()
+            main.postDelayed(this, 15_000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,10 +74,12 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refresh()
+        main.postDelayed(watchdogTick, 15_000)
     }
 
     override fun onPause() {
         main.removeCallbacks(refreshTask)
+        main.removeCallbacks(watchdogTick)
         super.onPause()
     }
 
@@ -97,6 +110,7 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(android.Manifest.permission.READ_PHONE_STATE), 1)
         }
         renderShizuku(state)
+        renderWatchdog()
         renderSettings()
         renderLog()
         Sims.background({ Sims.load(this) }) { r ->
@@ -108,6 +122,7 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATION_REQUEST) askToRunInBackground()
         refresh()
     }
 
@@ -261,6 +276,127 @@ class MainActivity : Activity() {
         setPadding(36.dp, 30.dp, 24.dp, 30.dp)
     }
 
+    private fun renderWatchdog() {
+        watchdogCard.removeAllViews()
+        val on = Watchdog.enabled(this)
+        val minutes = Watchdog.intervalMinutes(this)
+
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(24.dp, 20.dp, 20.dp, 20.dp)
+            background = ripple()
+        }
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        texts.addView(text("Restart SIM when data stops", 18f, R.color.text_primary))
+        texts.addView(text(
+            "Every ${plural(minutes, "minute")}, checks that mobile data reaches the internet. " +
+                "If it doesn't, switches the data SIM off and on again.",
+            14f, R.color.text_secondary,
+        ).apply { setPadding(0, 4.dp, 0, 0) })
+        line.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val switch = Switch(this).apply {
+            isChecked = on
+            setOnClickListener { setWatchdog(isChecked) }
+        }
+        line.addView(switch, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = 16.dp
+        })
+        line.setOnClickListener { switch.performClick() }
+        watchdogCard.addView(line)
+
+        watchdogCard.addView(divider())
+        watchdogCard.addView(settingRow("Check every", plural(minutes, "minute")) { pickInterval() })
+        watchdogCard.addView(divider())
+
+        val statusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(24.dp, 18.dp, 20.dp, 18.dp)
+        }
+        val statusTexts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        statusTexts.addView(text("Last result", 18f, R.color.text_primary))
+        var status = if (testing) "Testing mobile data…" else Watchdog.status(this)
+        val next = Watchdog.nextCheck(this)
+        if (on && !testing && next > System.currentTimeMillis()) {
+            status += " · next " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(next))
+        }
+        statusTexts.addView(text(status, 15f, R.color.accent).apply { setPadding(0, 4.dp, 0, 0) })
+        statusRow.addView(statusTexts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (!testing) {
+            statusRow.addView(pill("Test now") { testData() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginStart = 12.dp
+                })
+        }
+        watchdogCard.addView(statusRow)
+    }
+
+    private fun setWatchdog(on: Boolean) {
+        Watchdog.setEnabled(this, on)
+        if (on) {
+            if (!ShizukuGate.ready()) {
+                Toast.makeText(this, "It can check data now, but needs Shizuku running to restart the SIM", Toast.LENGTH_LONG).show()
+            }
+            // The notification is how you see it working; then ask to be left running in the background.
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST)
+            } else {
+                askToRunInBackground()
+            }
+        }
+        renderWatchdog()
+        renderLog()
+    }
+
+    /** Without this, Doze may hold the watchdog's alarms back while the phone sleeps. */
+    private fun askToRunInBackground() {
+        if (!Watchdog.enabled(this)) return
+        if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) return
+        runCatching {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        }
+    }
+
+    private fun pickInterval() {
+        val choices = Watchdog.INTERVALS
+        AlertDialog.Builder(this)
+            .setTitle("Check mobile data every")
+            .setSingleChoiceItems(choices.map { plural(it, "minute") }.toTypedArray(),
+                choices.indexOf(Watchdog.intervalMinutes(this))) { dialog, which ->
+                Watchdog.setInterval(this, choices[which])
+                dialog.dismiss()
+                renderWatchdog()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /** Checks data once, without restarting anything. */
+    private fun testData() {
+        testing = true
+        renderWatchdog()
+        Thread {
+            val outcome = DataCheck.run(this)
+            main.post {
+                testing = false
+                val message = when (outcome) {
+                    is DataCheck.Outcome.Ok -> "Mobile data works (${outcome.ms} ms)"
+                    is DataCheck.Outcome.Failed -> "Mobile data isn't working: ${outcome.why}"
+                    is DataCheck.Outcome.Skipped -> "Not tested: ${outcome.why}"
+                }
+                Sims.log(this, "Test · $message")
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                renderWatchdog()
+                renderLog()
+            }
+        }.start()
+    }
+
+    private fun plural(n: Int, word: String) = if (n == 1) "1 $word" else "$n ${word}s"
+
     private fun renderSettings() {
         settingsCard.removeAllViews()
         val method = Sims.method(this)
@@ -331,6 +467,7 @@ class MainActivity : Activity() {
         shizukuCard = card()
         simCard = card()
         settingsCard = card()
+        watchdogCard = card()
         val logCard = card()
         logText = text("", 12.5f, R.color.text_secondary).apply {
             typeface = Typeface.MONOSPACE
@@ -343,6 +480,8 @@ class MainActivity : Activity() {
         column.addView(shizukuCard)
         column.addView(section("SIM cards"))
         column.addView(simCard)
+        column.addView(section("Data watchdog"))
+        column.addView(watchdogCard)
         column.addView(section("Settings"))
         column.addView(settingsCard)
         column.addView(LinearLayout(this).apply {
@@ -425,6 +564,10 @@ class MainActivity : Activity() {
     private fun openShizuku() {
         val launch = packageManager.getLaunchIntentForPackage(ShizukuGate.PACKAGE)
         if (launch != null) startActivity(launch) else open(Uri.parse(ShizukuGate.DOWNLOAD_URL))
+    }
+
+    private companion object {
+        const val NOTIFICATION_REQUEST = 2
     }
 
     private fun open(uri: Uri) {

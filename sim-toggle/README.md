@@ -1,6 +1,6 @@
 # SIM Toggle
 
-An Android app that switches a SIM on and off: the same switch as **Settings → Connections →
+An Android app that switches a SIM on and off, and can restart it by itself when mobile data stops working: the same switch as **Settings → Connections →
 SIM manager → SIM 1** on a Samsung phone, without going through Settings. One tap in the app or
 on a Quick Settings tile.
 
@@ -53,6 +53,30 @@ remembers the pairing); the app says so at the top when Shizuku isn't running.
 - **Activity**: what each switch did, or why it failed. If something doesn't work on your phone,
   this is what to look at.
 
+## Data watchdog
+
+Turn on **Restart SIM when data stops** and the app checks mobile data every 2 minutes (1, 5,
+10, 15 or 30 if you change it). If data doesn't reach the internet, it switches the data SIM off
+and on again, then checks once more.
+
+- **The check**: asks Android for the mobile network itself (so it tests the SIM even while
+  you're on Wi-Fi) and loads Google's tiny "204" page over it, falling back to Cloudflare's. One
+  failure gets a second look 10 seconds later before the SIM is touched.
+- **After a restart** it looks again 75 seconds later. Two quick retries, then it backs off (4, 8,
+  16, then every 30 minutes) so it doesn't keep cycling the SIM somewhere with no signal. Working
+  data resets it.
+- **It leaves things alone** in airplane mode, when mobile data is switched off in Settings, and
+  when you've switched the SIM off yourself.
+- **Test now** checks data once without restarting anything.
+- It runs as a foreground service with a notification showing the last result (and a Stop
+  button), wakes itself with exact alarms so it keeps working while the screen is off, and comes
+  back after the phone restarts or the app updates. It still needs Shizuku running to restart
+  the SIM. Without it, the watchdog only reports that data is down.
+- When you turn it on, it asks to be let off battery optimisation. Say yes, or Android may delay
+  its checks while the phone sleeps.
+
+Each check uses well under 1 KB of data.
+
 With your only SIM off, there are no calls, texts or mobile data until it's back on (Wi-Fi still
 works). Emergency calls are still allowed while the SIM is off.
 
@@ -65,6 +89,8 @@ works). Emergency calls are still allowed while the SIM is off.
   "Use SIM" switch since Android 11. The SIM then shows as inactive (slot -1) but stays in
   `getAvailableSubscriptionInfoList`, which is how the app still lists it and switches it back on.
 - Powering off uses `ITelephony.setSimPowerStateForSlot(slot, 0)`; on is `1`.
+- `DataCheck.kt` is the watchdog's test, `Watchdog.kt` decides when to restart and when to back
+  off, and `WatchdogService.kt` keeps it running.
 - `ShellCheck.kt` runs the same calls as the shell user without Shizuku. CI runs it on Android 14
   and 16 emulators (switching the emulator's SIM off and on both ways), and you can run it on your
   phone over adb to see what the phone says:
@@ -74,6 +100,10 @@ works). Emergency calls are still allowed while the SIM is off.
   ```
 
   Add `--toggle` at the end to switch the first SIM off and on.
+- CI also runs the whole app with real Shizuku on the emulators (`ci/shizuku-check.sh`): it
+  allows the app in Shizuku's dialog, switches SIM 1 off and on, turns the watchdog on, cuts the
+  app's network to fake a data outage, and waits for the watchdog to restart the SIM and then
+  report data back.
 
 ## Building
 

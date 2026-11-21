@@ -59,7 +59,8 @@ jobs:
           retention-days: 30
 
   # The app opens, its tile works, and its SIM calls go through as the shell user (the identity
-  # Shizuku gives it): switching the emulator's SIM off and on both ways.
+  # Shizuku gives it). Then the whole app with real Shizuku: SIM off and on from the app, and the
+  # data watchdog restarting the SIM when the app's network is cut.
   emulator:
     name: Emulator (Android API ${{ matrix.api }})
     needs: apk
@@ -76,6 +77,12 @@ jobs:
         with:
           name: SimToggle-apk
           path: sim-toggle
+
+      # Real Shizuku for the end-to-end test (ci/shizuku-check.sh).
+      - name: Download Shizuku
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download -R RikkaApps/Shizuku --pattern '*.apk' --dir shizuku || echo "::warning::couldn't download Shizuku"
 
       - name: Enable KVM
         run: |
@@ -96,7 +103,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           working-directory: sim-toggle
-          script: bash ci/emulator-check.sh SimToggle.apk emulator-out
+          script: bash ci/emulator-check.sh SimToggle.apk emulator-out && bash ci/shizuku-check.sh emulator-out
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -128,7 +135,7 @@ jobs:
           BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           VERSION=$("$ANDROID_HOME/build-tools/$BT/aapt2" dump badging SimToggle.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
           cat > notes.md <<EOF
-          SIM Toggle $VERSION, built from ${GITHUB_SHA::7} on \`${GITHUB_REF_NAME}\`. It was opened and its SIM calls were checked on Android 14 and 16 emulators before it was published.
+          SIM Toggle $VERSION, built from ${GITHUB_SHA::7} on \`${GITHUB_REF_NAME}\`. Its emulator checks on Android 14 and 16 passed before it was published (details in the workflow run).
 
           Install: open SimToggle.apk on the phone and allow installs from your browser when Android asks. New builds install over the old one.
 
