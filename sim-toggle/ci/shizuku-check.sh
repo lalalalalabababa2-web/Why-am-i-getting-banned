@@ -43,16 +43,29 @@ adb install -r "$APK" || { echo "::warning::Shizuku didn't install; skipping"; e
 # Opening it once lets it write its start files.
 adb shell monkey -p "$SHZ" -c android.intent.category.LAUNCHER 1 > /dev/null
 sleep 6
-START_SH=/storage/emulated/0/Android/data/$SHZ/start.sh
-DIR=$(adb shell pm path "$SHZ" | head -1 | cut -d: -f2 | tr -d '\r' | sed 's#/base.apk$##')
-LIB=$(adb shell "ls $DIR/lib/*/libshizuku.so 2>/dev/null" | head -1 | tr -d '\r')
-if [ -n "$LIB" ]; then
-  adb shell "$LIB" | tail -5
-elif adb shell "[ -f $START_SH ]"; then
-  adb shell sh "$START_SH" | tail -5
-fi
-sleep 4
-if ! adb shell ps -A | grep -q shizuku_server; then
+# The same command Shizuku shows for starting it from a computer (as the shell user).
+start_shizuku() {
+  local start_sh=/storage/emulated/0/Android/data/$SHZ/start.sh dir lib
+  dir=$(adb shell pm path "$SHZ" | head -1 | cut -d: -f2 | tr -d '\r' | sed 's#/base.apk$##')
+  lib=$(adb shell "ls $dir/lib/*/libshizuku.so 2>/dev/null" | head -1 | tr -d '\r')
+  if [ -n "$lib" ]; then
+    adb shell "$lib" | tail -3
+  elif adb shell "[ -f $start_sh ]"; then
+    adb shell sh "$start_sh" | tail -3
+  fi
+  sleep 4
+  adb shell ps -A | grep -q shizuku_server
+}
+# iptables needs root, but restarting adb as root stops Shizuku: back to shell, Shizuku again.
+as_root() {
+  adb root > /dev/null; sleep 3; adb wait-for-device
+  adb shell "$@"
+  local status=$?
+  adb unroot > /dev/null; sleep 3; adb wait-for-device
+  start_shizuku && wait_log "Shizuku connected" 30
+  return $status
+}
+if ! start_shizuku; then
   echo "::warning::Shizuku's server didn't start on the emulator; skipping the end-to-end test"
   adb shell ps -A | grep -i shizuku
   exit 0
@@ -103,17 +116,17 @@ echo "== Data outage: cut SIM Toggle's network"
 blocked=""
 APP_UID=$(adb shell pm list packages -U "$PKG" | grep -o 'uid:[0-9]*' | head -1 | cut -d: -f2)
 echo "app uid: $APP_UID"
-# Without root first (Android's own per-app network switch), so Shizuku keeps running as shell.
-adb shell cmd connectivity set-chain3-enabled true 2>&1 | head -3
-adb shell cmd connectivity set-package-networking-enabled false "$PKG" 2>&1 | head -3
-if adb shell cmd connectivity get-package-networking-enabled "$PKG" 2>&1 | tee /dev/stderr | grep -qi false; then
+# Without root first (Android's own per-app network switch, Android 15+).
+cmd_out=$({ adb shell cmd connectivity set-chain3-enabled true
+            adb shell cmd connectivity set-package-networking-enabled false "$PKG"
+            adb shell cmd connectivity get-package-networking-enabled "$PKG"; } 2>&1)
+echo "$cmd_out" | head -4
+if ! echo "$cmd_out" | grep -qi unknown && echo "$cmd_out" | grep -qi false; then
   blocked=cmd
 elif [ -n "$APP_UID" ]; then
   adb shell cmd connectivity set-chain3-enabled false > /dev/null 2>&1
-  adb root > /dev/null; sleep 3; adb wait-for-device
-  adb shell iptables -I OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT &&
-    adb shell ip6tables -I OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT && blocked=iptables
-  adb shell ps -A | grep -q shizuku_server || echo "::warning::Shizuku stopped when adb restarted as root"
+  as_root "iptables -I OUTPUT -m owner --uid-owner $APP_UID -j REJECT && ip6tables -I OUTPUT -m owner --uid-owner $APP_UID -j REJECT" &&
+    blocked=iptables
 fi
 echo "network cut with: ${blocked:-nothing}"
 if [ -z "$blocked" ]; then
@@ -134,8 +147,7 @@ if [ "$blocked" = cmd ]; then
   adb shell cmd connectivity set-package-networking-enabled true "$PKG"
   adb shell cmd connectivity set-chain3-enabled false
 else
-  adb shell iptables -D OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT
-  adb shell ip6tables -D OUTPUT -m owner --uid-owner "$APP_UID" -j REJECT
+  as_root "iptables -D OUTPUT -m owner --uid-owner $APP_UID -j REJECT; ip6tables -D OUTPUT -m owner --uid-owner $APP_UID -j REJECT"
 fi
 wait_log "data is back after" 200
 shot watchdog-recovered
