@@ -1,0 +1,24 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Two stacked layers with a wrench-like notch: "toolkit over layers". -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF7DA3C4"
+        android:strokeWidth="4"
+        android:pathData="M30,44 L54,32 L78,44 L54,56 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFE2E5E9"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M30,54 L54,66 L78,54" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF9AA3AD"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M30,64 L54,76 L78,64" />
+</vector>

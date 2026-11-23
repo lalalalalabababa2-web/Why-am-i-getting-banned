@@ -1,0 +1,2 @@
+-keep class com.umt.sdk.** { *; }
+-keepattributes *Annotation*, InnerClasses

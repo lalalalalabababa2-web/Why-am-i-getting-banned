@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:name=".DemoApp"
+        android:icon="@mipmap/ic_demo"
+        android:label="UMT SDK Demo"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- Tells the toolkit this app integrates umt-sdk. -->
+        <meta-data
+            android:name="com.umt.integration.supported"
+            android:value="true" />
+
+        <activity
+            android:name=".DemoActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

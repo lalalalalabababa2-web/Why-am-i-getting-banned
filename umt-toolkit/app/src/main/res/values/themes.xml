@@ -1,0 +1,15 @@
+<resources>
+    <style name="Theme.UMT" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/graphite_bg</item>
+        <item name="android:statusBarColor">@color/graphite_bg</item>
+        <item name="android:navigationBarColor">@color/graphite_bg</item>
+        <item name="android:colorAccent">@color/accent</item>
+    </style>
+
+    <!-- Used for overlay panels built from Android views. -->
+    <style name="Theme.UMT.Overlay" parent="android:Theme.Material">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorControlActivated">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+    </style>
+</resources>
