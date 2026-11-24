@@ -1,0 +1,152 @@
+diff --git a/src/core/ggml_extend.cpp b/src/core/ggml_extend.cpp
+index 52d9cfc..e8ce744 100644
+--- a/src/core/ggml_extend.cpp
++++ b/src/core/ggml_extend.cpp
+@@ -214,8 +214,8 @@ ggml_tensor* ggml_ext_linear(GGMLRunnerContext* runner_ctx,
+     if (scale != 1.f) {
+         x = ggml_ext_scale(runner_ctx, x, scale);
+     }
+-    if (x->ne[2] * x->ne[3] > 1024) {
+-        // workaround: avoid ggml cuda error
++    if (x->ne[2] * x->ne[3] > 1024 || x->ne[3] > 1) {
++        // workaround: avoid ggml cuda error; CPU-repacked weights also take at most 3-D inputs
+         int64_t ne2 = x->ne[2];
+         int64_t ne3 = x->ne[3];
+         x           = ggml_reshape_2d(ctx, x, x->ne[0], x->ne[1] * x->ne[2] * x->ne[3]);
+diff --git a/src/model/common/ggml_block.hpp b/src/model/common/ggml_block.hpp
+index 805b868..235c421 100644
+--- a/src/model/common/ggml_block.hpp
++++ b/src/model/common/ggml_block.hpp
+@@ -229,6 +229,12 @@ public:
+         return it != params.end() && it->second != nullptr && ggml_is_quantized(it->second->type);
+     }
+ 
++    // Quantized weights only ever feed ggml_mul_mat, so the CPU may keep them repacked for its
++    // matmul kernels. I8 and F8 weights go through other ops and keep their layout.
++    enum ggml_op param_usage_op(const std::string& name) const override {
++        return name == "weight" && has_quantized_weight() && !w4_convrot_kind ? GGML_OP_MUL_MAT : GGML_OP_NONE;
++    }
++
+     ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
+         const bool force_prec_f32 = ggml_ext_force_prec_f32(ctx, this->force_prec_f32, precision_flags);
+         ggml_tensor* w            = params["weight"];
+diff --git a/src/model_manager.cpp b/src/model_manager.cpp
+index bfdf262..0bedcb0 100644
+--- a/src/model_manager.cpp
++++ b/src/model_manager.cpp
+@@ -2,6 +2,8 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <cstdlib>
++#include <cstring>
+ #include <iterator>
+ #include <mutex>
+ #include <tuple>
+@@ -83,6 +85,9 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
+         op_tensor         = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+         op_tensor->op     = op;
+         op_tensor->src[0] = weight;
++    } else if (op == GGML_OP_MUL_MAT) {
++        ggml_tensor* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, weight->ne[0], 1);
++        op_tensor          = ggml_mul_mat(ctx, weight, input);
+     }
+     if (op_tensor == nullptr) {
+         ggml_free(ctx);
+@@ -101,6 +106,28 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
+     return supported;
+ }
+ 
++// The CPU's extra buffer types (llama.cpp's repacked layouts) for its matmul kernels, which run
++// several times faster than the plain ggml layout on ARM. SD_CPU_REPACK=0 turns them off.
++static const std::vector<ggml_backend_buffer_type_t>& cpu_extra_buffer_types() {
++    static const std::vector<ggml_backend_buffer_type_t> types = [] {
++        std::vector<ggml_backend_buffer_type_t> out;
++        const char* env = std::getenv("SD_CPU_REPACK");
++        if (env != nullptr && std::strcmp(env, "0") == 0) {
++            return out;
++        }
++        ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
++        ggml_backend_reg_t reg = cpu != nullptr ? ggml_backend_dev_backend_reg(cpu) : nullptr;
++        auto get_extra_bufts   = reg != nullptr ? (ggml_backend_dev_get_extra_bufts_t)ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts") : nullptr;
++        if (get_extra_bufts != nullptr) {
++            for (ggml_backend_buffer_type_t* buft = get_extra_bufts(cpu); buft != nullptr && *buft != nullptr; ++buft) {
++                out.push_back(*buft);
++            }
++        }
++        return out;
++    }();
++    return types;
++}
++
+ ModelManager::~ModelManager() {
+     release_all();
+     release_prefetch();
+@@ -877,6 +904,9 @@ bool ModelManager::can_mmap_storage(const TensorState& state) const {
+     if (state.compute_backend == nullptr || state.params_backend == nullptr) {
+         return false;
+     }
++    if (repack_buffer_type_for(state) != nullptr) {
++        return false;  // repacked into the CPU's own layout, so it cannot stay in the file
++    }
+     return sd_backend_is_cpu(state.compute_backend) ||
+            sd_backend_is_cpu(state.params_backend) ||
+            backend_supports_host_buffer(state.compute_backend);
+@@ -1132,7 +1162,36 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
+     return true;
+ }
+ 
++ggml_backend_buffer_type_t ModelManager::repack_buffer_type_for(const TensorState& state) const {
++    // Only the diffusion model: it runs every step. Text encoders run once a picture and stay
++    // mmapped, so their pages can be dropped instead of held in anonymous memory.
++    if (state.usage_op != GGML_OP_MUL_MAT || state.tensor == nullptr ||
++        (state.component != ModelComponent::Diffusion && state.component != ModelComponent::HighNoiseDiffusion) ||
++        state.residency_mode != ResidencyMode::ParamBackend || state.compute_backend == nullptr ||
++        state.compute_backend != state.params_backend || !sd_backend_is_cpu(state.compute_backend)) {
++        return nullptr;
++    }
++    const auto& extra = cpu_extra_buffer_types();
++    if (state.tensor->buffer != nullptr) {
++        ggml_backend_buffer_type_t current = ggml_backend_buffer_get_type(state.tensor->buffer);
++        return std::find(extra.begin(), extra.end(), current) != extra.end() ? current : nullptr;
++    }
++    ggml_backend_dev_t cpu_dev = ggml_backend_get_device(state.compute_backend);
++    for (ggml_backend_buffer_type_t buft : extra) {
++        if (device_supports_param_op(cpu_dev, state.tensor, GGML_OP_MUL_MAT, buft)) {
++            return buft;
++        }
++    }
++    return nullptr;
++}
++
+ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorState& state) const {
++    if (state.usage_op == GGML_OP_MUL_MAT) {
++        ggml_backend_buffer_type_t repack = repack_buffer_type_for(state);
++        if (repack != nullptr) {
++            return repack;
++        }
++    }
+     if (state.params_backend == nullptr) {
+         LOG_ERROR("model manager params backend is null for tensor '%s'", state.name.c_str());
+         return nullptr;
+@@ -1149,7 +1208,7 @@ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorStat
+     if (params_buft == nullptr) {
+         params_buft = ggml_backend_get_default_buffer_type(state.params_backend);
+     }
+-    if (state.usage_op != GGML_OP_NONE &&
++    if (state.usage_op != GGML_OP_NONE && state.usage_op != GGML_OP_MUL_MAT &&
+         state.compute_backend != nullptr) {
+         ggml_backend_dev_t compute_dev = ggml_backend_get_device(state.compute_backend);
+         if (device_supports_param_op(compute_dev, state.tensor, state.usage_op, params_buft)) {
+diff --git a/src/model_manager.h b/src/model_manager.h
+index f592a63..93f7483 100644
+--- a/src/model_manager.h
++++ b/src/model_manager.h
+@@ -144,6 +144,7 @@ private:
+     static std::vector<TensorStorage> find_tensor_sources(const TensorState& state, const String2TensorStorage& sources);
+     bool load_tensor_parts(TensorState& state);
+     bool can_mmap_storage(const TensorState& state) const;
++    ggml_backend_buffer_type_t repack_buffer_type_for(const TensorState& state) const;
+     bool alloc_params_buffers(const std::vector<TensorState*>& states,
+                               std::vector<ParamsStorageBlock*>& created_storage_blocks);
+     bool load_tensors(const std::vector<TensorState*>& states);

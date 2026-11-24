@@ -560,35 +560,35 @@ jobs:
           for spec in "sdxs 1 euler_a -" "turbo 2 euler_a tae" "lcm 4 lcm tae" "dmd2 4 lcm tae"; do
             set -- $spec
             D=""; [ "$4" = tae ] && D=m/taesd.safetensors
-            for threads in 4 8; do
-              echo "== $1, $threads threads"
-              $T m/$1.gguf "$P" pictures/$1-$threads.ppm 512 512 $2 1 42 $threads $3 $D 2>&1 | grep -E "generated|failed" || true
-            done
+            echo "== $1, 4 threads"
+            $T m/$1.gguf "$P" pictures/$1.ppm 512 512 $2 1 42 4 $3 $D 2>&1 | grep -E "generated|failed" || true
           done
 
       # The newer models in parts (FLUX.2 klein 4B, Z-Image Turbo): a diffusion model, the Qwen3 4B
-      # text encoder they share, and a decoder each. Time and peak memory for each picture.
+      # text encoder they share, and a decoder each. Time and peak memory for each picture, with the
+      # diffusion weights in the CPU's repacked layout (the app) and, for comparison, without it.
       - name: Make pictures (FLUX.2 klein, Z-Image)
         continue-on-error: true
         run: |
           cd m
           get() { curl -fsSL --retry 4 --retry-delay 10 -o "$1" "https://huggingface.co/$2/resolve/main/$3"; ls -la "$1"; }
           get klein.gguf leejet/FLUX.2-klein-4B-GGUF flux-2-klein-4b-Q4_0.gguf
-          get zimage.gguf leejet/Z-Image-Turbo-GGUF z_image_turbo-Q3_K.gguf
+          get zimage.gguf leejet/Z-Image-Turbo-GGUF z_image_turbo-Q4_0.gguf
           get qwen3-4b.gguf unsloth/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf
           get flux2-vae.safetensors Comfy-Org/Flux-2-Klein-4B split_files/vae/flux2-vae.safetensors
           get flux1-vae.safetensors Comfy-Org/Z-Image-Turbo split_files/vae/ae.safetensors
           cd ..
           T=build/image-test/sdtest
           P="a photograph of an orange tabby cat sitting on a windowsill, soft morning light, a handwritten sign that says HELLO"
-          for spec in "klein 4 flux2-vae" "zimage 8 flux1-vae"; do
-            set -- $spec
-            for size in 512 768; do
-              echo "== $1 at $size, 4 threads"
-              /usr/bin/time -f "  peak memory %M KB" $T m/$1.gguf "$P" pictures/$1-$size.ppm $size $size $2 1 42 4 euler "" "" \
-                m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|generated|failed|peak memory" || true
-            done
-          done
+          run() {  # name steps vae size repack tag
+            echo "== $1 at $4, 4 threads, repacked weights: $5"
+            SD_CPU_REPACK=$5 /usr/bin/time -f "  peak memory %M KB" $T m/$1.gguf "$P" pictures/$1-$4-$6.ppm $4 $4 $2 1 42 4 euler "" "" \
+              m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|generated|failed|peak memory" || true
+          }
+          run klein 4 flux2-vae 512 1 repacked
+          run klein 4 flux2-vae 512 0 plain
+          run zimage 8 flux1-vae 512 1 repacked
+          run klein 4 flux2-vae 768 1 repacked
 
       - name: Pictures to PNG
         if: always()

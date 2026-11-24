@@ -107,7 +107,7 @@ object PictureCatalog {
         ),
         PictureModel(
             id = "dreamshaper-xl", name = "DreamShaper XL Turbo", maker = "Lykon",
-            blurb = "The best looking here: SDXL pictures at 768 pixels with rich, natural detail, photos and art " +
+            blurb = "The best looking Stable Diffusion here: SDXL pictures at 768 pixels with rich, natural detail, photos and art " +
                 "alike, in six steps. About 2 minutes.",
             repo = "off-grid-ai/dreamshaper-xl-v2-turbo-GGUF", file = "dreamshaper-xl-v2-turbo-Q4_K.gguf",
             sizeBytes = 2_798_084_896L, steps = 6, sampler = "euler_a", scheduler = "karras",

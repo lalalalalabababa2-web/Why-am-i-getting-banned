@@ -5,6 +5,8 @@
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
 #   0002-rpc-survives-lost-phone.patch: a phone that leaves the Wi-Fi fails a step, not the app
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
+#   sd/0002-cpu-repacked-diffusion-weights.patch: the picture model's weights in the CPU's own matmul
+#     layout (llama.cpp's repacking), as the chat models have them
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../llama.cpp"
