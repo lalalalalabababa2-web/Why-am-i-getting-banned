@@ -388,14 +388,15 @@ class PongView(context: Context, private var player: String, private var level: 
     /** The ball waits in the server's hand, above their end of the table. */
     private fun placeForServe() {
         ball.vx = 0f; ball.vy = 0f; ball.vz = 0f; ball.curve = 0f
+        // tossed from the free hand, beside the racket rather than behind it
         if (server == Side.ME) {
-            ball.x = myX.coerceIn(-0.55f, 0.55f)
+            ball.x = (myX - 0.14f).coerceIn(-0.6f, 0.6f)
             ball.y = -0.12f
         } else {
-            ball.x = cpuX.coerceIn(-0.55f, 0.55f)
+            ball.x = (cpuX + 0.14f).coerceIn(-0.6f, 0.6f)
             ball.y = TABLE_L + 0.12f
         }
-        ball.z = 0.28f
+        ball.z = 0.3f
     }
 
     private fun pointTo(side: Side, why: String) {
@@ -759,7 +760,7 @@ class PongView(context: Context, private var player: String, private var level: 
         drawNet(c)
         if (!ballFar) drawBall(c)
         drawRacket(c, myX, myY, myZ, myTilt, mine = true)
-        drawScoreboard(c)
+        if (state != State.TITLE) drawScoreboard(c)
         drawWords(c)
     }
 
@@ -768,23 +769,26 @@ class PongView(context: Context, private var player: String, private var level: 
         fill.shader = standsShader
         c.drawRect(0f, 0f, w, boardsTop, fill)
         fill.shader = null
-        fill.color = 0xFF14233F.toInt()
-        c.drawRect(0f, boardsTop, w, floorTop, fill)
+        // three boards side by side, a word on each, sized to fit its board
+        val boardW = w / BOARDS.size
+        val boardH = floorTop - boardsTop
+        BOARDS.forEachIndexed { i, word ->
+            fill.color = if (i % 2 == 0) 0xFF14233F.toInt() else 0xFF182B4A.toInt()
+            c.drawRect(i * boardW, boardsTop, (i + 1) * boardW, floorTop, fill)
+            body.textSize = boardH * 0.36f
+            val tw = body.measureText(word)
+            if (tw > boardW * 0.8f) body.textSize *= boardW * 0.8f / tw
+            body.color = 0x59FFFFFF
+            c.drawText(word, (i + 0.5f) * boardW, boardsTop + boardH / 2 + body.textSize * 0.36f, body)
+        }
         fill.color = 0x33FFFFFF
         c.drawRect(0f, boardsTop, w, boardsTop + density, fill)
+        for (i in 1 until BOARDS.size) c.drawRect(i * boardW - density / 2, boardsTop, i * boardW + density / 2, floorTop, fill)
         fill.shader = floorShader
         c.drawRect(0f, floorTop, w, h, fill)
         fill.shader = lightShader
         c.drawRect(0f, 0f, w, h, fill)
         fill.shader = null
-        // the boards' lettering, small and plain
-        body.textSize = (floorTop - boardsTop) * 0.42f
-        body.color = 0x55FFFFFF
-        var x = w * 0.18f
-        for (word in BOARDS) {
-            c.drawText(word, x, boardsTop + (floorTop - boardsTop) * 0.66f, body)
-            x += w * 0.32f
-        }
     }
 
     private fun quad(x0: Float, y0: Float, z0: Float, x1: Float, y1: Float, z1: Float, x2: Float, y2: Float, z2: Float, x3: Float, y3: Float, z3: Float) {
@@ -962,12 +966,14 @@ class PongView(context: Context, private var player: String, private var level: 
         val mid = py
         when (state) {
             State.TITLE -> {
+                // in the dark above the boards, clear of the table and the other racket
+                val ty = max(boardsTop * 0.55f, 96 * density)
                 title.color = Color.WHITE
                 title.textSize = 40 * density
-                c.drawText("PING PONG", w / 2, mid - 40 * density, title)
+                c.drawText("PING PONG", w / 2, ty, title)
                 body.color = 0xCCFFFFFF.toInt()
                 body.textSize = 15 * density
-                c.drawText("Table tennis · first to 11", w / 2, mid - 8 * density, body)
+                c.drawText("Table tennis · first to 11", w / 2, ty + 30 * density, body)
                 body.textSize = 14 * density
                 c.drawText("Tap to start · drag to move your racket", w / 2, h - 36 * density, body)
             }
