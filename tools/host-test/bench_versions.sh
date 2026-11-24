@@ -35,7 +35,7 @@ for m in "$@"; do
       for fa in 0 1; do
         # a quantized V cache needs flash attention; without flash attention the paths are the same
         [ "$cache" = q8_0 ] && [ "$fa" = 0 ] && continue
-        [ "$kind" = new-plain ] && { [ "$fa" = 0 ] || [ "$cache" = q8_0 ]; } && continue
+        [ "$kind" = new-plain ] && [ "$fa" = 0 ] && continue
         OA_FA_PLAIN=$plain "$bin" -m "$m" -t "$THREADS" -p 0 -n 32 -d 0,4096,8192 -r 1 \
           -fa "$fa" -ctk "$cache" -ctv "$cache" -o csv 2>/dev/null | python3 -c '
 import csv, sys

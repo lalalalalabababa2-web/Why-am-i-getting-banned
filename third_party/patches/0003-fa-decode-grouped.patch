@@ -1,5 +1,5 @@
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 26b4a01c..cba970ed 100644
+index 26b4a01c..f1a09137 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
 @@ -9579,6 +9579,9 @@ static void ggml_flash_attn_ext_reduce_partials(
@@ -12,7 +12,18 @@ index 26b4a01c..cba970ed 100644
  static void ggml_compute_forward_flash_attn_ext_f16(
          const ggml_compute_params * params,
          ggml_tensor * dst) {
-@@ -9648,10 +9651,12 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+@@ -9632,7 +9635,9 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+     const int64_t n_kv_cols = kv_rows ? kv_rows->ne[0] : nek1;
+ 
+     const bool kv_is_f32_or_f16 = (k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16);
+-    const bool use_split_kv_path = !use_ref && !kv_rows && (neq1 == 1 && neq3 == 1) && kv_is_f32_or_f16 && (k->type == v->type) && q->type == GGML_TYPE_F32 && nek1 >= 512;
++    // Offline AI: the split path for the 8-bit memory too, when fa-decode.inc takes it
++    const bool use_split_kv_path = !use_ref && !kv_rows && (neq1 == 1 && neq3 == 1) &&
++        ((kv_is_f32_or_f16 && (k->type == v->type)) || oa_fa_takes(dst)) && q->type == GGML_TYPE_F32 && nek1 >= 512;
+ 
+     if (use_split_kv_path) {
+         const int64_t chunk_size = (nek1 + nth - 1) / nth;
+@@ -9648,10 +9653,12 @@ static void ggml_compute_forward_flash_attn_ext_f16(
          float *       chunk_partials = partials_base + ith * partial_size;
  
          if (ic_start < nek1) {
@@ -29,7 +40,7 @@ index 26b4a01c..cba970ed 100644
              }
          } else {
              for (int64_t q_head = 0; q_head < neq2; q_head++) {
-@@ -9702,6 +9707,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+@@ -9702,6 +9709,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
  #endif
          use_tiled &= (DV % f32_epr == 0);
  #endif

@@ -5,7 +5,8 @@
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
 #   0002-rpc-survives-lost-phone.patch: a phone that leaves the Wi-Fi fails a step, not the app
 #   0003-fa-decode-grouped.patch + fa-decode.inc: attention while writing reads each K/V row once
-#     for all the query heads that share it (grouped-query attention), in blocks of 16 positions
+#     for all the query heads that share it (grouped-query attention), in blocks of 16 positions,
+#     for the 16-bit and the 8-bit conversation memory
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
 #   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
 #     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
