@@ -76,6 +76,9 @@ class App : Application() {
         // the theme before any screen exists, so none has to be rebuilt for it
         app.offlineai.chat.ui.Palette.apply(this, settings)
         models = ModelStore(this)
+        app.offlineai.chat.data.GgufScan.init(this)
+        // what each model keeps in memory, read from its file once, before any screen asks
+        Thread { runCatching { models.local().forEach { it.memBytes } } }.apply { priority = Thread.MIN_PRIORITY }.start()
         chats = ChatStore(this, crypto)
         chats.encryptOldChats()
         engine = EngineController()
@@ -223,7 +226,7 @@ class App : Application() {
      * loads only when a picture is sent (see [picturesRam]).
      */
     fun estimatedRam(model: LocalModel): Long {
-        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        val weights = model.memBytes
         val config = configFor(model)
         val ctxBytes = settings.contextSize.toLong() * (if (config.kvQ8) 20_000L else 40_000L)
         val drafter = if (config.drafterPath.isNotEmpty()) model.drafterFile.length() else 0L
@@ -232,11 +235,11 @@ class App : Application() {
 
     /** The same estimate for a catalog model before it is downloaded (its drafter not counted). */
     fun estimatedRam(c: app.offlineai.chat.data.CatalogModel): Long {
-        val weights = if (c.ple) (c.sizeBytes * 0.5).toLong() else c.sizeBytes
+        val weights = c.residentBytes
         val low = when (settings.memoryMode) {
             MemoryMode.FAST -> false
             MemoryMode.LOW -> true
-            MemoryMode.AUTO -> !c.ple && c.sizeBytes > totalRam * 0.45
+            MemoryMode.AUTO -> c.residentBytes > totalRam * 0.45
         }
         val kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO)
         return weights + settings.contextSize.toLong() * (if (kvQ8) 20_000L else 40_000L) + 300_000_000L
@@ -254,14 +257,16 @@ class App : Application() {
         MemoryMode.LOW -> true
         // Fast mode copies the weights into ggml's faster layout in the app's own memory, which
         // Android can only make room for by swapping it out or closing the app; low memory leaves
-        // them in the file, where Android can drop pages and read them again. A model of more
-        // than 45% of the phone's memory (3.8 GB Bonsai 27B on an 8 GB phone) goes low.
-        MemoryMode.AUTO -> !model.ple && model.sizeBytes * localShare > totalRam * 0.45
+        // them in the file, where Android can drop pages and read them again. A model that keeps
+        // more than 45% of the phone's memory busy (3.8 GB Bonsai 27B on an 8 GB phone) goes low.
+        // Gemma's "E" models count only what they keep in memory, not their per-layer embeddings,
+        // which stay in the file either way (see GgufScan).
+        MemoryMode.AUTO -> model.memBytes * localShare > totalRam * 0.45
     }
 
     /** What the whole model needs in memory, wherever it runs (16-bit conversation memory). */
     private fun needFor(model: LocalModel): Long {
-        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        val weights = model.memBytes
         return weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
     }
 
@@ -298,7 +303,7 @@ class App : Application() {
             val kept = tightKept
             if (kept != null && kept.first == name && (engine.loaded?.key == name || engine.loadingKey == name)) return kept.second
         }
-        val weights = if (model.ple) (model.sizeBytes * 0.5).toLong() else model.sizeBytes
+        val weights = model.memBytes
         val full = weights + settings.contextSize.toLong() * 40_000L + 300_000_000L
         val free = availableRam() + (engine.loaded?.let { l -> models.find(l.key)?.sizeBytes } ?: 0L)
         val tight = full > free * 0.6

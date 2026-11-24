@@ -213,6 +213,9 @@ class Settings(context: Context) {
     var gameLevel: Int
         get() = int("game_level", 1)
         set(v) = put("game_level", v)
+    var gameSound: Boolean
+        get() = bool("game_sound", true)
+        set(v) = put("game_sound", v)
 
     // ---- pictures
     var pictureModel: String

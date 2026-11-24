@@ -7,6 +7,11 @@ set(ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 # stable-diffusion.cpp's tensor names are longer than ggml's default of 64 characters; every part
 # has to be compiled with the same limit, or they disagree about the size of a tensor
 add_compile_definitions(GGML_MAX_NAME=160)
+# the app's changes to both submodules, as its own build applies them
+execute_process(COMMAND sh ${ROOT}/third_party/patches/apply.sh RESULT_VARIABLE OA_PATCH_RESULT)
+if(NOT OA_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "third_party/patches/apply.sh failed")
+endif()
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE ON CACHE BOOL "" FORCE)

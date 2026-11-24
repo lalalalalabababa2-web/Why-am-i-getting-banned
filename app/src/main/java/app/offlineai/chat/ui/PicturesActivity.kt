@@ -300,8 +300,9 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
             return
         }
         val free = app.models.freeBytes()
-        if (free in 0 until m.sizeBytes + 200_000_000L) {
-            toast("Not enough free space: ${m.name} needs ${ModelStore.formatBytes(m.sizeBytes)}.")
+        val needed = m.sizeBytes + m.parts.filter { !jobs.partFile(it).isFile }.sumOf { it.sizeBytes }
+        if (free in 0 until needed + 200_000_000L) {
+            toast("Not enough free space: ${m.name} needs ${ModelStore.formatBytes(needed)}.")
             return
         }
         if (!modelFile(m).isFile && !app.models.isDownloading(m.key)) {
@@ -310,6 +311,9 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val d = m.decoder
         if (d != null && !File(app.models.dir, d.key).isFile && !app.models.isDownloading(d.key)) {
             app.models.download(d.url, d.key, "Picture decoder")
+        }
+        for (p in m.parts) {
+            if (!jobs.partFile(p).isFile && !app.models.isDownloading(p.key)) app.models.download(p.url, p.key, p.label)
         }
         app.settings.pictureModel = m.id
         refreshChips()
@@ -322,8 +326,8 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         for (m in PictureCatalog.models) {
             val state = when {
                 ready(m) -> "${m.steps} step${if (m.steps > 1) "s" else ""} · on this phone"
-                app.models.isDownloading(m.key) -> "Downloading…"
-                else -> "${ModelStore.formatBytes(m.sizeBytes)} download"
+                app.models.isDownloading(m.key) || m.parts.any { app.models.isDownloading(it.key) } -> "Downloading…"
+                else -> "${ModelStore.formatBytes(m.sizeBytes + m.parts.filter { !jobs.partFile(it).isFile }.sumOf { it.sizeBytes })} download"
             }
             sheet.item(m.name, R.drawable.ic_image, "$state\n${m.blurb}", checked = m.id == current?.id) {
                 app.settings.pictureModel = m.id
@@ -349,6 +353,10 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
                 for (d in PictureCatalog.Decoder.entries) {
                     if (PictureCatalog.models.none { it.decoder == d && modelFile(it).isFile }) File(app.models.dir, d.key).delete()
                 }
+                // and a text encoder or decoder no model on the phone shares any more
+                for (p in PictureCatalog.Part.entries) {
+                    if (PictureCatalog.models.none { p in it.parts && modelFile(it).isFile }) jobs.partFile(p).delete()
+                }
                 refreshChips()
                 refreshSetup()
             }
@@ -363,7 +371,8 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val m = currentModel()
         val active = downloads.filter { it.fileName.startsWith("pictures/") }
         for (d in active) {
-            val name = PictureCatalog.models.firstOrNull { it.key == d.fileName }?.name ?: "Picture decoder"
+            val name = PictureCatalog.models.firstOrNull { it.key == d.fileName }?.name
+                ?: PictureCatalog.Part.entries.firstOrNull { it.key == d.fileName }?.label ?: "Picture decoder"
             val pct = if (d.total > 0) (d.done * 100 / d.total).toInt() else 0
             setup.addView(text("Downloading $name… $pct% (${ModelStore.formatBytes(d.done)} of ${ModelStore.formatBytes(d.total)})",
                 13f, Palette.text2).apply {
@@ -385,7 +394,7 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
     private fun modelCard(m: PictureModel): View = card().apply {
         val head = LinearLayout(this@PicturesActivity).apply { orientation = LinearLayout.HORIZONTAL }
         head.addView(text(m.name, 17f, bold = true), lp(0, WRAP, 1f))
-        head.addView(text(ModelStore.formatBytes(m.sizeBytes), 13f, Palette.text3))
+        head.addView(text(ModelStore.formatBytes(m.totalBytes), 13f, Palette.text3))
         addView(head)
         addView(text(m.maker, 13f, Palette.accent).apply { setPadding(0, dp(2), 0, dp(6)) })
         addView(text(m.blurb, 14f, Palette.text2))

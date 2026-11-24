@@ -1,0 +1,19 @@
+diff --git a/src/model/vae/minimax_h3_audio_vae.hpp b/src/model/vae/minimax_h3_audio_vae.hpp
+index d5eb0d0..ab50630 100644
+--- a/src/model/vae/minimax_h3_audio_vae.hpp
++++ b/src/model/vae/minimax_h3_audio_vae.hpp
+@@ -171,9 +171,11 @@ namespace MiniMaxH3 {
+             auto v = ggml_add(ctx->ggml_ctx, qkv[2], bias_shape(params["v_bias"]));
+ 
+             int64_t sequence = x->ne[1];
+-            auto mask        = ggml_diag_mask_inf(ctx->ggml_ctx,
+-                                                  ggml_ext_zeros(ctx, sequence, sequence, 1, 1),
+-                                                  0);
++            // Offline AI: ggml_diag_mask_inf left ggml (b12670); the same causal mask is -inf
++            // strictly above the diagonal (column > row) and 0 elsewhere
++            auto mask        = ggml_tri(ctx->ggml_ctx,
++                                        ggml_fill(ctx->ggml_ctx, ggml_ext_zeros(ctx, sequence, sequence, 1, 1), -INFINITY),
++                                        GGML_TRI_TYPE_UPPER);
+             auto attn_out    = ggml_ext_attention_ext(ctx,
+                                                       q,
+                                                       k,

@@ -35,10 +35,20 @@ data class PictureModel(
     val xl: Boolean = false,
     /** The noise schedule it was made for ("" for the library's default). */
     val scheduler: String = "",
+    /**
+     * The newer models come in parts: the [file] is only the diffusion model, and the words are
+     * read by a separate language model ([llm]) and the picture decoded by its own [vae].
+     */
+    val llm: PictureCatalog.Part? = null,
+    val vae: PictureCatalog.Part? = null,
 ) {
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     /** Where it is kept: in the models folder, under pictures/ (so the chat model list leaves it alone). */
     val key: String get() = "pictures/$file"
+    /** Its other files: text encoder and decoder. */
+    val parts: List<PictureCatalog.Part> get() = listOfNotNull(llm, vae)
+    /** Everything it downloads (parts it shares with another model come once). */
+    val totalBytes: Long get() = sizeBytes + parts.sumOf { it.sizeBytes }
 }
 
 object PictureCatalog {
@@ -52,10 +62,49 @@ object PictureCatalog {
         val url: String get() = "https://huggingface.co/$repo/resolve/main/diffusion_pytorch_model.safetensors?download=true"
     }
 
+    /**
+     * The shared parts of the newer models. FLUX.2 klein and Z-Image read the prompt with the same
+     * Qwen3 4B (the very same file, by its hash), so it is downloaded once for both.
+     */
+    enum class Part(val label: String, val repo: String, val path: String, val key: String, val sizeBytes: Long) {
+        QWEN3_4B("Text encoder (Qwen3 4B)", "unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf",
+            "pictures/qwen3-4b-text-encoder.gguf", 2_497_281_312L),
+        FLUX2_VAE("FLUX.2 decoder", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors",
+            "pictures/flux2-vae.safetensors", 336_211_292L),
+        FLUX1_VAE("Z-Image decoder", "Comfy-Org/Z-Image-Turbo", "split_files/vae/ae.safetensors",
+            "pictures/flux1-vae.safetensors", 335_304_388L);
+
+        val url: String get() = "https://huggingface.co/$repo/resolve/main/$path?download=true"
+    }
+
     private const val NEGATIVE = "blurry, low quality, deformed, bad anatomy, extra fingers, watermark, text"
 
     // Best looking first. Times: one 512 or 768 pixel picture on four CPU cores, 4 threads.
     val models = listOf(
+        // ---- the newer kind (2025-26): a diffusion transformer that reads the prompt with a real
+        // language model, so it follows long prompts, counts, places things where asked and can
+        // write words into the picture, which the Stable Diffusion models below cannot
+        PictureModel(
+            id = "flux2-klein", name = "FLUX.2 klein 4B", maker = "Black Forest Labs",
+            blurb = "The best pictures here: follows long, detailed prompts, gets hands, faces and words in the " +
+                "picture right (a sign that says OPEN reads OPEN), photos and art alike, in four steps. Reads the " +
+                "prompt with Qwen3 4B, shared with Z-Image. About 5 minutes for 512 pixels on four desktop cores; " +
+                "5.3 GB in all.",
+            repo = "leejet/FLUX.2-klein-4B-GGUF", file = "flux-2-klein-4b-Q4_0.gguf",
+            sizeBytes = 2_460_378_560L, steps = 4, sampler = "euler", decoder = null, native = 512, xl = true,
+            llm = Part.QWEN3_4B, vae = Part.FLUX2_VAE,
+            license = "Apache 2.0",
+        ),
+        PictureModel(
+            id = "z-image-turbo", name = "Z-Image Turbo", maker = "Alibaba Tongyi",
+            blurb = "Photographs that are hard to tell from real ones: skin, light, places, and English or Chinese " +
+                "words in the picture, in eight steps. Bigger and about three times slower than FLUX.2 klein; next " +
+                "to it, it adds 3.5 GB (the text encoder is shared).",
+            repo = "leejet/Z-Image-Turbo-GGUF", file = "z_image_turbo-Q3_K.gguf",
+            sizeBytes = 3_143_559_104L, steps = 8, sampler = "euler", decoder = null, native = 512, xl = true,
+            llm = Part.QWEN3_4B, vae = Part.FLUX1_VAE,
+            license = "Apache 2.0",
+        ),
         PictureModel(
             id = "dreamshaper-xl", name = "DreamShaper XL Turbo", maker = "Lykon",
             blurb = "The best looking here: SDXL pictures at 768 pixels with rich, natural detail, photos and art " +

@@ -58,7 +58,23 @@ data class CatalogModel(
     val olderBelow: Long = 0,
     /** 8 GB phones it takes to hold it (Phones together); 1 for everything that fits one phone. */
     val phones: Int = 1,
+    /**
+     * Bytes of the file that stay in memory while it writes (see [GgufScan]); 0: all of it. Less
+     * than the file for Gemma's "E" models, whose per-layer embeddings are read a row at a time.
+     */
+    val memBytes: Long = 0,
+    /** Files this entry used to download (heavier or older); a copy still on the phone works and offers the new one. */
+    val legacyFiles: List<String> = emptyList(),
+    /** Its makers' sampling, when it differs from its family's. */
+    val sampling: Sampling? = null,
+    /** Made for one job (a Tools task, such as "translate" or "humanize") rather than for chat. */
+    val tool: String? = null,
+    /** Never thinks, whatever the setting (a model whose template would otherwise think). */
+    val noThinking: Boolean = false,
 ) {
+    /** What it keeps in memory while writing, before it is downloaded. */
+    val residentBytes: Long get() = if (memBytes > 0) memBytes else sizeBytes
+
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     val page: String get() = "https://huggingface.co/$repo"
 
@@ -77,29 +93,39 @@ object Catalog {
 
     val models = listOf(
         // ---- Google
+        // Google's quantization-aware-trained weights (QAT): trained to be stored at 4 bits, so the
+        // 4-bit file loses almost nothing, and every weight is Q4_0, the format ARM phones multiply
+        // fastest. 4.2 GB instead of 4.98, and 2.6 GB in memory instead of 3.0.
         CatalogModel(
             "gemma4-e4b", "Gemma 4 E4B", "Google",
-            "The best all-round model for this phone: chat, writing, code. Sees pictures and hears sound once its " +
+            "The best all-round model for this phone: chat, writing, code. Google's 4-bit trained version: lighter " +
+                "and faster than a plain 4-bit copy, with the same answers. Sees pictures and hears sound once its " +
                 "picture support is added.",
-            "unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q4_K_M.gguf", 4_977_171_584L, Family.GEMMA, true, ple = true,
-            pictures = ExtraFile("mmproj-F16.gguf", 990_000_000L, "unsloth/gemma-4-E4B-it-GGUF"), hears = true,
-            drafter = ExtraFile("mtp-gemma-4-E4B-it.gguf", 98_700_000L, "unsloth/gemma-4-E4B-it-GGUF"),
+            "unsloth/gemma-4-E4B-it-qat-GGUF", "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf", 4_215_695_776L, Family.GEMMA, true, ple = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 990_372_672L, "unsloth/gemma-4-E4B-it-qat-GGUF"), hears = true,
+            drafter = ExtraFile("mtp-gemma-4-E4B-it.gguf", 59_678_016L, "unsloth/gemma-4-E4B-it-qat-GGUF"),
+            memBytes = 2_620_000_000L, legacyFiles = listOf("gemma-4-E4B-it-Q4_K_M.gguf"),
         ),
         CatalogModel(
             "gemma4-e2b", "Gemma 4 E2B", "Google",
-            "Smaller and faster Gemma 4. Pick this if E4B feels slow or the phone runs short of memory. Pictures and sound too.",
-            "unsloth/gemma-4-E2B-it-GGUF", "gemma-4-E2B-it-Q4_K_M.gguf", 3_106_738_272L, Family.GEMMA, true, ple = true,
-            pictures = ExtraFile("mmproj-F16.gguf", 986_000_000L, "unsloth/gemma-4-E2B-it-GGUF"), hears = true,
-            drafter = ExtraFile("mtp-gemma-4-E2B-it.gguf", 97_800_000L, "unsloth/gemma-4-E2B-it-GGUF"),
+            "Smaller and faster Gemma 4 (Google's 4-bit trained version). Pick this if E4B feels slow or the phone " +
+                "runs short of memory. Pictures and sound too.",
+            "unsloth/gemma-4-E2B-it-qat-GGUF", "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf", 2_620_370_976L, Family.GEMMA, true, ple = true,
+            pictures = ExtraFile("mmproj-F16.gguf", 985_654_080L, "unsloth/gemma-4-E2B-it-qat-GGUF"), hears = true,
+            drafter = ExtraFile("mtp-gemma-4-E2B-it.gguf", 59_235_648L, "unsloth/gemma-4-E2B-it-qat-GGUF"),
+            memBytes = 1_290_000_000L, legacyFiles = listOf("gemma-4-E2B-it-Q4_K_M.gguf"),
         ),
         // ---- NVIDIA: Nemotron 3.5 Bolt, built on Gemma 4 E4B (October 2026)
         CatalogModel(
             "nemotron35-bolt-e4b", "Nemotron 3.5 Bolt E4B", "NVIDIA",
             "NVIDIA's phone-sized model, built on Gemma 4 E4B: careful reasoning (it thinks when a question needs it), " +
-                "30+ languages, and light on memory for what it knows. Sees pictures and hears sound once its support " +
-                "is added; has a DFlash drafter for the drafting test.",
-            "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf", 5_060_482_240L,
-            Family.GEMMA, true, ple = true,
+                "30+ languages, better than Gemma at following instructions and using tools. Sees pictures and hears " +
+                "sound once its support is added; has a DFlash drafter for the drafting test.",
+            // The 5.06 GB Q4_K_XL file kept 3.5 GB in memory (5- and 6-bit layers): too much for an 8 GB
+            // phone with other apps open. This one keeps 2.6 GB (4.25-bit layers) and loses little.
+            "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF", "NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q3_K_XL.gguf", 4_219_133_120L,
+            Family.GEMMA, true, ple = true, memBytes = 2_620_000_000L,
+            legacyFiles = listOf("NVIDIA-Nemotron-3.5-Bolt-E4B-UD-Q4_K_XL.gguf"),
             pictures = ExtraFile("mmproj-Q8_0.gguf", 559_875_776L, "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF"), hears = true,
             drafter = ExtraFile("dflash-NVIDIA-Nemotron-3.5-Bolt-E4B-Q8_0.gguf", 398_892_256L,
                 "unsloth/NVIDIA-Nemotron-3.5-Bolt-E4B-GGUF"),
@@ -179,6 +205,23 @@ object Catalog {
             "prism-ml/Ternary-Bonsai-2-9B-gguf", "Ternary-Bonsai-2-9B-Q2_0.gguf", 2_556_640_128L, Family.QWEN, true,
             pictures = ExtraFile("Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf", 624_229_664L, "prism-ml/Ternary-Bonsai-2-9B-gguf"),
         ),
+        // ---- Liquid AI LFM3 (October 2026): a new three-part hybrid design, trained with its 4-bit
+        // form in mind (QAD), so the Q4_0 file is both the fastest on ARM and close to full quality
+        CatalogModel(
+            "lfm3-1.7b", "LFM3 1.7B", "Liquid AI",
+            "Liquid's newest phone model (October 2026): about 1 GB, quick, good at following instructions, " +
+                "summaries, structured answers and tools. Knows less than the 4B models; best for everyday tasks.",
+            "LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-QAD-Q4_0.gguf", 1_049_615_680L, Family.LIQUID, true,
+            sampling = Sampling(0.1f, 1.0f, 50, 0.0f, 1.1f),
+        ),
+        CatalogModel(
+            "lfm3-vl-2b", "LFM3-VL 2B", "Liquid AI",
+            "LFM3 with eyes: describes photos, reads text and screenshots, and looks at video frames. About 1.25 GB " +
+                "with its picture support; the quickest way to ask about a photo.",
+            "LiquidAI/LFM3-VL-2B-GGUF", "LFM3-VL-2B-QAD-Q4_0.gguf", 1_049_615_648L, Family.LIQUID, true,
+            pictures = ExtraFile("mmproj-LFM3-VL-2B-Q8_0.gguf", 203_031_872L, "LiquidAI/LFM3-VL-2B-GGUF"),
+            sampling = Sampling(0.1f, 1.0f, 50, 0.0f, 1.1f),
+        ),
         // ---- Liquid AI
         CatalogModel(
             "lfm25-1.2b", "LFM2.5 1.2B", "Liquid AI",
@@ -249,6 +292,25 @@ object Catalog {
             "AdvancedDataIntelligence/adi-qwen3.5-4b-glm5.2-general-GGUF", "adi-qwen3.5-4b-glm5.2-general-q4_k_m.gguf",
             2_708_804_064L, Family.QWEN, false,
         ),
+        // ---- made for one job (the Tools screen uses them when they are here)
+        CatalogModel(
+            "index-translate-2b", "Index-Translate 2B", "bilibili Index",
+            "A translator, not a chat model: 150 languages, keeps formatting, names and code, understands slang and " +
+                "memes. With its picture support it translates the text in a photo or screenshot too. Used by " +
+                "Tools, Translate.",
+            "IndexTeam/Index-Translate-2B-GGUF", "Index-Translate-2B.Q4_K_M.gguf", 1_312_164_352L, Family.QWEN, true,
+            pictures = ExtraFile("Index-Translate-2B.mmproj-Q8_0.gguf", 361_518_144L, "IndexTeam/Index-Translate-2B-GGUF"),
+            // its makers' client: greedy, thinking off
+            sampling = Sampling(0.0f, 1.0f, 0, 0.0f, 1.0f), tool = "translate", noThinking = true,
+        ),
+        CatalogModel(
+            "humanizer-12b", "Humanizer 12B", "jialinyyzz (community)",
+            "Rewrites AI-sounding text (emails, essays, posts; English and Chinese) so it reads like a person wrote " +
+                "it, keeping every number, name and quote. A Gemma 4 12B tuned for this one job, squeezed to 2 bits " +
+                "(its makers trained for that). Big: close other apps first. Used by Tools, Humanize.",
+            "jialinyyzz/humanizer-GGUF", "humanizer-12b-IQ2_XS-QAT.gguf", 3_893_632_896L, Family.GEMMA, false, large = true,
+            sampling = Sampling(1.0f, 0.95f, 0, 0.0f, 1.0f), tool = "humanize", noThinking = true,
+        ),
         // ---- abliterated: community copies with the refusal direction removed from the weights
         // (huihui-ai's method), quantized by mradermacher or huihui-ai. Same skills as the originals,
         // sometimes a little weaker; they answer things the originals decline.
@@ -267,17 +329,20 @@ object Catalog {
             pictures = ExtraFile("Huihui-Qwen3.5-2B-abliterated.mmproj-f16.gguf", 668_227_200L, "mradermacher/Huihui-Qwen3.5-2B-abliterated-GGUF"),
         ),
         CatalogModel(
-            "abl-gemma4-e4b", "Gemma 4 E4B abliterated", "huihui-ai (community)",
-            "Gemma 4 E4B with its refusals removed. The strongest uncensored all-rounder here. Sees pictures.",
-            "mradermacher/Huihui-gemma-4-E4B-it-abliterated-GGUF", "Huihui-gemma-4-E4B-it-abliterated.Q4_K_M.gguf", 5_335_286_272L,
-            Family.GEMMA, false, ple = true,
-            pictures = ExtraFile("Huihui-gemma-4-E4B-it-abliterated.mmproj-f16.gguf", 990_372_672L, "mradermacher/Huihui-gemma-4-E4B-it-abliterated-GGUF"),
+            "abl-gemma4-e4b", "Gemma 4 E4B uncensored", "SC117 (community)",
+            "Gemma 4 E4B with its refusals removed (Heretic), made from Google's 4-bit trained weights: 4.2 GB, and as " +
+                "light and fast as the official E4B. The strongest uncensored all-rounder here. Sees pictures.",
+            "SC117/gemma-4-E4B-it-heretic-QAT-GGUF", "gemma-4-E4B-it-heretic-QAT-UD-Q4_K_XL.gguf", 4_255_261_568L,
+            Family.GEMMA, false, ple = true, memBytes = 2_660_000_000L,
+            pictures = ExtraFile("mmproj-gemma-4-E4B-it-heretic-BF16.gguf", 991_552_320L, "SC117/gemma-4-E4B-it-heretic-QAT-GGUF"),
+            legacyFiles = listOf("Huihui-gemma-4-E4B-it-abliterated.Q4_K_M.gguf"),
         ),
         CatalogModel(
             "abl-gemma4-e2b", "Gemma 4 E2B abliterated", "huihui-ai (community)",
             "Gemma 4 E2B (Google's quantization-trained version) with its refusals removed. Faster than E4B. Sees pictures.",
             "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF",
             "Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf", 3_416_118_240L, Family.GEMMA, false, ple = true,
+            memBytes = 1_480_000_000L,
             pictures = ExtraFile("mmproj-model-bf16.gguf", 986_833_408L, "huihui-ai/Huihui-gemma-4-E2B-it-qat-q4_0-unquantized-abliterated-GGUF"),
         ),
         CatalogModel(
@@ -301,6 +366,12 @@ object Catalog {
             "Meta's Llama 3.2 3B with its refusals removed. A plain, steady chat model.",
             "mradermacher/Llama-3.2-3B-Instruct-abliterated-GGUF", "Llama-3.2-3B-Instruct-abliterated.Q4_K_M.gguf", 2_241_004_512L,
             Family.LLAMA, false,
+        ),
+        CatalogModel(
+            "abl-lfm3-1.7b", "LFM3 1.7B uncensored", "AtomicChat (community)",
+            "Liquid's LFM3 1.7B with its refusals removed: small, quick, answers what the original declines.",
+            "AtomicChat/LFM3-1.7B-Uncensored-GGUF", "LFM3-1.7B-Uncensored-AD-Q4_K_M.gguf", 1_132_208_000L, Family.LIQUID, false,
+            sampling = Sampling(0.1f, 1.0f, 50, 0.0f, 1.1f),
         ),
         CatalogModel(
             "abl-lfm25-1.2b", "LFM2.5 1.2B abliterated", "huihui-ai (community)",
@@ -376,6 +447,15 @@ object Catalog {
             pictures = ExtraFile("mmproj-F16.gguf", 1_198_957_024L, "unsloth/gemma-4-31B-it-GGUF"), phones = 2,
         ),
         CatalogModel(
+            "bonsai2-27b", "Ternary Bonsai 2 27B", "PrismML",
+            "Qwen3.8 27B rebuilt with weights of -1, 0 or +1: the newest 27B model's knowledge in 7.6 GB, and this " +
+                "app's own fast kernels for its 2-bit weights. Needs two 8 GB phones on the same Wi-Fi (Phones " +
+                "together). Thinks before answering; sees pictures.",
+            "prism-ml/Ternary-Bonsai-2-27B-gguf", "Ternary-Bonsai-2-27B-Q2_0.gguf", 7_626_008_928L, Family.QWEN, true, large = true,
+            pictures = ExtraFile("Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", 629_246_976L, "prism-ml/Ternary-Bonsai-2-27B-gguf"),
+            phones = 2,
+        ),
+        CatalogModel(
             "gemma4-26b-a4b", "Gemma 4 26B-A4B", "Google",
             "A mixture of experts: 26B of knowledge, but only about 4B of it works on each word, so it writes about as " +
                 "fast as a 4B model. About 3 bits, 10 GB: three 8 GB phones, or two with 12 GB. Sees pictures.",
@@ -392,12 +472,27 @@ object Catalog {
     )
 
     fun byFile(file: String): CatalogModel? = models.firstOrNull { it.file == file }
+
+    /** The entry that used to download [file] before it moved to a lighter or better one. */
+    fun byLegacyFile(file: String): CatalogModel? = models.firstOrNull { file in it.legacyFiles }
 }
 
-/** A .gguf file in the app's model folder. */
-data class LocalModel(val file: File, val catalog: CatalogModel?) {
+/**
+ * A .gguf file in the app's model folder. [legacy]: a file the catalog entry [catalog] used to
+ * download (it still works; the Models screen offers the lighter one).
+ */
+data class LocalModel(val file: File, val catalog: CatalogModel?, val legacy: Boolean = false) {
     val ple: Boolean get() = catalog?.ple ?: Regex("gemma-?[34]n?-e[24]b", RegexOption.IGNORE_CASE).containsMatchIn(file.name)
-    val displayName: String get() = catalog?.name ?: file.name.removeSuffix(".gguf")
+
+    /**
+     * What stays in memory while it writes: read from the file's tensor table (exact), or failing
+     * that the catalog's figure for its current file, or the whole file.
+     */
+    val memBytes: Long
+        get() = GgufScan.footprint(file)?.residentBytes
+            ?: catalog?.takeIf { !legacy && it.memBytes > 0 }?.memBytes
+            ?: if (ple) (sizeBytes * 0.62).toLong() else sizeBytes
+    val displayName: String get() = catalog?.name?.let { if (legacy) "$it (older file)" else it } ?: file.name.removeSuffix(".gguf")
     val sizeBytes: Long get() = file.length()
     val family: Family
         get() = catalog?.family ?: run {
@@ -421,7 +516,7 @@ data class LocalModel(val file: File, val catalog: CatalogModel?) {
     val hasDrafter: Boolean get() = drafterFile.isFile
 
     /** Downloaded before the catalog switched to the file with the MTP head (same name, smaller). */
-    val isOlderCopy: Boolean get() = (catalog?.olderBelow ?: 0L) > 0 && file.length() in 1 until catalog!!.olderBelow
+    val isOlderCopy: Boolean get() = !legacy && (catalog?.olderBelow ?: 0L) > 0 && file.length() in 1 until catalog!!.olderBelow
 }
 
 data class DownloadState(
@@ -453,7 +548,10 @@ class ModelStore(private val context: Context) {
         (dir.listFiles() ?: emptyArray())
             .filter { it.isFile && it.name.endsWith(".gguf", ignoreCase = true) }
             .sortedBy { it.name.lowercase() }
-            .map { LocalModel(it, Catalog.byFile(it.name)) }
+            .map { f ->
+                val c = Catalog.byFile(f.name)
+                if (c != null) LocalModel(f, c) else Catalog.byLegacyFile(f.name)?.let { LocalModel(f, it, legacy = true) } ?: LocalModel(f, null)
+            }
 
     fun find(fileName: String): LocalModel? = local().firstOrNull { it.file.name == fileName }
 

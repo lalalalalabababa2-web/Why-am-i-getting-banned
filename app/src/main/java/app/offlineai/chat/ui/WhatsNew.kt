@@ -7,9 +7,26 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 3
+    const val VERSION = 4
 
     private val ITEMS = listOf(
+        "Lighter E4B models" to "Gemma 4 E4B and E2B now download Google's own 4-bit trained versions: 4.2 GB " +
+            "instead of 5, 2.6 GB in memory instead of 3, and faster on the phone's processor, with the same " +
+            "answers. Nemotron Bolt and the uncensored E4B got lighter files too. An older copy you already have " +
+            "keeps working and shows under Your files with the lighter one to download.",
+        "Memory, measured" to "The app now reads each model's file to see how much of it has to stay in memory, " +
+            "instead of guessing from its size, and picks fast or low-memory mode from that.",
+        "Tools" to "Translate (37 languages), Humanize, Summarize, Fix grammar, Rewrite, Shorten, More formal or " +
+            "casual, Bullet points, Explain simply, Write a reply, Notes to email. From the chat's empty screen, " +
+            "the model menu, or a message's long-press menu.",
+        "Made for one job" to "Index-Translate 2B (150 languages, also text in photos) and Humanizer 12B; Tools uses " +
+            "them when they are on the phone.",
+        "New models" to "LFM3 1.7B and LFM3-VL 2B from Liquid AI, and Ternary Bonsai 2 27B (Qwen3.8 27B) for two phones.",
+        "Better pictures" to "FLUX.2 klein 4B and Z-Image Turbo: they follow long prompts and can write words into " +
+            "the picture.",
+        "Ping Pong" to "Real table tennis now: a regulation table in perspective, a ball that flies and bounces, " +
+            "rackets, the rules (first to 11, serve every two points) and the sounds.",
+        "Faster engine" to "llama.cpp b12670, with the app's own ARM kernels moved onto it.",
         "Encrypted" to "Chats, Memory, characters and paired phones are now encrypted on the phone with a key kept in " +
             "its Keystore, and the app's code is scrambled so it is hard to read if the APK is taken apart.",
         "Reply versions" to "Write again keeps the earlier replies: flip between them with the arrows under the last " +

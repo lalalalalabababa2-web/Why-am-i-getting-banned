@@ -136,7 +136,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         content.addView(card().apply {
             addView(text("Make pictures from words", 17f, bold = true))
             addView(text(
-                "DreamShaper XL Turbo and RealVisXL Lightning (SDXL, 2.8 GB, the best looking), Realistic Vision 6, " +
+                "New: FLUX.2 klein 4B and Z-Image Turbo, which follow long prompts and can write words into the " +
+                    "picture. Also DreamShaper XL Turbo and RealVisXL Lightning (SDXL, 2.8 GB), Realistic Vision 6, " +
                     "SD-Turbo, SDXS 512 (683 MB, about 8 s a picture) and more. They run here on the phone, like the " +
                     "chat models, and carry on in the background." +
                     if (here > 0) " $here on this phone." else "",
@@ -167,9 +168,13 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("Pictures and video",
             "From 2B to 8B. They look at photos, screenshots and documents, and at videos as a few frames with their " +
                 "times. Add picture support on a model's row once it is here.",
-            listOf("qwen3vl-2b", "lfm25-vl-3b", "qwen3vl-4b", "qwen3vl-8b"))
+            listOf("lfm3-vl-2b", "qwen3vl-2b", "lfm25-vl-3b", "qwen3vl-4b", "qwen3vl-8b"))
+        group("Translate and rewrite",
+            "Made for one job each. Tools (on the chat screen's menu) uses them when they are on the phone, and any " +
+                "chat model otherwise.",
+            listOf("index-translate-2b", "humanizer-12b"))
         group("Small and fast", "Under 2 GB. Quick replies, light on memory and battery; they know less.",
-            listOf("qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b", "llama32-1b", "qwen35-0.8b", "gemma3-270m"))
+            listOf("lfm3-1.7b", "qwen35-2b", "lfm25-vl-1.6b", "lfm25-1.2b", "llama32-1b", "qwen35-0.8b", "gemma3-270m"))
         group("More 3-4B models", null, listOf("llama32-3b", "ministral3-3b", "granite41-3b", "phi4-mini"))
         group("Community", "Qwen3.5 4B tuned by people outside Alibaba.",
             listOf("qwopus35-4b-v3", "qwopus35-4b-coder", "qwen38-4b", "teichai-qwen35-4b", "adi-qwen35-4b-glm"))
@@ -177,7 +182,7 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
             "Community copies of the models above with their refusals removed. They answer what the originals decline; " +
                 "what they say is up to you to judge.",
             listOf("abl-gemma4-e4b", "abl-qwen35-4b", "abl-spark-x26-4b", "abl-gemma4-e2b", "abl-qwen35-2b", "abl-llama32-3b",
-                "abl-lfm25-1.2b", "abl-qwen35-9b", "abl-qwen3vl-8b"))
+                "abl-lfm3-1.7b", "abl-lfm25-1.2b", "abl-qwen35-9b", "abl-qwen3vl-8b"))
         group("Bigger models",
             "8B to 27B, squeezed to 1-3 bits. Smarter on hard questions, but they need almost all of an 8 GB phone's " +
                 "free memory and write more slowly. Close other apps before loading one.",
@@ -185,18 +190,26 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
         group("For two or more phones",
             "Too big for one phone: they run across your phones on the same Wi-Fi, each holding part of the model " +
                 "(Settings, Phones together). Every word waits for the Wi-Fi, so they write slowly, but they know far more.",
-            listOf("qwen35-27b", "gemma4-31b", "gemma4-26b-a4b", "qwen35-35b-a3b"))
+            listOf("bonsai2-27b", "qwen35-27b", "gemma4-31b", "gemma4-26b-a4b", "qwen35-35b-a3b"))
         // anything in the catalog not placed above still shows
         group("Other", null, Catalog.models.map { it.id }.filter { it !in placed })
 
         val local = app.models.local()
         knownLocal = local.map { it.file.name }.toSet()
-        val others = local.filter { it.catalog == null }
+        val others = local.filter { it.catalog == null || it.legacy }
         if (others.isNotEmpty() || importing != null) {
             val header = sectionTitle("Your files")
             content.addView(header)
             sections += Section(listOf(header), others.map { f ->
-                Row(f.file.name, null, f.displayName, "Added by you", null).also { addRow(it) }
+                val c = f.catalog
+                if (f.legacy && c != null) {
+                    Row(f.file.name, null, f.displayName, c.maker,
+                        "An older, heavier copy of ${c.name}. The ${c.name} above needs ${ModelStore.formatBytes(c.residentBytes)} " +
+                            "of memory instead of ${ModelStore.formatBytes(f.memBytes)} and writes faster: download it, then delete this one.",
+                    ).also { addRow(it) }
+                } else {
+                    Row(f.file.name, null, f.displayName, "Added by you", null).also { addRow(it) }
+                }
             })
         }
         importing?.let { (name, pct) ->

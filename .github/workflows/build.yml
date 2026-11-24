@@ -112,6 +112,8 @@ jobs:
           gcc -O2 -std=c11 -mcpu=native -I third_party/llama.cpp/ggml/src tools/host-test/test_kernels.c -lm -o tk-native
           gcc -O2 -std=c11 -march=armv8-a -I third_party/llama.cpp/ggml/src tools/host-test/test_kernels.c -lm -o tk-v80
           (./tk-native && ./tk-v80) 2>&1 | tee real.log
+          # the same kernels inside ggml's mul_mat (rows four at a time, 2x2 and 4x4, split row streams)
+          tools/host-test/q1q2_mulmat.sh 2>&1 | grep -v '^CMAKE' | tee -a real.log
 
       - name: Run
         env:
@@ -133,6 +135,21 @@ jobs:
           sudo systemd-run --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
             timeout 900 "$OUT/test_engine_real" "$OUT/models" third_party/llama.cpp real-models --one real-models/Bonsai-27B-Q1_0.gguf 2>&1 \
             | sed 's/^SPEED: /SPEED: [3 GB] /' | tee -a real.log || echo "  (stopped or failed: $?)" | tee -a real.log
+      # Google's 4-bit trained Gemma 4 files (all Q4_0, what the app now downloads) against the
+      # plain Q4_K_M one, each with ggml's own ARM kernels and with Arm's KleidiAI kernels.
+      - name: Gemma 4 QAT and KleidiAI
+        if: matrix.cpu == 'arm64'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "real-models/$2" "https://huggingface.co/$1/resolve/main/$2"; }
+          get unsloth/gemma-4-E2B-it-qat-GGUF gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf
+          get unsloth/gemma-4-E4B-it-qat-GGUF gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf
+          get LiquidAI/LFM3-1.7B-GGUF LFM3-1.7B-QAD-Q4_0.gguf
+          tools/host-test/bench_kleidiai.sh real-models/gemma-4-E2B-it-Q4_K_M.gguf \
+            real-models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf real-models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \
+            real-models/LFM3-1.7B-QAD-Q4_0.gguf 2>&1 | tee -a real.log
+
       # GitHub keeps at most 10 notices a step, so the results go out as a few multi-line ones.
       - name: Results
         if: always()
@@ -510,14 +527,14 @@ jobs:
     name: Picture models (arm64)
     if: inputs.only == 'images'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           submodules: true
 
       - name: Tools
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build python3-pil
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build python3-pil time
 
       - name: Build
         run: |
@@ -547,6 +564,34 @@ jobs:
               $T m/$1.gguf "$P" pictures/$1-$threads.ppm 512 512 $2 1 42 $threads $3 $D 2>&1 | grep -E "generated|failed" || true
             done
           done
+
+      # The newer models in parts (FLUX.2 klein 4B, Z-Image Turbo): a diffusion model, the Qwen3 4B
+      # text encoder they share, and a decoder each. Time and peak memory for each picture.
+      - name: Make pictures (FLUX.2 klein, Z-Image)
+        continue-on-error: true
+        run: |
+          cd m
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$1" "https://huggingface.co/$2/resolve/main/$3"; ls -la "$1"; }
+          get klein.gguf leejet/FLUX.2-klein-4B-GGUF flux-2-klein-4b-Q4_0.gguf
+          get zimage.gguf leejet/Z-Image-Turbo-GGUF z_image_turbo-Q3_K.gguf
+          get qwen3-4b.gguf unsloth/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf
+          get flux2-vae.safetensors Comfy-Org/Flux-2-Klein-4B split_files/vae/flux2-vae.safetensors
+          get flux1-vae.safetensors Comfy-Org/Z-Image-Turbo split_files/vae/ae.safetensors
+          cd ..
+          T=build/image-test/sdtest
+          P="a photograph of an orange tabby cat sitting on a windowsill, soft morning light, a handwritten sign that says HELLO"
+          for spec in "klein 4 flux2-vae" "zimage 8 flux1-vae"; do
+            set -- $spec
+            for size in 512 768; do
+              echo "== $1 at $size, 4 threads"
+              /usr/bin/time -f "  peak memory %M KB" $T m/$1.gguf "$P" pictures/$1-$size.ppm $size $size $2 1 42 4 euler "" "" \
+                m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|generated|failed|peak memory" || true
+            done
+          done
+
+      - name: Pictures to PNG
+        if: always()
+        run: |
           python3 -c "
           import glob
           from PIL import Image

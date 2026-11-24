@@ -1,4 +1,5 @@
-// sdtest <model> <prompt> <out.ppm> [width height steps cfg seed threads sampler taesd scheduler]
+// sdtest <model> <prompt> <out.ppm> [width height steps cfg seed threads sampler taesd scheduler llm vae]
+// With an llm (text encoder) given, <model> is the diffusion model of a model in parts (FLUX.2 klein, Z-Image).
 #include "stable-diffusion.h"
 #include <chrono>
 #include <cmath>
@@ -34,7 +35,14 @@ int main(int argc, char ** argv) {
     sd_set_progress_callback(progress_cb, nullptr);
     sd_ctx_params_t cp;
     sd_ctx_params_init(&cp);
-    cp.model_path = argv[1];
+    const bool parts = argc > 13 && argv[13][0];
+    if (parts) {
+        cp.diffusion_model_path = argv[1];
+        cp.llm_path = argv[13];
+        if (argc > 14 && argv[14][0]) cp.vae_path = argv[14];
+    } else {
+        cp.model_path = argv[1];
+    }
     cp.n_threads = threads;
     cp.enable_mmap = true;
     if (argc > 11 && argv[11][0]) cp.taesd_path = argv[11];

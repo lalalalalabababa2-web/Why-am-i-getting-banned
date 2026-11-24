@@ -12,7 +12,7 @@ import java.util.concurrent.Executors
  * [cancel] works from anywhere.
  */
 object PictureEngine {
-    @JvmStatic private external fun nativeLoad(path: ByteArray, taesd: ByteArray?, threads: Int): ByteArray?
+    @JvmStatic private external fun nativeLoad(spec: ByteArray, threads: Int): ByteArray?
     @JvmStatic private external fun nativeUnload()
     @JvmStatic private external fun nativeCancel()
     @JvmStatic private external fun nativeLastError(): ByteArray
@@ -21,7 +21,7 @@ object PictureEngine {
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "pictures").apply { priority = Thread.MAX_PRIORITY } }
     private val main = Handler(Looper.getMainLooper())
 
-    /** The model loaded now ("" for none), as path|decoder|threads. */
+    /** The model loaded now ("" for none), as path|parts|threads. */
     @Volatile var loadedKey: String = ""
         private set
 
@@ -53,16 +53,29 @@ object PictureEngine {
     /** Asked to stop: also skips a picture whose model is still loading. Cleared by the next [make]. */
     @Volatile private var stopped = false
 
-    fun make(model: String, decoder: String?, threads: Int, request: Request, events: Events) {
+    /**
+     * The files of one picture model: [model] alone for Stable Diffusion files, which hold
+     * everything; with [llm] (its text encoder) and [vae] for the newer ones, whose diffusion
+     * model is the [model] file. [decoder]: the tiny decoder, if it uses one.
+     */
+    data class Files(val model: String, val decoder: String? = null, val llm: String? = null, val vae: String? = null) {
+        fun spec(): String = JSONObject().apply {
+            if (llm != null) put("diffusion", model).put("llm", llm) else put("model", model)
+            if (vae != null) put("vae", vae)
+            if (decoder != null) put("taesd", decoder)
+        }.toString()
+    }
+
+    fun make(files: Files, threads: Int, request: Request, events: Events) {
         busy = true
         stopped = false
         worker.execute {
             val t0 = System.currentTimeMillis()
-            val key = "$model|${decoder.orEmpty()}|$threads"
+            val key = "${files.model}|${files.decoder.orEmpty()}|${files.llm.orEmpty()}|${files.vae.orEmpty()}|$threads"
             var error: String? = null
             if (loadedKey != key) {
                 loadedKey = ""
-                error = nativeLoad(model.toByteArray(), decoder?.toByteArray(), threads)?.let { String(it) }
+                error = nativeLoad(files.spec().toByteArray(), threads)?.let { String(it) }
                 if (error == null) loadedKey = key
             }
             var picture: Bitmap? = null

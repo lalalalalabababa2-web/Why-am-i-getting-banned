@@ -531,8 +531,9 @@ class ChatController(private val app: App) {
             last = j
         }
 
+        val catalog = app.models.find(model.key)?.catalog
         val sampling = if (s.useRecommendedSampling) {
-            val r = familyOf(model).recommended()
+            val r = catalog?.sampling ?: familyOf(model).recommended()
             JSONObject().put("temp", r.temp.toDouble()).put("top_p", r.topP.toDouble())
                 .put("top_k", r.topK).put("min_p", r.minP.toDouble()).put("repeat_penalty", r.repeat.toDouble())
         } else {
@@ -540,11 +541,12 @@ class ChatController(private val app: App) {
                 .put("top_k", s.topK).put("min_p", s.minP.toDouble()).put("repeat_penalty", s.repeatPenalty.toDouble())
         }
         sampling.put("max_tokens", s.maxTokens).put("seed", -1)
-        if (s.thinking) sampling.put("thinking_budget", s.thinkingBudget)
+        val thinking = s.thinking && catalog?.noThinking != true
+        if (thinking) sampling.put("thinking_budget", s.thinkingBudget)
 
         val request = JSONObject()
             .put("messages", messages)
-            .put("thinking", s.thinking)
+            .put("thinking", thinking)
             .put("now_ms", conversation.createdAt)
             .put("sampling", sampling)
         val team = teamSize()

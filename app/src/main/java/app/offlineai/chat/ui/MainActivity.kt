@@ -295,6 +295,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_image)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
             compoundDrawablePadding = dp(8)
         }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
+        empty.addView(pill("Translate, humanize, fix text") { startActivity(Intent(this, ToolsActivity::class.java)) }.apply {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_refresh)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
+            compoundDrawablePadding = dp(8)
+        }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(text("About & credits", 13f, Palette.text3).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1081,6 +1086,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 startActivity(Intent(this, PhonesActivity::class.java))
             }
             .item("Pictures", R.drawable.ic_image, "Make pictures from words") { openPictures() }
+            .item("Tools", R.drawable.ic_refresh, "Translate, humanize, summarize, fix grammar, rewrite") {
+                startActivity(Intent(this, ToolsActivity::class.java))
+            }
             .show()
     }
 

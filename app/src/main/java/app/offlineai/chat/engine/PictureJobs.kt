@@ -81,8 +81,16 @@ class PictureJobs(private val app: App) {
 
     fun modelFile(m: PictureModel) = File(app.models.dir, m.key)
     fun decoderFile(m: PictureModel): File? = m.decoder?.let { File(app.models.dir, it.key) }
+    fun partFile(p: app.offlineai.chat.data.PictureCatalog.Part): File = File(app.models.dir, p.key)
 
-    fun ready(m: PictureModel): Boolean = modelFile(m).isFile && (decoderFile(m)?.isFile ?: true)
+    fun ready(m: PictureModel): Boolean =
+        modelFile(m).isFile && (decoderFile(m)?.isFile ?: true) && m.parts.all { partFile(it).isFile }
+
+    /** The files the engine loads for [m]. */
+    fun files(m: PictureModel) = PictureEngine.Files(
+        model = modelFile(m).path, decoder = decoderFile(m)?.path,
+        llm = m.llm?.let { partFile(it).path }, vae = m.vae?.let { partFile(it).path },
+    )
 
     /** Queues a picture; refused (null) when the prompt crosses [PictureLine]. */
     fun add(prompt: String, style: String, model: PictureModel, width: Int, height: Int, steps: Int, seed: Long): Job? {
@@ -120,7 +128,9 @@ class PictureJobs(private val app: App) {
      */
     private fun makeRoom(m: PictureModel) {
         if (app.engine.loaded == null || app.engine.isBusy || app.chat.generating) return
-        val need = modelFile(m).length() + (if (m.xl) 2_000_000_000L else 900_000_000L)
+        // the newer models read the prompt first (text encoder), then let it go for the diffusion model
+        val need = modelFile(m).length() + m.parts.sumOf { if (it == m.llm) 0L else it.sizeBytes } +
+            (if (m.llm != null) 1_500_000_000L else if (m.xl) 2_000_000_000L else 900_000_000L)
         if (app.availableRam() < need) {
             app.engine.unload()
             chatPutAway = true
@@ -159,7 +169,7 @@ class PictureJobs(private val app: App) {
             width = j.width, height = j.height,
             steps = j.steps, cfg = j.model.cfg, seed = j.seed, sampler = j.model.sampler, scheduler = j.model.scheduler,
         )
-        PictureEngine.make(modelFile(j.model).path, decoderFile(j.model)?.path, app.threadsNow(), request, object : PictureEngine.Events {
+        PictureEngine.make(files(j.model), app.threadsNow(), request, object : PictureEngine.Events {
             override fun onProgress(stage: String, done: Long, total: Long) {
                 if (current !== j) return
                 this@PictureJobs.stage = stage

@@ -69,7 +69,7 @@ class PicturesTest {
         val done = CountDownLatch(1)
         inst.runOnMainSync {
             PictureEngine.make(
-                model.path, null, 3,
+                PictureEngine.Files(model.path), 3,
                 PictureEngine.Request("a red apple on a wooden table", "", 512, 512, steps, 1f, 7, "euler_a"),
                 object : PictureEngine.Events {
                     override fun onProgress(stage: String, done: Long, total: Long) {

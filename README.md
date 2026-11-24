@@ -10,7 +10,7 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 | | |
 |---|---|
-| Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp) release b11700, as a submodule in `third_party/llama.cpp` |
+| Engine | [llama.cpp](https://github.com/ggml-org/llama.cpp) release b12670, as a submodule in `third_party/llama.cpp` |
 | Pictures | [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (pinned, `third_party/stable-diffusion.cpp`) on llama.cpp's ggml |
 | Model format | GGUF, any architecture llama.cpp supports (Gemma 4, Qwen3.5 and its fine-tunes, Qwen3-VL, Spark-X2.6, Llama, Mistral, …) |
 | Platform | Android 11+ (API 30), arm64-v8a |
@@ -19,8 +19,13 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 ## What it does
 
-- **Pictures**: words in, a picture out, on the phone. Seven picture models, each tried on real
-  prompts first. Best looking: DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four
+- **Pictures**: words in, a picture out, on the phone. Nine picture models, each tried on real
+  prompts first. Best: FLUX.2 klein 4B (Black Forest Labs, Apache 2.0, 4 steps) and Z-Image Turbo
+  (Alibaba, 8 steps), the newer kind of model that reads the prompt with a real language model
+  (Qwen3 4B, one 2.5 GB file both share), so they follow long prompts and can write words into
+  the picture; FLUX.2 klein made a 512 px picture in 5.4 minutes on four x86 cores here (256 px in
+  2.6). They come in three files (diffusion model, text encoder, decoder), which the app downloads
+  and loads together. Then DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four
   x86 cores), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
   512 px, 6 steps). Quick ones, timed at 512 px on four ARM cores in CI: SDXS 512 (683 MB, 1
   step, 7.4 s), SD-Turbo (2 steps, 29.5 s), DreamShaper DMD2 (56 s) and DreamShaper 8 LCM (60 s).
@@ -55,8 +60,22 @@ browser when Android asks. New builds install over old ones and keep models and 
 - **First start**: the empty chat suggests one model for the phone's memory (Gemma 4 E4B on an
   8 GB phone, smaller ones on phones with less), downloads it in one tap with its progress shown,
   and loads it the moment it is on the phone.
-- **Models screen**: 41 models from 270M to 27B that fit 8 GB of memory, and 4 more (Qwen3.5 27B
-  and 35B-A3B, Gemma 4 31B and 26B-A4B) for two or three phones together, grouped by what they
+- **Tools**: Translate (37 languages), Humanize, Summarize, Fix grammar, Rewrite, Shorten, More
+  formal, More casual, Bullet points, Explain simply, Write a reply, Notes to email. Paste text, get
+  the result to copy or share; nothing is saved to the chats. Translate and Humanize use a model
+  made for the job when it is on the phone (Index-Translate 2B with the prompt it was trained on,
+  Humanizer 12B through its own template), and any chat model otherwise; a model loaded for a tool
+  is swapped back for the chat's model on the way out. From the empty chat, the model menu, or a
+  message's long-press menu.
+- **Memory, measured**: `data/GgufScan.kt` reads each model file's tensor table and counts what has
+  to stay in memory while it writes: everything but Gemma's per-layer embeddings (and the token
+  embeddings when there is a separate output layer), which are only looked up a row at a time.
+  Fast or low-memory mode, and the 8-bit conversation memory when free memory is tight, are
+  decided from that. Before, Gemma's "E" models were counted at half their file size and always
+  loaded in fast mode: Gemma 4 E4B Q4_K_M keeps 3.0 GB busy, not 2.5, and NVIDIA's 5.06 GB Bolt
+  file 3.5 GB, which on an 8 GB phone with other apps open is more than there is.
+- **Models screen**: 46 models from 270M to 27B that fit 8 GB of memory, and 5 more (Ternary Bonsai 2
+  27B, Qwen3.5 27B and 35B-A3B, Gemma 4 31B and 26B-A4B) for two or three phones together, grouped by what they
   are good for, downloaded through Android's download manager (carries on with the app closed,
   resumes after a dropped connection, checked for size and GGUF format when done). Models that
   can see get an "Add picture support" button for their projector file. Also takes any `.gguf`
@@ -153,15 +172,16 @@ browser when Android asks. New builds install over old ones and keep models and 
 
 | Group | Models |
 |---|---|
-| Best for this phone | Gemma 4 E4B, Nemotron 3.5 Bolt E4B (NVIDIA, on Gemma 4 E4B; pictures, sound, a DFlash drafter), Qwen3.5 4B, Ternary Bonsai 2 9B, Gemma 4 E2B |
+| Best for this phone | Gemma 4 E4B and E2B (Google's 4-bit trained QAT weights, all Q4_0: 4.2 and 2.6 GB, 2.6 and 1.3 GB in memory), Nemotron 3.5 Bolt E4B (NVIDIA, on Gemma 4 E4B; UD-Q3_K_XL, 2.6 GB in memory), Qwen3.5 4B, Ternary Bonsai 2 9B |
 | New: Spark-X2.6 | Spark-X2.6 4B and 1.7B: iFlytek's on-device models from October 2026, for agent-style work (plans, tools, code); they think before answering |
-| Pictures and video | Qwen3-VL 2B, 4B and 8B, LFM2.5-VL 3B (with a DSpark drafter); photos, screenshots, documents, and videos as frames with their times |
-| Small and fast | Qwen3.5 2B and 0.8B, LFM2.5-VL 1.6B, LFM2.5 1.2B, Llama 3.2 1B, Gemma 3 270M |
+| Pictures and video | LFM3-VL 2B, Qwen3-VL 2B, 4B and 8B, LFM2.5-VL 3B (with a DSpark drafter); photos, screenshots, documents, and videos as frames with their times |
+| Translate and rewrite | Index-Translate 2B (bilibili, on Qwen3.5 2B: 150 languages, text in photos too), Humanizer 12B (on Gemma 4 12B, 2-bit QAT, 3.9 GB) |
+| Small and fast | LFM3 1.7B (Liquid's October 2026 model, QAD Q4_0), Qwen3.5 2B and 0.8B, LFM2.5-VL 1.6B, LFM2.5 1.2B, Llama 3.2 1B, Gemma 3 270M |
 | More 3-4B models | Llama 3.2 3B, Ministral 3 3B, Granite 4.1 3B, Phi-4-mini |
 | Community fine-tunes | Qwopus3.5 4B v3 and Coder, Qwen3.8 4B, Qwen3.5 4B Claude Reasoning, ADI Qwen3.5 4B GLM-5.2 |
-| Uncensored (abliterated) | Gemma 4 E4B and E2B, Qwen3.5 4B, 2B and 9B Opus, Qwen3-VL 8B, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed; Spark-X2.6 4B by FrostWolfAI |
+| Uncensored (abliterated) | Gemma 4 E4B (SC117's Heretic copy of the QAT weights, 4.2 GB), Gemma 4 E2B, Qwen3.5 4B, 2B and 9B Opus, Qwen3-VL 8B, Llama 3.2 3B, LFM2.5 1.2B: community copies by huihui-ai with refusals removed; Spark-X2.6 4B by FrostWolfAI; LFM3 1.7B by AtomicChat |
 | Bigger | Ornith 1.5 9B (Qwen3.5 9B trained further for code and agents), LFM2.5 8B-A1B, Qwen3.5 9B (two sizes), Gemma 4 12B, Bonsai 27B (1-bit) |
-| For two or more phones | Qwen3.5 27B and Gemma 4 31B (about 2.5 bits, 8.5 GB: two 8 GB phones), Gemma 4 26B-A4B and Qwen3.5 35B-A3B (mixtures of experts, 10-11 GB: three 8 GB phones or two with 12 GB) |
+| For two or more phones | Ternary Bonsai 2 27B (Qwen3.8 27B with weights of -1, 0, +1, 7.6 GB, this app's Q2_0 kernels), Qwen3.5 27B and Gemma 4 31B (about 2.5 bits, 8.5 GB: two 8 GB phones), Gemma 4 26B-A4B and Qwen3.5 35B-A3B (mixtures of experts, 10-11 GB: three 8 GB phones or two with 12 GB) |
 
 From Hugging Face, mostly Q4_K_M; the bigger ones are squeezed to about 3 bits (or 1-2 bits for
 Bonsai) to fit. The community ones are fine-tunes by individuals; their makers' benchmark claims
@@ -210,10 +230,17 @@ thread.
 - Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
   Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
 
-## Changes to llama.cpp
+## Changes to llama.cpp and stable-diffusion.cpp
 
-`third_party/patches/` holds the app's own changes, applied to the submodule at build time by
-`apply.sh` (the Android build and the test scripts run it): the RPC client failing a step instead
+`third_party/patches/` holds the app's own changes, applied to the submodules at build time by
+`apply.sh` (the Android build and the test scripts run it). For b12670 they were moved onto
+ggml's new mul_mat, which runs a multi-row kernel's rows as separate streams of the chunk: the
+4x4 kernels write four streams by four columns, and a fourth case in its de-interleave puts them
+back (`tools/host-test/test_q1q2_mulmat.c` checks 324 shapes against a plain reference, with and
+without int8 matrix multiply, on ARM or under qemu-aarch64; a deliberately broken de-interleave
+fails 70 of them). stable-diffusion.cpp (pinned at its Nov 13 commit; master has a new API) uses
+one op that ggml dropped, `ggml_diag_mask_inf`, in an audio decoder the app never loads;
+`sd/0001` builds the same causal mask with `ggml_tri` over `ggml_fill(-inf)`. Then: the RPC client failing a step instead
 of ending the app when another phone goes away (0002), and faster ARM NEON dot products for the
 Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
 the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
@@ -346,8 +373,12 @@ git submodule update --init
 
 - Never run on a real phone by its author: built and tested on desktop and in CI only.
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
-- Spark-X2.6's own DSpark drafters (attention gates, sliding windows) and Liquid's LFM3-VL need a
-  newer llama.cpp than b11700; the app offers neither until that update.
+- Spark-X2.6's own DSpark drafters are not offered yet (llama.cpp b12670 can now run LFM3-VL, which
+  the app offers).
+- Arm's KleidiAI kernels (`GGML_CPU_KLEIDIAI`) are off until CI's ARM runner shows them faster than
+  ggml's own for the Q4_0 files: `tools/host-test/bench_kleidiai.sh` measures both.
+- FLUX.2 klein and Z-Image have run on desktop cores only; their memory next to a loaded chat
+  model on a phone is untested (the picture queue puts the chat model away when memory is short).
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
 - Making pictures has run on desktop and ARM CPUs (tools/image-test, the "images" CI run), not

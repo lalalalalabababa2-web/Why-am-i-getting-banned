@@ -107,20 +107,34 @@ void unload_locked() {
 extern "C" {
 
 // Loads a picture model (the chat engine's backends must be loaded first: NativeEngine.init).
+// [jspec] is JSON: "model" (one file with everything in it, Stable Diffusion 1/2/XL), or
+// "diffusion" with its "llm" text encoder and "vae" (FLUX.2 klein, Z-Image); "taesd" optional.
 // Returns null, or why it could not be loaded.
 JNIEXPORT jbyteArray JNICALL
-Java_app_offlineai_chat_engine_PictureEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jpath, jbyteArray jtaesd, jint threads) {
+Java_app_offlineai_chat_engine_PictureEngine_nativeLoad(JNIEnv * env, jclass, jbyteArray jspec, jint threads) {
     std::lock_guard<std::mutex> lock(g_mu);
-    const std::string path = from_bytes(env, jpath);
-    const std::string taesd = from_bytes(env, jtaesd);
-    const std::string key = path + "|" + taesd + "|" + std::to_string(threads);
+    json spec;
+    try {
+        spec = json::parse(from_bytes(env, jspec));
+    } catch (...) {
+        return to_bytes(env, std::string("Bad picture model description."));
+    }
+    const std::string path = spec.value("model", std::string());
+    const std::string diffusion = spec.value("diffusion", std::string());
+    const std::string llm = spec.value("llm", std::string());
+    const std::string vae = spec.value("vae", std::string());
+    const std::string taesd = spec.value("taesd", std::string());
+    const std::string key = path + "|" + diffusion + "|" + llm + "|" + vae + "|" + taesd + "|" + std::to_string(threads);
     if (g_ctx && g_key == key) return nullptr;
     unload_locked();
     sd_set_log_callback(log_cb, nullptr);
     g_error.clear();
     sd_ctx_params_t cp;
     sd_ctx_params_init(&cp);
-    cp.model_path = path.c_str();
+    if (!path.empty()) cp.model_path = path.c_str();
+    if (!diffusion.empty()) cp.diffusion_model_path = diffusion.c_str();
+    if (!llm.empty()) cp.llm_path = llm.c_str();
+    if (!vae.empty()) cp.vae_path = vae.c_str();
     if (!taesd.empty()) cp.taesd_path = taesd.c_str();
     cp.n_threads = threads > 0 ? threads : 4;
     cp.enable_mmap = true;   // the weights stay in the file: less memory, and loading is instant
