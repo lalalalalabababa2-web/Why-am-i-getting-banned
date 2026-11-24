@@ -565,8 +565,9 @@ jobs:
           done
 
       # The newer models in parts (FLUX.2 klein 4B, Z-Image Turbo): a diffusion model, the Qwen3 4B
-      # text encoder they share, and a decoder each. Time and peak memory for each picture, with the
-      # diffusion weights in the CPU's repacked layout (the app) and, for comparison, without it.
+      # text encoder they share, and a decoder each. Time and peak memory for each picture as the app
+      # makes it, decoded in tiles (as when memory is short), and as it was before
+      # third_party/patches/sd/0002 (plain weights, the prompt padded to 512 tokens).
       - name: Make pictures (FLUX.2 klein, Z-Image)
         continue-on-error: true
         run: |
@@ -580,15 +581,17 @@ jobs:
           cd ..
           T=build/image-test/sdtest
           P="a photograph of an orange tabby cat sitting on a windowsill, soft morning light, a handwritten sign that says HELLO"
-          run() {  # name steps vae size repack tag
-            echo "== $1 at $4, 4 threads, repacked weights: $5"
-            SD_CPU_REPACK=$5 /usr/bin/time -f "  peak memory %M KB" $T m/$1.gguf "$P" pictures/$1-$4-$6.ppm $4 $4 $2 1 42 4 euler "" "" \
-              m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|repacked|generated|failed|peak memory" || true
+          run() {  # name steps vae size tag [VAR=value ...]
+            local name=$1 steps=$2 vae=$3 size=$4 tag=$5; shift 5
+            echo "== $name at $size, 4 threads, $tag"
+            env "$@" /usr/bin/time -f "  peak memory %M KB" $T m/$name.gguf "$P" pictures/$name-$size-$tag.ppm $size $size $steps 1 42 4 euler "" "" \
+              m/qwen3-4b.gguf m/$vae.safetensors 2>&1 | grep -E "loaded|repacked|generated|failed|peak memory" || true
           }
-          run klein 4 flux2-vae 512 1 repacked
-          run klein 4 flux2-vae 512 0 plain
-          run zimage 8 flux1-vae 512 1 repacked
-          run klein 4 flux2-vae 768 1 repacked
+          run klein 4 flux2-vae 512 app
+          run klein 4 flux2-vae 512 app-tiled SDTEST_TILED=1
+          run klein 4 flux2-vae 512 before SD_CPU_REPACK=0 SD_KLEIN_PAD=512
+          run zimage 8 flux1-vae 512 app
+          run klein 4 flux2-vae 768 app
 
       - name: Pictures to PNG
         if: always()

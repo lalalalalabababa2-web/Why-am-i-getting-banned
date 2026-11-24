@@ -45,6 +45,7 @@ int main(int argc, char ** argv) {
     }
     cp.n_threads = threads;
     cp.enable_mmap = true;
+    cp.diffusion_flash_attn = true;  // as the app loads it
     if (argc > 11 && argv[11][0]) cp.taesd_path = argv[11];
     auto t0 = std::chrono::steady_clock::now();
     sd_ctx_t * ctx = new_sd_ctx(&cp);
@@ -63,6 +64,7 @@ int main(int argc, char ** argv) {
     gp.sample_params.guidance.txt_cfg = cfg;
     if (argc > 10 && argv[10][0]) gp.sample_params.sample_method = str_to_sample_method(argv[10]);
     if (argc > 12 && argv[12][0]) gp.sample_params.scheduler = str_to_scheduler(argv[12]);
+    gp.vae_tiling_params.enabled = std::getenv("SDTEST_TILED") != nullptr;  // as the app does when memory is short
     sd_set_generation_progress_callback(ctx, gen_progress_cb, nullptr);
     sd_set_preview_callback(preview_cb, PREVIEW_PROJ, 1, true, false, nullptr);
     t0 = std::chrono::steady_clock::now();

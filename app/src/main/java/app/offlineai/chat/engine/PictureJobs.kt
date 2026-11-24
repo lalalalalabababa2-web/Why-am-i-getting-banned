@@ -125,16 +125,25 @@ class PictureJobs(private val app: App) {
      * A picture model next to a big chat model can be more than the phone has: Android then ends
      * the app. With too little free memory for the picture model and its working memory, the chat
      * model (when it is not writing) is unloaded first and loaded again when the pictures are done.
+     * Returns true when memory is still short: the picture is then decoded in tiles.
      */
-    private fun makeRoom(m: PictureModel) {
-        if (app.engine.loaded == null || app.engine.isBusy || app.chat.generating) return
-        // the newer models read the prompt first (text encoder), then let it go for the diffusion model
-        val need = modelFile(m).length() + m.parts.sumOf { if (it == m.llm) 0L else it.sizeBytes } +
-            (if (m.llm != null) 1_500_000_000L else if (m.xl) 2_000_000_000L else 900_000_000L)
-        if (app.availableRam() < need) {
+    private fun makeRoom(j: Job): Boolean {
+        val m = j.model
+        // the newer models read the prompt first (text encoder), then let it go for the diffusion
+        // model; the last part is decoding, which grows with the picture's size
+        val pixels = j.width.toLong() * j.height / (512L * 512L).toDouble()
+        val decode = (if (m.llm != null) 1_500_000_000L else if (m.xl) 2_000_000_000L else 900_000_000L) * pixels
+        val need = modelFile(m).length() + m.parts.sumOf { if (it == m.llm) 0L else it.sizeBytes } + decode.toLong()
+        if (app.availableRam() >= need) return false
+        val chat = app.engine.loaded
+        if (chat != null && !app.engine.isBusy && !app.chat.generating) {
+            // the chat model's memory comes back as it unloads
+            val freed = app.models.find(chat.key)?.let { app.estimatedRam(it) } ?: 0L
             app.engine.unload()
             chatPutAway = true
+            return app.availableRam() + freed < need
         }
+        return true
     }
 
     private fun next() {
@@ -156,7 +165,7 @@ class PictureJobs(private val app: App) {
             changed()
             return
         }
-        makeRoom(j.model)
+        val short = makeRoom(j)
         PictureService.start(app)
         changed()
         val st = PictureStyles.byName(j.style)
@@ -168,6 +177,7 @@ class PictureJobs(private val app: App) {
             ).filter { it.isNotEmpty() }.joinToString(", "),
             width = j.width, height = j.height,
             steps = j.steps, cfg = j.model.cfg, seed = j.seed, sampler = j.model.sampler, scheduler = j.model.scheduler,
+            tiled = short,
         )
         PictureEngine.make(files(j.model), app.threadsNow(), request, object : PictureEngine.Events {
             override fun onProgress(stage: String, done: Long, total: Long) {

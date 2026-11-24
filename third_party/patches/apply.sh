@@ -5,8 +5,9 @@
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
 #   0002-rpc-survives-lost-phone.patch: a phone that leaves the Wi-Fi fails a step, not the app
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
-#   sd/0002-cpu-repacked-diffusion-weights.patch: the picture model's weights in the CPU's own matmul
-#     layout (llama.cpp's repacking), as the chat models have them
+#   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
+#     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
+#     prompt is read, and FLUX.2 klein's prompt left unpadded (512 tokens in the reference)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../llama.cpp"

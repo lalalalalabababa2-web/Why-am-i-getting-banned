@@ -39,6 +39,8 @@ object PictureEngine {
         val sampler: String,
         /** The noise schedule ("" for the model's own). */
         val scheduler: String = "",
+        /** Decode the picture in tiles: about 1.2 GB less memory at 512 px, a little slower. */
+        val tiled: Boolean = false,
     )
 
     interface Events {
@@ -90,6 +92,7 @@ object PictureEngine {
                     .put("seed", request.seed)
                     .put("sampler", request.sampler)
                     .put("scheduler", request.scheduler)
+                    .put("tiled", request.tiled)
                 val listener = object : PictureListener {
                     override fun onProgress(stage: String, done: Long, total: Long) {
                         main.post { events.onProgress(stage, done, total) }

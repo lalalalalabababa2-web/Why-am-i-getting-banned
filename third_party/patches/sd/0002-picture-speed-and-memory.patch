@@ -1,3 +1,18 @@
+diff --git a/src/conditioning/conditioner.hpp b/src/conditioning/conditioner.hpp
+index 31aa493..8dea8a9 100644
+--- a/src/conditioning/conditioner.hpp
++++ b/src/conditioning/conditioner.hpp
+@@ -3164,7 +3164,9 @@ struct LLMEmbedder : public Conditioner {
+             prompt += "<|im_end|>\n<|im_start|>assistant\n";
+         } else if (version == VERSION_FLUX2_KLEIN) {
+             prompt_template_encode_start_idx = 0;
+-            min_length                       = 512;
++            // The reference pads the prompt to 512 tokens. Unpadded, a 512 px picture takes 28% less
++            // time (more at smaller sizes) with no visible change in tests; SD_KLEIN_PAD=512 restores it.
++            min_length = getenv("SD_KLEIN_PAD") ? atoi(getenv("SD_KLEIN_PAD")) : 0;
+             out_layers                       = {9, 18, 27};
+ 
+             prompt = "<|im_start|>user\n";
 diff --git a/src/core/ggml_extend.cpp b/src/core/ggml_extend.cpp
 index 52d9cfc..e8ce744 100644
 --- a/src/core/ggml_extend.cpp
@@ -13,6 +28,48 @@ index 52d9cfc..e8ce744 100644
          int64_t ne2 = x->ne[2];
          int64_t ne3 = x->ne[3];
          x           = ggml_reshape_2d(ctx, x, x->ne[0], x->ne[1] * x->ne[2] * x->ne[3]);
+diff --git a/src/core/util.cpp b/src/core/util.cpp
+index 9de1ace..7e81c84 100644
+--- a/src/core/util.cpp
++++ b/src/core/util.cpp
+@@ -335,6 +335,24 @@ bool MmapWrapper::copy_data(void* buf, size_t n, size_t offset) const {
+     return true;
+ }
+ 
++void MmapWrapper::release(size_t offset, size_t n) const {
++#if !defined(_WIN32)
++    if (offset >= size_ || n > (size_ - offset)) {
++        return;
++    }
++    const uintptr_t page  = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
++    const uintptr_t begin = reinterpret_cast<uintptr_t>(data()) + offset;
++    const uintptr_t first = (begin + page - 1) & ~(page - 1);
++    const uintptr_t last  = (begin + n) & ~(page - 1);
++    if (last > first) {
++        madvise(reinterpret_cast<void*>(first), last - first, MADV_DONTNEED);
++    }
++#else
++    (void)offset;
++    (void)n;
++#endif
++}
++
+ // get_num_physical_cores is copy from
+ // https://github.com/ggerganov/llama.cpp/blob/master/examples/common.cpp
+ // LICENSE: https://github.com/ggerganov/llama.cpp/blob/master/LICENSE
+diff --git a/src/core/util.h b/src/core/util.h
+index 0929f60..a2ab006 100644
+--- a/src/core/util.h
++++ b/src/core/util.h
+@@ -65,6 +65,8 @@ public:
+     uint8_t* writable_data() { return static_cast<uint8_t*>(data_); }
+     size_t size() const { return size_; }
+     bool copy_data(void* buf, size_t n, size_t offset) const;
++    // Drops this process's pages of a range already copied elsewhere; the file stays mapped.
++    void release(size_t offset, size_t n) const;
+ 
+ protected:
+     MmapWrapper(void* data, size_t size)
 diff --git a/src/model/common/ggml_block.hpp b/src/model/common/ggml_block.hpp
 index 805b868..235c421 100644
 --- a/src/model/common/ggml_block.hpp
@@ -88,11 +145,27 @@ index 43df4d3..c07abb9 100644
          bool control_enabled() const {
              return z_image.control_enabled;
          }
+diff --git a/src/model_loader.cpp b/src/model_loader.cpp
+index 9e88711..8269da2 100644
+--- a/src/model_loader.cpp
++++ b/src/model_loader.cpp
+@@ -1383,6 +1383,11 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
+ 
+                         std::lock_guard<std::mutex> lock(backend_tensor_set_mutex);
+                         ggml_backend_tensor_set(dst_tensor, convert_buf, 0, ggml_nbytes(dst_tensor));
++                        if (mmapped) {
++                            // The weights now live in the backend's buffer (a GPU's, or the CPU's
++                            // repacked layout), so the file's pages need not stay in this process.
++                            mmapped->release(tensor_storage.offset, nbytes_to_read);
++                        }
+ 
+                         t1 = ggml_time_ms();
+                         copy_to_backend_time_ms.fetch_add(t1 - t0);
 diff --git a/src/model_manager.cpp b/src/model_manager.cpp
-index bfdf262..4cde1cb 100644
+index bfdf262..115c46f 100644
 --- a/src/model_manager.cpp
 +++ b/src/model_manager.cpp
-@@ -2,6 +2,8 @@
+@@ -2,11 +2,18 @@
  
  #include <algorithm>
  #include <cstdint>
@@ -101,7 +174,17 @@ index bfdf262..4cde1cb 100644
  #include <iterator>
  #include <mutex>
  #include <tuple>
-@@ -83,6 +85,9 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
+ #include <unordered_set>
+ 
++#if !defined(_WIN32)
++#include <sys/mman.h>
++#include <unistd.h>
++#endif
++
+ #include "core/ggml_extend_backend.h"
+ #include "core/util.h"
+ #include "model/adapter/lora.hpp"
+@@ -83,6 +90,9 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
          op_tensor         = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
          op_tensor->op     = op;
          op_tensor->src[0] = weight;
@@ -111,7 +194,7 @@ index bfdf262..4cde1cb 100644
      }
      if (op_tensor == nullptr) {
          ggml_free(ctx);
-@@ -101,6 +106,28 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
+@@ -101,6 +111,55 @@ static bool device_supports_param_op(ggml_backend_dev_t device,
      return supported;
  }
  
@@ -137,10 +220,37 @@ index bfdf262..4cde1cb 100644
 +    return types;
 +}
 +
++void ModelManager::release_mapped_pages(ModelComponent component) {
++#if !defined(_WIN32)
++    if (writable_mmap_) {
++        return;  // LoRAs were merged into these pages; dropping them would lose that
++    }
++    const uintptr_t page = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
++    for (const auto& block : params_storage_blocks_) {
++        if (block == nullptr || block->mmap_tensor_stores.empty()) {
++            continue;
++        }
++        for (TensorState* state : block->states) {
++            if (state == nullptr || state->component != component || state->tensor == nullptr || state->tensor->data == nullptr) {
++                continue;
++            }
++            const uintptr_t begin = reinterpret_cast<uintptr_t>(state->tensor->data);
++            const uintptr_t first = (begin + page - 1) & ~(page - 1);
++            const uintptr_t last  = (begin + ggml_nbytes(state->tensor)) & ~(page - 1);
++            if (last > first) {
++                madvise(reinterpret_cast<void*>(first), last - first, MADV_DONTNEED);
++            }
++        }
++    }
++#else
++    (void)component;
++#endif
++}
++
  ModelManager::~ModelManager() {
      release_all();
      release_prefetch();
-@@ -877,6 +904,9 @@ bool ModelManager::can_mmap_storage(const TensorState& state) const {
+@@ -877,6 +936,9 @@ bool ModelManager::can_mmap_storage(const TensorState& state) const {
      if (state.compute_backend == nullptr || state.params_backend == nullptr) {
          return false;
      }
@@ -150,7 +260,7 @@ index bfdf262..4cde1cb 100644
      return sd_backend_is_cpu(state.compute_backend) ||
             sd_backend_is_cpu(state.params_backend) ||
             backend_supports_host_buffer(state.compute_backend);
-@@ -918,6 +948,11 @@ bool ModelManager::alloc_params_buffers(const std::vector<TensorState*>& states,
+@@ -918,6 +980,11 @@ bool ModelManager::alloc_params_buffers(const std::vector<TensorState*>& states,
                  return false;
              }
              ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
@@ -162,7 +272,7 @@ index bfdf262..4cde1cb 100644
  
              std::vector<ggml_tensor*> initialized_tensors;
              void* base    = ggml_backend_buffer_get_base(buffer);
-@@ -1132,7 +1167,36 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
+@@ -1132,7 +1199,36 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
      return true;
  }
  
@@ -199,7 +309,7 @@ index bfdf262..4cde1cb 100644
      if (state.params_backend == nullptr) {
          LOG_ERROR("model manager params backend is null for tensor '%s'", state.name.c_str());
          return nullptr;
-@@ -1149,7 +1213,7 @@ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorStat
+@@ -1149,7 +1245,7 @@ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorStat
      if (params_buft == nullptr) {
          params_buft = ggml_backend_get_default_buffer_type(state.params_backend);
      }
@@ -209,14 +319,21 @@ index bfdf262..4cde1cb 100644
          ggml_backend_dev_t compute_dev = ggml_backend_get_device(state.compute_backend);
          if (device_supports_param_op(compute_dev, state.tensor, state.usage_op, params_buft)) {
 diff --git a/src/model_manager.h b/src/model_manager.h
-index f592a63..93f7483 100644
+index f592a63..e15baf7 100644
 --- a/src/model_manager.h
 +++ b/src/model_manager.h
-@@ -144,6 +144,7 @@ private:
+@@ -144,6 +144,14 @@ private:
      static std::vector<TensorStorage> find_tensor_sources(const TensorState& state, const String2TensorStorage& sources);
      bool load_tensor_parts(TensorState& state);
      bool can_mmap_storage(const TensorState& state) const;
 +    ggml_backend_buffer_type_t repack_buffer_type_for(const TensorState& state) const;
++
++public:
++    // Drops this process's pages of a component's mmapped weights; they fault back in from the
++    // file when next used. For text encoders, which run once at the start of a picture.
++    void release_mapped_pages(ModelComponent component);
++
++private:
      bool alloc_params_buffers(const std::vector<TensorState*>& states,
                                std::vector<ParamsStorageBlock*>& created_storage_blocks);
      bool load_tensors(const std::vector<TensorState*>& states);
@@ -233,3 +350,17 @@ index 5666680..eef68a1 100644
          model->get_param_tensor_ops(tensor_ops);
      }
      if (model_manager == nullptr) {
+diff --git a/src/pipeline/image.cpp b/src/pipeline/image.cpp
+index 5e7a349..98a7955 100644
+--- a/src/pipeline/image.cpp
++++ b/src/pipeline/image.cpp
+@@ -660,6 +660,9 @@ namespace sd::pipeline {
+ 
+         int64_t t1 = ggml_time_ms();
+         LOG_INFO("get_learned_condition completed, taking %.2fs", (t1 - prepare_start_ms) * 1.0f / 1000);
++        if (sd->model_manager) {
++            sd->model_manager->release_mapped_pages(ModelComponent::Conditioner);
++        }
+ 
+         ImageGenerationEmbeds embeds;
+         embeds.img_uncond = std::move(img_uncond);
