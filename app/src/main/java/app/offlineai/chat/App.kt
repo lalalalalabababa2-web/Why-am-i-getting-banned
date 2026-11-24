@@ -391,15 +391,23 @@ class App : Application() {
         }
     }
 
+    /** Counts load requests, so one that waited for the other phones does not undo a newer one. */
+    private var loadRequests = 0
+
     fun loadModel(model: LocalModel, onDone: ((String?) -> Unit)? = null) {
         settings.lastModelFile = model.file.name
+        val request = ++loadRequests
         if (::phones.isInitialized) {
             phones.changed = false
             // the other phones were not asked lately: ask first (a few seconds), so the model is
             // split with the ones that are there
             if (phones.needsFreshLook()) {
                 engine.preparing(model.file.name, model.displayName)
-                phones.lookThen { loadModelNow(model, onDone) }
+                phones.lookThen {
+                    // a model chosen while it asked (the one loaded on opening, then yours) goes ahead alone
+                    if (request == loadRequests) loadModelNow(model, onDone)
+                    else onDone?.invoke("Another model was chosen while this one waited.")
+                }
                 return
             }
         }
