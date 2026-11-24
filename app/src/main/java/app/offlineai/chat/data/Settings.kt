@@ -83,6 +83,13 @@ class Settings(context: Context) {
     var kvQ8: Boolean
         get() = bool("kv_q8", false)
         set(v) = put("kv_q8", v)
+    /**
+     * The model leaves memory after a while away from the app (or in the game), so the phone and
+     * other apps keep their memory and Android does not close Nyx for it; it loads again on return.
+     */
+    var freeWhileAway: Boolean
+        get() = bool("free_while_away", true)
+        set(v) = put("free_while_away", v)
     var promptBatch: Int
         get() = int("prompt_batch", 256)
         set(v) = put("prompt_batch", v)

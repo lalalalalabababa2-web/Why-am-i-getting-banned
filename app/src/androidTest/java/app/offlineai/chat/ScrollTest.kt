@@ -44,6 +44,7 @@ class ScrollTest {
 
     @Before
     fun setUp() {
+        app.settings.freeWhileAway = false
         app.settings.autoFollow = true
         app.settings.jumpButton = true
         app.settings.streamIntervalMs = 16

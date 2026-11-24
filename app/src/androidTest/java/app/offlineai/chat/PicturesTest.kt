@@ -49,7 +49,10 @@ class PicturesTest {
     private val app = inst.targetContext.applicationContext as App
 
     @Before
-    fun setUp() = TestDevice.wake()
+    fun setUp() {
+        TestDevice.wake()
+        (InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as App).settings.freeWhileAway = false
+    }
 
     private fun find(root: View, match: (View) -> Boolean): View? {
         if (match(root)) return root

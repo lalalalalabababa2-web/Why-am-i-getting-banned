@@ -474,6 +474,7 @@ class ChatController(private val app: App) {
             parts += String.format(Locale.US, "%.1f tokens per step", o.nGenerated.toDouble() / o.nSteps)
         }
         if (o.nMedia > 0) {
+            app.mediaUsed()
             val what = if (o.nMedia == 1) "1 attachment" else "${o.nMedia} attachments"
             parts += String.format(Locale.US, "read %s in %.1fs", what, o.tMediaMs / 1000.0)
         }

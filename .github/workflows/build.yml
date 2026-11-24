@@ -115,6 +115,8 @@ jobs:
           (./tk-native && ./tk-v80) 2>&1 | tee real.log
           # the same kernels inside ggml's mul_mat (rows four at a time, 2x2 and 4x4, split row streams)
           tools/host-test/q1q2_mulmat.sh 2>&1 | grep -v '^CMAKE' | tee -a real.log
+          # attention while writing (fa-decode.inc) against ggml's reference, and how fast
+          tools/host-test/fa_decode.sh 2>&1 | grep -v '^CMAKE' | tee -a real.log
 
       - name: Run
         env:
@@ -634,15 +636,14 @@ jobs:
           get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
           get unsloth/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
           get unsloth/gemma-4-E2B-it-qat-GGUF gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf
-          get unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-Q4_K_M.gguf
           nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
 
       - name: Run
         run: |
           set -o pipefail
+          tools/host-test/fa_decode.sh 2>&1 | grep -v '^CMAKE' | tee real.log
           tools/host-test/bench_versions.sh 23f7aabc16c72f6f707dba227251c35d7bd1ed96 \
-            real-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf real-models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf \
-            real-models/Qwen3.5-4B-Q4_K_M.gguf 2>&1 | tee real.log
+            real-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf real-models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf 2>&1 | tee -a real.log
 
       - name: Results
         if: always()

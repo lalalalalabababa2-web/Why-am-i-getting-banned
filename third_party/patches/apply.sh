@@ -4,6 +4,8 @@
 #
 #   0001-q1q2-neon.patch + q1q2-neon.inc: faster ARM dot products for Q1_0 and Q2_0 (Bonsai)
 #   0002-rpc-survives-lost-phone.patch: a phone that leaves the Wi-Fi fails a step, not the app
+#   0003-fa-decode-grouped.patch + fa-decode.inc: attention while writing reads each K/V row once
+#     for all the query heads that share it (grouped-query attention), in blocks of 16 positions
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
 #   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
 #     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
@@ -12,11 +14,14 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../llama.cpp"
 SD="$HERE/../stable-diffusion.cpp"
-INC="$SRC/ggml/src/ggml-cpu/arch/arm/q1q2-neon.inc"
-if ! cmp -s "$HERE/q1q2-neon.inc" "$INC"; then
-  cp "$HERE/q1q2-neon.inc" "$INC.tmp.$$"
-  mv -f "$INC.tmp.$$" "$INC"
-fi
+copy() {
+  if ! cmp -s "$1" "$2"; then
+    cp "$1" "$2.tmp.$$"
+    mv -f "$2.tmp.$$" "$2"
+  fi
+}
+copy "$HERE/q1q2-neon.inc" "$SRC/ggml/src/ggml-cpu/arch/arm/q1q2-neon.inc"
+copy "$HERE/fa-decode.inc" "$SRC/ggml/src/ggml-cpu/fa-decode.inc"
 for p in "$HERE"/*.patch; do
   if (cd "$SRC" && git apply --reverse --check "$p" 2>/dev/null); then
     continue  # already in

@@ -7,9 +7,20 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 4
+    const val VERSION = 5
 
     private val ITEMS = listOf(
+        "No more crashes from a long context" to "A context size bigger than the phone's free memory can hold no " +
+            "longer slows a model to a crawl or gets Nyx closed: each model gets as much of it as fits, measured " +
+            "for that model when it loads, and the top of the chat says \"fit to memory\" when it was lowered.",
+        "Faster long chats" to "Writing no longer slows down as much as a chat grows: a new way of reading the " +
+            "conversation memory reads it once for all the parts of the model that share it, instead of up to " +
+            "eight times.",
+        "Free memory while away" to "Two minutes after you leave Nyx (or while the game is open), the model " +
+            "leaves memory so the phone stays quick and Android does not close Nyx for it. It loads again when " +
+            "you come back. Settings, Free memory while away.",
+        "Message box" to "Pressing Enter in an empty box no longer makes it tall and empty, and the chat fades out " +
+            "behind the box instead of showing through under it.",
         "Lighter E4B models" to "Gemma 4 E4B and E2B now download Google's own 4-bit trained versions: 4.2 GB " +
             "instead of 5, 2.6 GB in memory instead of 3, and faster on the phone's processor, with the same " +
             "answers. Nemotron Bolt and the uncensored E4B got lighter files too. An older copy you already have " +

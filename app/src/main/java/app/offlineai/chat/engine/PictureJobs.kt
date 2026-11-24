@@ -160,7 +160,7 @@ class PictureJobs(private val app: App) {
                 chatPutAway = false
                 PictureEngine.unload()
                 // after the picture model has let go (and the chat engine has finished unloading)
-                main.postDelayed({ if (current == null) app.loadLastModel() }, 800)
+                main.postDelayed({ if (current == null) app.bringModelBack() }, 800)
             }
             changed()
             return

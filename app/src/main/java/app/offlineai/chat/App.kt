@@ -141,11 +141,16 @@ class App : Application() {
             override fun onActivityStarted(activity: android.app.Activity) {
                 started++
                 if (started == 1) frontChanged(true)
+                if (activity !is PongActivity && ++chatScreens == 1) chatScreensChanged(true)
             }
 
             override fun onActivityStopped(activity: android.app.Activity) {
                 started = (started - 1).coerceAtLeast(0)
                 if (started == 0) frontChanged(false)
+                if (activity !is PongActivity) {
+                    chatScreens = (chatScreens - 1).coerceAtLeast(0)
+                    if (chatScreens == 0) chatScreensChanged(false)
+                }
             }
 
             override fun onActivityCreated(activity: android.app.Activity, state: android.os.Bundle?) {
@@ -201,6 +206,59 @@ class App : Application() {
         if (!front && settings.disguised) lockTimer.postDelayed(lock, 60_000)
         applyBackground()
         if (front) GenerationService.clearReplyReady(this)
+    }
+
+    // ---------------------------------------------------------------- memory while away
+
+    /** The app's own screens (not the game) that are visible. */
+    private var chatScreens = 0
+    /** How long the app is away before the model leaves memory (see [Settings.freeWhileAway]); shorter in tests. */
+    internal var awayMs = 120_000L
+    private val awayTimer = android.os.Handler(android.os.Looper.getMainLooper())
+    /** The model left memory while the app was away; it loads again with the next screen. */
+    private var letGoWhileAway = false
+    private val letGo = object : Runnable {
+        override fun run() {
+            if (chatScreens > 0 || !settings.freeWhileAway || engine.loaded == null) return
+            // a reply or a picture still being made in the background keeps it: look again later
+            if (engine.isBusy || chat.generating || pictureJobs.current != null) {
+                awayTimer.postDelayed(this, awayMs)
+                return
+            }
+            letGoWhileAway = true
+            engine.unloadPartner()
+            engine.unload()
+        }
+    }
+
+    private fun chatScreensChanged(shown: Boolean) {
+        awayTimer.removeCallbacks(letGo)
+        if (!shown) {
+            awayTimer.postDelayed(letGo, awayMs)
+        } else if (letGoWhileAway) {
+            letGoWhileAway = false
+            loadLastModel()
+        }
+    }
+
+    /**
+     * The model's picture and sound part (300-900 MB) leaves memory a few minutes after the last
+     * attachment it read; it loads again with the next one.
+     */
+    private val mediaRelease = object : Runnable {
+        override fun run() {
+            if (engine.isBusy) awayTimer.postDelayed(this, 60_000) else engine.releaseMedia()
+        }
+    }
+
+    fun mediaUsed() {
+        awayTimer.removeCallbacks(mediaRelease)
+        awayTimer.postDelayed(mediaRelease, 180_000)
+    }
+
+    /** The chat model was put away for something else (a picture): back now, or on return if the app is away. */
+    fun bringModelBack() {
+        if (chatScreens == 0 && settings.freeWhileAway) letGoWhileAway = true else loadLastModel()
     }
 
     /** Gentle writing while another app is in front, if the setting says so. */
@@ -532,6 +590,12 @@ class App : Application() {
         }
 
         val reason = info?.reason
+        // Android closing the app in the background for memory, with the engine idle, is how
+        // Android works, not a crash: no report (the model loads again on opening)
+        val backgroundKill = reason == ApplicationExitInfo.REASON_LOW_MEMORY &&
+            (info?.importance ?: 0) >= ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE &&
+            activity?.startsWith("loading:") != true && activity?.startsWith("writing:") != true
+        if (backgroundKill && javaCrash == null) return null
         val abnormal = javaCrash != null || reason in setOf(
             ApplicationExitInfo.REASON_CRASH, ApplicationExitInfo.REASON_CRASH_NATIVE,
             ApplicationExitInfo.REASON_LOW_MEMORY, ApplicationExitInfo.REASON_ANR,

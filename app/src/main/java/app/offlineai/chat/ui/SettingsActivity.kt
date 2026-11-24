@@ -87,6 +87,10 @@ class SettingsActivity : AppCompatActivity() {
         choice("Memory mode", s.memoryMode.help + reloadNote, MemoryMode.values().map { it.label }, s.memoryMode.ordinal) {
             s.memoryMode = MemoryMode.values()[it]
         }
+        switch("Free memory while away",
+            "After two minutes in another app or in the game, the model leaves memory so the phone stays quick and Android " +
+                "does not close Nyx for it. It loads again when you come back (a few seconds). A reply being written finishes first.",
+            s.freeWhileAway) { s.freeWhileAway = it }
         switch("Compact conversation memory",
             "Stores the conversation memory at 8 bits: half the memory for long chats, very slightly less exact.$reloadNote",
             s.kvQ8) { s.kvQ8 = it }

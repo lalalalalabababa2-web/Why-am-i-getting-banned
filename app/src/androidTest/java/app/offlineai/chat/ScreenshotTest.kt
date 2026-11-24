@@ -53,6 +53,7 @@ class ScreenshotTest {
 
     @Before
     fun wake() {
+        (inst.targetContext.applicationContext as App).settings.freeWhileAway = false
         if (wanted) TestDevice.wake()
     }
 

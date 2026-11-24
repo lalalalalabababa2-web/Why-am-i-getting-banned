@@ -26,12 +26,17 @@ for kind in old new; do
 done
 for m in "$@"; do
   name=$(basename "$m" .gguf)
-  for kind in old new; do
+  # "new" is llama.cpp as the app has it, with Offline AI's attention for writing (fa-decode.inc);
+  # "new-plain" the same with ggml's own attention path
+  for kind in old new-plain new; do
+    bin="$OUT/bench-${kind%-plain}/bin/llama-bench"
+    plain=$([ "$kind" = new-plain ] && echo 1 || echo "")
     for cache in f16 q8_0; do
       for fa in 0 1; do
-        # a quantized V cache needs flash attention
+        # a quantized V cache needs flash attention; without flash attention the paths are the same
         [ "$cache" = q8_0 ] && [ "$fa" = 0 ] && continue
-        "$OUT/bench-$kind/bin/llama-bench" -m "$m" -t "$THREADS" -p 0 -n 32 -d 0,2048,4096,8192 -r 2 \
+        [ "$kind" = new-plain ] && { [ "$fa" = 0 ] || [ "$cache" = q8_0 ]; } && continue
+        OA_FA_PLAIN=$plain "$bin" -m "$m" -t "$THREADS" -p 0 -n 32 -d 0,4096,8192 -r 1 \
           -fa "$fa" -ctk "$cache" -ctv "$cache" -o csv 2>/dev/null | python3 -c '
 import csv, sys
 kind, name, cache, fa = sys.argv[1:5]

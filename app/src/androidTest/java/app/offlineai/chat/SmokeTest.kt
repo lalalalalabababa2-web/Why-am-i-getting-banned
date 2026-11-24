@@ -56,6 +56,8 @@ class SmokeTest {
     @Before
     fun setUp() {
         TestDevice.wake()
+        // the model leaving memory two minutes after the last screen closed would come in the middle of other tests
+        app.settings.freeWhileAway = false
         onMain { app.chat.stop() }
         val end = SystemClock.uptimeMillis() + 60_000
         while (SystemClock.uptimeMillis() < end && app.chat.generating && app.engine.isBusy) Thread.sleep(100)
@@ -317,6 +319,27 @@ class SmokeTest {
     private fun installed(asset: String): File {
         val have = File(app.models.dir, asset)
         return if (have.isFile && have.length() > 0) have else installModel(asset)
+    }
+
+    /** A while away from the app (half a second here), the model leaves memory; it loads again with the chat screen. */
+    @Test
+    fun modelLeavesMemoryWhileAway() {
+        app.settings.contextSize = 2048
+        load(installed("test-llama.gguf"))
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        try {
+            app.awayMs = 500
+            app.settings.freeWhileAway = true
+            // stopped: no screen of the app in sight
+            scenario.moveToState(androidx.lifecycle.Lifecycle.State.CREATED)
+            waitFor("the model to leave memory", 15_000) { app.engine.loaded == null && !app.engine.isBusy }
+            scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+            waitFor("the model to load again", 60_000) { app.engine.loaded?.key == "test-llama.gguf" }
+        } finally {
+            app.settings.freeWhileAway = false
+            app.awayMs = 120_000
+            scenario.close()
+        }
     }
 
     /** Working together: two answers then a review, by the model alone and with a partner model next to it. */

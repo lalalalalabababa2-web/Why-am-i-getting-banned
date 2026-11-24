@@ -85,6 +85,7 @@ class PhonesTest {
     @Test
     fun aModelSplitWithAnotherPhone() {
         val s = app.settings
+        s.freeWhileAway = false
         s.contextSize = 2048
         s.maxTokens = 24
         s.threads = 2

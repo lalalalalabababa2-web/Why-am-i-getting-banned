@@ -1,0 +1,31 @@
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index 26b4a01c..12a063b5 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -9579,6 +9579,9 @@ static void ggml_flash_attn_ext_reduce_partials(
+     }
+ }
+ 
++// Offline AI: one query, grouped-query attention, each K/V row read once for all its heads
++#include "fa-decode.inc"
++
+ static void ggml_compute_forward_flash_attn_ext_f16(
+         const ggml_compute_params * params,
+         ggml_tensor * dst) {
+@@ -9648,10 +9651,12 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+         float *       chunk_partials = partials_base + ith * partial_size;
+ 
+         if (ic_start < nek1) {
+-            for (int64_t q_head = 0; q_head < neq2; q_head++) {
+-                ggml_compute_forward_flash_attn_ext_f16_one_chunk(
+-                    params, dst, q_head, q_head + 1, ic_start, ic_end,
+-                    chunk_partials, partial_stride);
++            if (!oa_fa_decode_grouped(params, dst, ic_start, ic_end, chunk_partials, partial_stride)) {
++                for (int64_t q_head = 0; q_head < neq2; q_head++) {
++                    ggml_compute_forward_flash_attn_ext_f16_one_chunk(
++                        params, dst, q_head, q_head + 1, ic_start, ic_end,
++                        chunk_partials, partial_stride);
++                }
+             }
+         } else {
+             for (int64_t q_head = 0; q_head < neq2; q_head++) {
