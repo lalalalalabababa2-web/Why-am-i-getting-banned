@@ -7,15 +7,17 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 5
+    const val VERSION = 6
 
     private val ITEMS = listOf(
         "No more crashes from a long context" to "A context size bigger than the phone's free memory can hold no " +
             "longer slows a model to a crawl or gets Nyx closed: each model gets as much of it as fits, measured " +
             "for that model when it loads, and the top of the chat says \"fit to memory\" when it was lowered.",
-        "Faster long chats" to "Writing no longer slows down as much as a chat grows: a new way of reading the " +
-            "conversation memory reads it once for all the parts of the model that share it, instead of up to " +
-            "eight times.",
+        "Faster long chats" to "Writing no longer slows down as much as a chat grows: the conversation memory " +
+            "is read once for all the parts of the model that share it, instead of up to eight times, with half " +
+            "the work per step on most phones. Long chats now write faster than before the engine update, and " +
+            "bigger models using the smaller 8-bit memory (when the phone is short of it) are up to half again " +
+            "as fast.",
         "Free memory while away" to "Two minutes after you leave Nyx (or while the game is open), the model " +
             "leaves memory so the phone stays quick and Android does not close Nyx for it. It loads again when " +
             "you come back. Settings, Free memory while away.",

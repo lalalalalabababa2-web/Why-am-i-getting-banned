@@ -298,6 +298,12 @@ ggml's own path: 1.3 ms instead of 2.8 (Llama 3.2 1B's shape), 0.9 instead of 2.
 (no 16-bit arithmetic: the oldest phones) it ranges from 3% slower to 1.8 times faster.
 `OA_FA_PLAIN=1` turns it off.
 
+Whole models writing with 4096 and 8192 tokens in memory on the ARM runner (`bench_versions.sh`,
+tokens/s): Llama 3.2 1B 25.3 and 20.1 (b11700: 23.6 and 18.0; b12670 without `0003`: 19.2 and
+13.0), with the 8-bit memory 25.9 and 20.5 (b11700: 20.0 and 13.2); Gemma 4 E2B 23.6 and 20.7
+(b11700: 21.6 and 19.4; without `0003`: 16.4 and 13.1), with the 8-bit memory 21.8 and 19.7
+(b11700: 18.5 and 15.3).
+
 ## Tests
 
 `tools/host-test/run.sh` builds llama.cpp for the computer it runs on, makes tiny random models
