@@ -133,11 +133,7 @@ class PictureJobs(private val app: App) {
      */
     private fun makeRoom(j: Job): Boolean {
         val m = j.model
-        // the newer models read the prompt first (text encoder), then let it go for the diffusion
-        // model; the last part is decoding, which grows with the picture's size
-        val pixels = j.width.toLong() * j.height / (512L * 512L).toDouble()
-        val decode = (if (m.llm != null) 1_500_000_000L else if (m.xl) 2_000_000_000L else 900_000_000L) * pixels
-        val need = modelFile(m).length() + m.parts.sumOf { if (it == m.llm) 0L else it.sizeBytes } + decode.toLong()
+        val need = m.memoryFor(j.width, j.height, weights = modelFile(m).length())
         if (app.availableRam() >= need) return false
         val chat = app.engine.loaded
         if (chat != null && !app.engine.isBusy && !app.chat.generating) {

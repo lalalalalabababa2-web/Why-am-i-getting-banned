@@ -51,6 +51,26 @@ data class PictureModel(
     val parts: List<PictureCatalog.Part> get() = listOfNotNull(llm, vae)
     /** Everything it downloads (parts it shares with another model come once). */
     val totalBytes: Long get() = sizeBytes + parts.sumOf { it.sizeBytes }
+
+    /**
+     * Memory while it makes a [w]×[h] picture from a model file of [weights] bytes: the model and its
+     * decoder, then the working memory and decode, which grow with the pixels (in tiles the decode
+     * stays near 0.5 GB). The newer models' text encoder is let go before the decode, so it does not
+     * count. Measured peaks: FLUX.2 klein 4.7 GB at 512 px, 6.9 GB at 768, 3.4 GB in tiles; Z-Image
+     * 5.8 GB at 512 (CI's ARM runner); DreamShaper XL with its tiny decoder 3.3 GB at 768 px.
+     */
+    fun memoryFor(w: Int, h: Int, tiled: Boolean = false, weights: Long = sizeBytes): Long {
+        val pixels = w.toLong() * h / (512.0 * 512.0)
+        val perPixels = when {
+            llm != null -> 1_750_000_000L  // the full FLUX decoders
+            decoder != null -> 250_000_000L  // the tiny decoders
+            else -> 900_000_000L
+        }
+        val whole = (perPixels * pixels).toLong()
+        val decode = if (tiled) minOf(whole, 500_000_000L) else whole
+        val rest = parts.sumOf { if (it == llm) 0L else it.sizeBytes } + (if (llm != null) 200_000_000L else 0L)
+        return weights + rest + decode
+    }
 }
 
 object PictureCatalog {

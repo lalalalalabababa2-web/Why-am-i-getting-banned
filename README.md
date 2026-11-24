@@ -28,7 +28,10 @@ browser when Android asks. New builds install over old ones and keep models and 
   minutes at 5.8 GB. They come in three files (diffusion model, text encoder, decoder), which the
   app downloads and loads together. When memory is still short after the chat model is put away,
   the picture is decoded in tiles (3.4 GB instead of 4.7 at 512 px, a minute or two slower).
-  Then DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four x86 cores), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
+  A model that will not fit the phone's memory even then is marked "too big for this phone" and
+  asks before downloading; one that only fits in tiles says so.
+  Then DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 117 s on four x86 cores at a 3.3 GB
+  peak, so the chat model can usually stay loaded), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
   512 px, 6 steps). Quick ones, timed at 512 px on four ARM cores in CI: SDXS 512 (683 MB, 1
   step, 7.4 s), SD-Turbo (2 steps, 29.5 s), DreamShaper DMD2 (56 s) and DreamShaper 8 LCM (60 s).
   Decoding uses TAESD / TAESDXL, which halves the time with no visible change. Pictures are made

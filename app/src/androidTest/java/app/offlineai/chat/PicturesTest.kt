@@ -184,6 +184,23 @@ class PicturesTest {
         }
     }
 
+    /** The memory the app plans for, against the peaks measured (CI's ARM runner, a desktop for SDXL). */
+    @Test
+    fun memoryEstimatesMatchMeasuredPeaks() {
+        fun near(id: String, size: Int, tiled: Boolean, measuredKb: Long) {
+            val m = PictureCatalog.models.first { it.id == id }
+            val est = m.memoryFor(size, size, tiled)
+            val measured = measuredKb * 1024
+            Log.i("OfflineAI-Test", "$id $size px${if (tiled) " tiled" else ""}: plans ${est / 1_000_000} MB, measured ${measured / 1_000_000} MB")
+            assertTrue("$id at $size px: plans $est, measured $measured", est in measured * 9 / 10..measured * 11 / 10)
+        }
+        near("flux2-klein", 512, false, 4_700_132)
+        near("flux2-klein", 512, true, 3_443_288)
+        near("flux2-klein", 768, false, 6_857_392)
+        near("z-image-turbo", 512, false, 5_766_916)
+        near("dreamshaper-xl", 768, false, 3_386_368)
+    }
+
     @Test
     fun picturesScreenOpens() {
         ActivityScenario.launch(PicturesActivity::class.java).use { sc ->

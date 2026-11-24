@@ -22,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -294,9 +295,40 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
 
     private fun ready(m: PictureModel): Boolean = jobs.ready(m)
 
-    private fun download(m: PictureModel) {
+    /** What this phone leaves a picture model: Android and the apps behind it keep the rest. */
+    private fun memoryBudget(): Long = (app.totalRam * 0.75).toLong()
+
+    /** Memory [m] needs at its own size even when the picture is decoded in tiles, when that is more than the phone can give. */
+    private fun tooBigBy(m: PictureModel): Long? =
+        m.memoryFor(m.native, m.native, tiled = true).takeIf { it > memoryBudget() }
+
+    /** A line on how [m] fits this phone's memory; null when it fits with room to spare. */
+    private fun memoryNote(m: PictureModel): String? {
+        val need = tooBigBy(m)
+        return when {
+            need != null -> "Too big for this phone: needs about ${ModelStore.formatBytes(need)} of memory, " +
+                "it has ${ModelStore.formatBytes(app.totalRam)} in all"
+            m.memoryFor(m.native, m.native) > memoryBudget() -> "Tight on this phone: the picture is decoded in parts, a little slower"
+            else -> null
+        }
+    }
+
+    private fun download(m: PictureModel, sure: Boolean = false) {
         if (app.settings.offlineOnly) {
             toast("Offline only is on (Settings), so downloads are off.")
+            return
+        }
+        // a 5 GB download that Android closes the app over is worse than none: ask first
+        val need = tooBigBy(m)
+        if (need != null && !sure) {
+            AlertDialog.Builder(this)
+                .setTitle("${m.name} is too big for this phone")
+                .setMessage("While it works it needs about ${ModelStore.formatBytes(need)} of memory, and this phone has " +
+                    "${ModelStore.formatBytes(app.totalRam)} in all, part of it kept by Android. It would most likely be " +
+                    "closed before the picture is done. A smaller model here makes pictures on this phone.")
+                .setPositiveButton("Download anyway") { _, _ -> download(m, sure = true) }
+                .setNegativeButton("Cancel", null)
+                .show()
             return
         }
         val free = app.models.freeBytes()
@@ -329,9 +361,10 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
                 app.models.isDownloading(m.key) || m.parts.any { app.models.isDownloading(it.key) } -> "Downloading…"
                 else -> "${ModelStore.formatBytes(m.sizeBytes + m.parts.filter { !jobs.partFile(it).isFile }.sumOf { it.sizeBytes })} download"
             }
-            sheet.item(m.name, R.drawable.ic_image, "$state\n${m.blurb}", checked = m.id == current?.id) {
-                app.settings.pictureModel = m.id
-                if (!ready(m)) download(m)
+            val note = memoryNote(m)?.let { "\n$it" }.orEmpty()
+            sheet.item(m.name, R.drawable.ic_image, "$state$note\n${m.blurb}", checked = m.id == current?.id) {
+                // (a download sets it once it starts: one that is too big may be called off)
+                if (ready(m)) app.settings.pictureModel = m.id else download(m)
                 refreshChips()
                 refreshSetup()
             }
@@ -398,10 +431,10 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         addView(head)
         addView(text(m.maker, 13f, Palette.accent).apply { setPadding(0, dp(2), 0, dp(6)) })
         addView(text(m.blurb, 14f, Palette.text2))
+        memoryNote(m)?.let { addView(text(it, 13f, Palette.caution).apply { setPadding(0, dp(6), 0, 0) }) }
         addView(text("License: ${m.license}", 12f, Palette.text3).apply { setPadding(0, dp(6), 0, dp(10)) })
         addView(pill(if (ready(m)) "Use" else "Download", primary = true) {
-            app.settings.pictureModel = m.id
-            if (!ready(m)) download(m) else { refreshChips(); refreshSetup() }
+            if (!ready(m)) download(m) else { app.settings.pictureModel = m.id; refreshChips(); refreshSetup() }
         }, lp(WRAP, WRAP))
     }
 
