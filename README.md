@@ -290,7 +290,13 @@ walked all of it alone, prompts included, and the big models that need it were t
 heads per K/V head, 1 to 64 queries with causal masks and holes, 16- and 8-bit memory, soft-capping,
 ALiBi and sinks (x86, and ARM with and without 16-bit arithmetic under qemu), to 16-bit precision:
 the largest error within 0.4% of the largest value, the mean squared error within 1e-5 of the
-mean square. `OA_FA_PLAIN=1` turns it off.
+mean square. One attention step at 8192 positions on GitHub's ARM runner (4 threads), against
+ggml's own path: 1.3 ms instead of 2.8 (Llama 3.2 1B's shape), 0.9 instead of 2.6 (Gemma 4 E2B;
+1.1 instead of 3.5 for its global layers), 1.5 instead of 5.7 (Qwen3.5 4B and 9B), 1.8 instead of
+4.0 (Llama 8B class); with the 8-bit memory 1.4 instead of 2.8, 0.8 instead of 1.8, 1.5 instead of
+3.9 and 1.9 instead of 4.4; checking an 8-token draft 2.5 to 4 times faster. Built for ARMv8.0
+(no 16-bit arithmetic: the oldest phones) it ranges from 3% slower to 1.8 times faster.
+`OA_FA_PLAIN=1` turns it off.
 
 ## Tests
 
@@ -350,12 +356,10 @@ and a phone reads more slowly than these machines, so there it is seconds per me
 that do not think (Llama 3.2 1B) save little: their last reply is already in memory as written.
 
 `real.sh` also measures writing speed as a chat grows (`by tokens of conversation in memory`). On
-the ARM runner: Llama 3.2 1B 40 tokens/s with 64 tokens in memory, 30 at 2048, 25 at 4096, 19 at
-8192; Gemma 4 E2B 21, 17, 14, 12. Every written token reads the whole conversation memory, so this
-is mostly memory bandwidth. An attention kernel that ran the look-back in vectorized passes
-instead of one position at a time was tried: 4.6 times faster at 8192 tokens on x86, where ggml has
-no native half-float arithmetic, but no faster on ARM, where it does (2.15 ms against ggml's 2.01
-for one layer at 8192 tokens), so it is not in the app.
+the ARM runner: Llama 3.2 1B 37 tokens/s with 64 tokens in memory, 28 at 2048, 26 at 4096, 19 at
+8192; Gemma 4 E2B 19, 17, 18, 17. Every written token reads the whole conversation memory, which
+is what `0003` above makes cheap; `bench_versions.sh` (the `bench` CI run) compares it with an
+older llama.cpp and with ggml's own attention.
 
 `tools/host-test/real.sh` runs real models, built without sanitizers, on an x86 and an ARM CI
 runner: Qwen3.5 0.8B with its MTP head at 0-3 drafted tokens (same words, and how fast),
