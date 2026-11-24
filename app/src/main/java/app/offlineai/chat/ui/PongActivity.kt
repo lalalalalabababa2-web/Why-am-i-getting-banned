@@ -945,21 +945,27 @@ class PongView(context: Context, private var player: String, private var level: 
         c.drawLine(left, top + rowH, left + width, top + rowH, line)
         label.textSize = 14 * density
         digits.textSize = 17 * density
-        val rows = listOf(Triple("COMPUTER", cpuGames, cpuScore) to Side.CPU, Triple(player.uppercase(), myGames, myScore) to Side.ME)
-        rows.forEachIndexed { i, (r, side) ->
+        // drawn every frame: nothing new is made here (no lists or strings for the collector)
+        if (playerLabel.first != player) playerLabel = player to player.uppercase().take(12)
+        for (i in 0..1) {
+            val cpu = i == 0
             val base = top + rowH * i + rowH * 0.68f
             label.color = 0xFFEDEDED.toInt()
-            c.drawText(r.first.take(12), left + pad + 10 * density, base, label)
-            if (server == side && state != State.OVER && state != State.TITLE) {
+            c.drawText(if (cpu) "COMPUTER" else playerLabel.second, left + pad + 10 * density, base, label)
+            if (server == (if (cpu) Side.CPU else Side.ME) && state != State.OVER && state != State.TITLE) {
                 fill.color = 0xFFE8E26A.toInt()
                 c.drawCircle(left + pad, top + rowH * i + rowH / 2, 3.5f * density, fill)
             }
             digits.color = 0x99FFFFFF.toInt()
-            c.drawText("${r.second}", left + nameW + cell / 2, base, digits)
+            c.drawText(number(if (cpu) cpuGames else myGames), left + nameW + cell / 2, base, digits)
             digits.color = Color.WHITE
-            c.drawText("${r.third}", left + nameW + cell * 1.5f, base, digits)
+            c.drawText(number(if (cpu) cpuScore else myScore), left + nameW + cell * 1.5f, base, digits)
         }
     }
+
+    private var playerLabel = "" to ""
+    private val numbers = Array(100) { it.toString() }
+    private fun number(n: Int) = if (n in 0..99) numbers[n] else n.toString()
 
     private fun drawWords(c: Canvas) {
         project(0f, NET_Y, 0.55f)
