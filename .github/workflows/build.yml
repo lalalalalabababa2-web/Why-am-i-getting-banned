@@ -64,7 +64,8 @@ jobs:
           - cpu: arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    # the ARM run also builds llama.cpp twice more (ggml's kernels, KleidiAI) and times both
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
