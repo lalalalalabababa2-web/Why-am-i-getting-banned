@@ -64,7 +64,11 @@ int main(int argc, char ** argv) {
     gp.sample_params.guidance.txt_cfg = cfg;
     if (argc > 10 && argv[10][0]) gp.sample_params.sample_method = str_to_sample_method(argv[10]);
     if (argc > 12 && argv[12][0]) gp.sample_params.scheduler = str_to_scheduler(argv[12]);
-    gp.vae_tiling_params.enabled = std::getenv("SDTEST_TILED") != nullptr;  // as the app does when memory is short
+    if (std::getenv("SDTEST_TILED")) {  // as the app does when memory is short
+        gp.vae_tiling_params.enabled = true;
+        gp.vae_tiling_params.tile_size_w = gp.vae_tiling_params.tile_size_h = 320;
+        gp.vae_tiling_params.target_overlap = 0.2f;
+    }
     sd_set_generation_progress_callback(ctx, gen_progress_cb, nullptr);
     sd_set_preview_callback(preview_cb, PREVIEW_PROJ, 1, true, false, nullptr);
     t0 = std::chrono::steady_clock::now();

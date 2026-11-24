@@ -23,10 +23,12 @@ browser when Android asks. New builds install over old ones and keep models and 
   prompts first. Best: FLUX.2 klein 4B (Black Forest Labs, Apache 2.0, 4 steps) and Z-Image Turbo
   (Alibaba, 8 steps), the newer kind of model that reads the prompt with a real language model
   (Qwen3 4B, one 2.5 GB file both share), so they follow long prompts and can write words into
-  the picture; FLUX.2 klein made a 512 px picture in 5.4 minutes on four x86 cores here (256 px in
-  2.6). They come in three files (diffusion model, text encoder, decoder), which the app downloads
-  and loads together. Then DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four
-  x86 cores), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
+  the picture. On CI's four ARM cores FLUX.2 klein makes a 512 px picture in 4 minutes (it was 9
+  before `sd/0002`, below) at a 4.7 GB peak, 768 px in 13 minutes; Z-Image (Q4_0) 512 px in 10
+  minutes at 5.8 GB. They come in three files (diffusion model, text encoder, decoder), which the
+  app downloads and loads together. When memory is still short after the chat model is put away,
+  the picture is decoded in tiles (3.4 GB instead of 4.7 at 512 px, a minute or two slower).
+  Then DreamShaper XL Turbo (SDXL, 2.8 GB, 768 px, 6 steps, 128 s on four x86 cores), RealVisXL 5 Lightning (SDXL, 768 px, 5 steps) and Realistic Vision 6 Hyper (1.6 GB,
   512 px, 6 steps). Quick ones, timed at 512 px on four ARM cores in CI: SDXS 512 (683 MB, 1
   step, 7.4 s), SD-Turbo (2 steps, 29.5 s), DreamShaper DMD2 (56 s) and DreamShaper 8 LCM (60 s).
   Decoding uses TAESD / TAESDXL, which halves the time with no visible change. Pictures are made
@@ -244,7 +246,8 @@ one op that ggml dropped, `ggml_diag_mask_inf`, in an audio decoder the app neve
 the newer picture models practical on a phone: stable-diffusion.cpp kept every weight in ggml's
 plain layout, so the diffusion model ran on the slow matmul path; now its quantized matmul weights
 go into llama.cpp's repacked CPU layout, as the chat models' do (a 256 px FLUX.2 klein picture in
-62 s instead of 185 s on four x86 cores, the same picture). The file's pages are let go once a
+62 s instead of 185 s on four x86 cores, the same picture; 512 px on the ARM runner in 243 s
+instead of 531). The file's pages are let go once a
 weight is copied, and the text encoder's once the prompt is read (a 512 px picture peaks at 4.6 GB
 instead of 6.3), and klein's prompt is no longer padded to 512 tokens (107 s instead of 148 at
 512 px; side by side over six prompts and seeds, no loss). Then: the RPC client failing a step instead
@@ -392,8 +395,7 @@ git submodule update --init
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
 - Spark-X2.6's own DSpark drafters are not offered yet (llama.cpp b12670 can now run LFM3-VL, which
   the app offers).
-- FLUX.2 klein and Z-Image have run on desktop cores only; their memory next to a loaded chat
-  model on a phone is untested (the picture queue puts the chat model away when memory is short).
+- FLUX.2 klein and Z-Image have run on desktop and ARM server cores only, not on a phone.
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
   what was written is kept and marked as cut short.
 - Making pictures has run on desktop and ARM CPUs (tools/image-test, the "images" CI run), not

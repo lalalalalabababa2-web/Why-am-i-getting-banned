@@ -79,7 +79,11 @@ class PictureJobs(private val app: App) {
         PictureService.update(app)
     }
 
-    fun modelFile(m: PictureModel) = File(app.models.dir, m.key)
+    fun modelFile(m: PictureModel): File {
+        val file = File(app.models.dir, m.key)
+        if (file.isFile) return file
+        return m.legacyFiles.map { File(app.models.dir, "pictures/$it") }.firstOrNull { it.isFile } ?: file
+    }
     fun decoderFile(m: PictureModel): File? = m.decoder?.let { File(app.models.dir, it.key) }
     fun partFile(p: app.offlineai.chat.data.PictureCatalog.Part): File = File(app.models.dir, p.key)
 

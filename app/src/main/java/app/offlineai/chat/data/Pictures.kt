@@ -41,6 +41,8 @@ data class PictureModel(
      */
     val llm: PictureCatalog.Part? = null,
     val vae: PictureCatalog.Part? = null,
+    /** Files an earlier version downloaded instead of [file]: used while they are there. */
+    val legacyFiles: List<String> = emptyList(),
 ) {
     val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
     /** Where it is kept: in the models folder, under pictures/ (so the chat model list leaves it alone). */
@@ -88,21 +90,24 @@ object PictureCatalog {
             id = "flux2-klein", name = "FLUX.2 klein 4B", maker = "Black Forest Labs",
             blurb = "The best pictures here: follows long, detailed prompts, gets hands, faces and words in the " +
                 "picture right (a sign that says OPEN reads OPEN), photos and art alike, in four steps. Reads the " +
-                "prompt with Qwen3 4B, shared with Z-Image. About 5 minutes for 512 pixels on four desktop cores; " +
-                "5.3 GB in all.",
+                "prompt with Qwen3 4B, shared with Z-Image. About 4 minutes for 512 pixels; 5.3 GB to download, " +
+                "about 4.7 GB of memory while it works.",
             repo = "leejet/FLUX.2-klein-4B-GGUF", file = "flux-2-klein-4b-Q4_0.gguf",
             sizeBytes = 2_460_378_560L, steps = 4, sampler = "euler", decoder = null, native = 512, xl = true,
             llm = Part.QWEN3_4B, vae = Part.FLUX2_VAE,
             license = "Apache 2.0",
         ),
+        // Q4_0 rather than the smaller Q3_K: the CPU keeps Q4_0 in its repacked layout, which made a
+        // 512 px picture in 585 s against 1557 s on CI's ARM runner
         PictureModel(
             id = "z-image-turbo", name = "Z-Image Turbo", maker = "Alibaba Tongyi",
             blurb = "Photographs that are hard to tell from real ones: skin, light, places, and English or Chinese " +
-                "words in the picture, in eight steps. Bigger and about three times slower than FLUX.2 klein; next " +
-                "to it, it adds 3.5 GB (the text encoder is shared).",
-            repo = "leejet/Z-Image-Turbo-GGUF", file = "z_image_turbo-Q3_K.gguf",
-            sizeBytes = 3_143_559_104L, steps = 8, sampler = "euler", decoder = null, native = 512, xl = true,
-            llm = Part.QWEN3_4B, vae = Part.FLUX1_VAE,
+                "words in the picture, in eight steps. Bigger and slower than FLUX.2 klein: about 10 minutes for " +
+                "512 pixels and 5.8 GB of memory, for phones with 12 GB or more. Next to klein it adds 4 GB (the " +
+                "text encoder is shared).",
+            repo = "leejet/Z-Image-Turbo-GGUF", file = "z_image_turbo-Q4_0.gguf",
+            sizeBytes = 3_683_370_944L, steps = 8, sampler = "euler", decoder = null, native = 512, xl = true,
+            llm = Part.QWEN3_4B, vae = Part.FLUX1_VAE, legacyFiles = listOf("z_image_turbo-Q3_K.gguf"),
             license = "Apache 2.0",
         ),
         PictureModel(

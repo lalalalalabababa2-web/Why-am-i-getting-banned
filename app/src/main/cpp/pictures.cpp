@@ -218,8 +218,14 @@ Java_app_offlineai_chat_engine_PictureEngine_nativeGenerate(JNIEnv * env, jclass
         const scheduler_t sc = str_to_scheduler(scheduler.c_str());
         if (sc != SCHEDULER_COUNT) gp.sample_params.scheduler = sc;
     }
-    // decoding the picture in tiles keeps the memory it needs small on a phone
-    gp.vae_tiling_params.enabled = req.value("tiled", false);
+    // decoding the picture in tiles keeps the memory it needs small on a phone. The library's
+    // default (256 px tiles overlapping by half) decodes a 512 px picture 2.25 times over; 320 px
+    // tiles overlapping by a fifth, 1.56 times, still with no seams.
+    if (req.value("tiled", false)) {
+        gp.vae_tiling_params.enabled = true;
+        gp.vae_tiling_params.tile_size_w = gp.vae_tiling_params.tile_size_h = 320;
+        gp.vae_tiling_params.target_overlap = 0.2f;
+    }
 
     g_busy.store(true);
     sd_cancel_generation(g_ctx, SD_CANCEL_RESET);
