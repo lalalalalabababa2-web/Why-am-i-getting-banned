@@ -483,8 +483,8 @@ class ChatController(private val app: App) {
         }
         if (o.nDropped > 0) parts += "${o.nDropped} oldest messages left out to fit"
         if (o.nMajflt > SLOW_MEMORY_FAULTS) {
-            parts += "slow: the model did not fit in free memory. Close other apps, lower the context size in Settings, " +
-                "or pick a smaller model"
+            // the context already shrinks to fit at load: what is left is the model itself, or apps opened since
+            parts += "slow: the model did not fit in free memory. Close other apps or pick a smaller model"
         }
         when (o.stopReason) {
             "stopped" -> parts += "stopped"

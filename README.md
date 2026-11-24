@@ -232,8 +232,19 @@ thread.
   hidden states as it reads and asked for a block of up to 7 tokens per step. It always writes
   the block it was made for, so a reply that asks for fewer (the drafting test) gets one made
   for that many.
-- Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment.
-  Encoded pictures stay in the prompt cache like text, so a follow-up does not encode them again.
+- Pictures and sound: llama.cpp's `mtmd`, loaded the first time a chat has an attachment, and let
+  go three minutes after the last one. Encoded pictures stay in the prompt cache like text, so a
+  follow-up does not encode them again.
+- Context that fits: before a model loads, the engine makes two small contexts (1024 and 2048
+  positions) and reads llama.cpp's own memory accounting for them. The difference is what one
+  position of conversation memory costs for that model in that layout (sliding windows, recurrent
+  layers and 8-bit memory included), the rest is fixed. The context is then the setting, or as
+  much as the free memory holds once the weights are in, whichever is less, and never under 2048
+  (`fit_context`). A fixed 40 kB per position was off four times either way between models, and a
+  32768-token setting on an 8 GB phone either crawled (the model's pages read back from storage
+  for every word) or had Android close the app.
+- Away from the app: two minutes after its last screen closes (the game counts as away), the
+  model leaves memory and loads again on return, unless a reply or a picture is still being made.
 
 ## Changes to llama.cpp and stable-diffusion.cpp
 
@@ -260,6 +271,19 @@ the S24 FE's cores) 4x4 versions for reading prompts, and the small change to gg
 lets it call a 4x4 one. They matter most in low-memory mode, where the weights stay in the file
 and ggml's own repacked kernels (which need a copy of the weights in memory) are not used. `tools/host-test/test_kernels.c` checks them against plain C (on ARM in CI; on
 other computers through [SIMDe](https://github.com/simd-everywhere/simde)).
+
+`0003` with `fa-decode.inc` is attention for writing a token (one query). b12670's flash attention
+sums V in 32 bits (16-bit sums could overflow on long contexts), which costs about twice the
+instructions on ARM, and for one query it walks a thread's stretch of the conversation memory once
+per query head; with grouped-query attention, where 4 to 8 query heads share a K/V head, every K
+and V row came in from memory 4 to 8 times per token, and long chats wrote about 30% slower on the
+ARM runner than with b11700. Now each row is read once for all the heads that share it: up to four
+heads' scores per K row load, one softmax rescale per block of 16 positions, and the block's V sums
+kept in registers. `tools/host-test/test_fa_decode.cpp` holds it to ggml's reference over head
+sizes 64 to 512, 1 to 8 heads per K/V head, masks with holes, soft-capping, ALiBi and sinks (x86,
+and ARM with and without 16-bit arithmetic under qemu). One attention step at 8192 positions on
+four x86 cores: 2.2 ms instead of 3.4 (Llama 3.2 1B's shape), 0.9 instead of 2.3 (Gemma 4 E2B),
+3.6 instead of 8.1 (Qwen3.5 4B). `OA_FA_PLAIN=1` turns it off.
 
 ## Tests
 
