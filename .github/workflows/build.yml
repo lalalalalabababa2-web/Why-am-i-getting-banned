@@ -583,7 +583,7 @@ jobs:
           run() {  # name steps vae size repack tag
             echo "== $1 at $4, 4 threads, repacked weights: $5"
             SD_CPU_REPACK=$5 /usr/bin/time -f "  peak memory %M KB" $T m/$1.gguf "$P" pictures/$1-$4-$6.ppm $4 $4 $2 1 42 4 euler "" "" \
-              m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|generated|failed|peak memory" || true
+              m/qwen3-4b.gguf m/$3.safetensors 2>&1 | grep -E "loaded|repacked|generated|failed|peak memory" || true
           }
           run klein 4 flux2-vae 512 1 repacked
           run klein 4 flux2-vae 512 0 plain
