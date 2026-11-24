@@ -240,7 +240,14 @@ back (`tools/host-test/test_q1q2_mulmat.c` checks 324 shapes against a plain ref
 without int8 matrix multiply, on ARM or under qemu-aarch64; a deliberately broken de-interleave
 fails 70 of them). stable-diffusion.cpp (pinned at its Nov 13 commit; master has a new API) uses
 one op that ggml dropped, `ggml_diag_mask_inf`, in an audio decoder the app never loads;
-`sd/0001` builds the same causal mask with `ggml_tri` over `ggml_fill(-inf)`. Then: the RPC client failing a step instead
+`sd/0001` builds the same causal mask with `ggml_tri` over `ggml_fill(-inf)`. `sd/0002` makes
+the newer picture models practical on a phone: stable-diffusion.cpp kept every weight in ggml's
+plain layout, so the diffusion model ran on the slow matmul path; now its quantized matmul weights
+go into llama.cpp's repacked CPU layout, as the chat models' do (a 256 px FLUX.2 klein picture in
+62 s instead of 185 s on four x86 cores, the same picture). The file's pages are let go once a
+weight is copied, and the text encoder's once the prompt is read (a 512 px picture peaks at 4.6 GB
+instead of 6.3), and klein's prompt is no longer padded to 512 tokens (107 s instead of 148 at
+512 px; side by side over six prompts and seeds, no loss). Then: the RPC client failing a step instead
 of ending the app when another phone goes away (0002), and faster ARM NEON dot products for the
 Q1_0 and Q2_0 weights of PrismML's Bonsai models, plus 2x2 and (with int8 matrix multiply, as on
 the S24 FE's cores) 4x4 versions for reading prompts, and the small change to ggml's mul_mat that
@@ -344,11 +351,21 @@ cores; tokens per second while writing, greedy, the same words in every column):
 | Qwen3.5 0.8B Q4_K_M | 40 | 75 | 20-26 |
 | Qwen3.5 4B Q4_K_M | 10.3 | 19.7 | 6.2-10.1 |
 | Gemma 4 E2B Q4_K_M | 19.6 | 31.5 | 12.9-15.4 |
+| Gemma 4 E2B QAT (the app's file) | 25.9 | | |
+| Gemma 4 E4B QAT (the app's file) | 13.6 | | |
+| LFM3 1.7B Q4_0 | 32.6 | | |
 | Llama 3.2 1B Q4_K_M | 37 | 58 | - |
 | Ternary Bonsai 2 9B Q2_0 | 6.0 (was 4.7 before this repository's kernels) | | |
 | Bonsai 27B Q1_0, fast mode | 3.0 | | |
 | Bonsai 27B Q1_0, low memory | 2.4 | | |
 | Bonsai 27B Q1_0, low memory, only 3 GB of memory | 0.2 | | |
+
+Google's QAT files are faster as well as smaller: Gemma 4 E2B reads a prompt at 160 tokens/s
+against 80 for the Q4_K_M it replaced, because nearly all of it is Q4_0, which ggml repacks for the
+CPU's int8 matrix instructions (E4B QAT 70, LFM3 1.7B 154). Arm's KleidiAI kernels were timed
+against ggml's own on the same runner (`tools/host-test/bench_kleidiai.sh`): LFM3 wrote faster
+with them (38.9 tokens/s against 32.6) but read slower (141 against 154), and the QAT Gemma files
+were the same or slower, so they stay off.
 
 Reading a 425-token message on the same runner: Ternary Bonsai 2 9B 17.7 tokens/s (was 11.0),
 Bonsai 27B 8.3 in fast mode, 4.9 in low memory (was 3.4), 2.2 with only 3 GB. The last row is
@@ -375,8 +392,6 @@ git submodule update --init
 - Sound input has not been tried with a real model yet (pictures and video frames have, in CI).
 - Spark-X2.6's own DSpark drafters are not offered yet (llama.cpp b12670 can now run LFM3-VL, which
   the app offers).
-- Arm's KleidiAI kernels (`GGML_CPU_KLEIDIAI`) are off until CI's ARM runner shows them faster than
-  ggml's own for the Q4_0 files: `tools/host-test/bench_kleidiai.sh` measures both.
 - FLUX.2 klein and Z-Image have run on desktop cores only; their memory next to a loaded chat
   model on a phone is untested (the picture queue puts the chat model away when memory is short).
 - If Android closes the app anyway (it can, under memory pressure), the reply stops where it was;
