@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator. "images": only the picture models, on an ARM machine.'
+        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator. "images": only the picture models, on an ARM machine. "bench": only writing speed by llama.cpp version and attention path, on an ARM machine.'
         required: false
         default: ''
 
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   engine-tests:
     name: Engine tests (desktop, tiny random models)
-    if: inputs.only != 'screens' && inputs.only != 'images'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -54,7 +54,7 @@ jobs:
   # models. Once on an x86 runner and once on an ARM one (closer to a phone, still not a phone).
   real-models:
     name: Real models (${{ matrix.cpu }})
-    if: inputs.only != 'screens' && inputs.only != 'images'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
     strategy:
       fail-fast: false
       matrix:
@@ -262,7 +262,7 @@ jobs:
 
   apk:
     name: Build the APK
-    if: inputs.only != 'screens' && inputs.only != 'images'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -612,3 +612,38 @@ jobs:
             build.log
           if-no-files-found: ignore
           retention-days: 14
+
+  # Writing speed with long conversations, llama.cpp as the app has it against the version before
+  # the last update, each attention path (flash attention on/off, 16/8-bit conversation memory).
+  bench:
+    name: Engine speed by version (arm64)
+    if: inputs.only == 'bench'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Models
+        run: |
+          mkdir -p real-models && cd real-models
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "$2" "https://huggingface.co/$1/resolve/main/$2"; ls -la "$2"; }
+          get unsloth/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
+          get unsloth/gemma-4-E2B-it-qat-GGUF gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf
+          get unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-Q4_K_M.gguf
+          nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
+
+      - name: Run
+        run: |
+          set -o pipefail
+          tools/host-test/bench_versions.sh 23f7aabc16c72f6f707dba227251c35d7bd1ed96 \
+            real-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf real-models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf \
+            real-models/Qwen3.5-4B-Q4_K_M.gguf 2>&1 | tee real.log
+
+      - name: Results
+        if: always()
+        run: python3 ci/real_report.py real.log arm64

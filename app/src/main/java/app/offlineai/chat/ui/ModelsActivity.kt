@@ -393,7 +393,8 @@ class ModelsActivity : AppCompatActivity(), EngineController.StateListener {
                     key = "loaded"
                     val i = loadedNow.info
                     status.setTextColor(Palette.positive)
-                    status.text = "In use · ${i.desc.ifBlank { i.arch }} · ${i.nCtx} context · " +
+                    status.text = "In use · ${i.desc.ifBlank { i.arch }} · ${i.nCtx} context" +
+                        (if (loadedNow.ctxFitted) " (fit to memory)" else "") + " · " +
                         (if (loadedNow.config.lowMemory) "low-memory mode" else "fast mode")
                 }
                 isLoading -> {

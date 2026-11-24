@@ -108,6 +108,54 @@ static void generate(oa::Engine & e, int n) {
     }
 }
 
+// A context longer than the memory budget is shortened to what fits, never under 2048 positions,
+// and the model still reads and writes in it. The budget comes from the app (free memory less the
+// weights); 0 keeps the context as asked.
+static void test_fit(const std::string & path, bool kv_q8 = false) {
+    std::printf("== fit the context to memory: %s%s\n", path.c_str(), kv_q8 ? " (kv q8)" : "");
+    auto load = [&](int64_t budget) -> int {
+        oa::LoadParams lp;
+        lp.n_ctx = 16384;
+        lp.n_threads = 2;
+        lp.kv_q8 = kv_q8;
+        lp.warmup = false;
+        lp.mem_budget = budget;
+        oa::Engine e;
+        std::string err;
+        if (!e.load(path, lp, err)) {
+            std::fprintf(stderr, "  FAIL load with budget %lld: %s\n", (long long) budget, err.c_str());
+            g_failures++;
+            return -1;
+        }
+        const auto info = e.info();
+        CHECK(info.n_ctx_asked == 16384, "asked for %d, not 16384", info.n_ctx_asked);
+        std::mt19937 rng(5);
+        auto p = random_tokens(rng, 300, 100);
+        CHECK(e.sync_prompt(p, 0, err, nullptr, nullptr), "reading with budget %lld: %s", (long long) budget, err.c_str());
+        CHECK(e.push_token(e.argmax(), err), "writing with budget %lld: %s", (long long) budget, err.c_str());
+        return info.n_ctx;
+    };
+    const int as_asked = load(0);
+    const int tiny = load(1);
+    const int huge = load(int64_t(1) << 40);
+    CHECK(as_asked == 16384, "no budget gave %d positions", as_asked);
+    CHECK(tiny == 2048, "a budget of 1 byte gave %d positions, not the least (2048)", tiny);
+    CHECK(huge == 16384, "a budget of 1 TB gave %d positions", huge);
+    // in between: more memory never gives less context, and some budget lands between the ends
+    int last = 0;
+    bool between = false;
+    std::string line;
+    for (int64_t b = 256 * 1024; b <= (int64_t(1) << 30); b = b * 5 / 4) {
+        const int n = load(b);
+        CHECK(n >= last, "%lld bytes gave %d positions, less than %d for half that", (long long) b, n, last);
+        between = between || (n > 2048 && n < 16384);
+        last = n;
+        line += " " + std::to_string(n);
+    }
+    std::printf("  positions for budgets from 256 KB to 1 GB, 1.25x apart:%s\n", line.c_str());
+    CHECK(between, "no budget gave a context between 2048 and 16384");
+}
+
 static void test_cache(const std::string & path, bool kv_q8 = false, bool low_memory = false) {
     std::printf("== cache: %s%s%s\n", path.c_str(), kv_q8 ? " (kv q8)" : "", low_memory ? " (low memory)" : "");
     oa::LoadParams lp;
@@ -1923,6 +1971,13 @@ int main(int argc, char ** argv) {
         std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
         return g_failures ? 1 : 0;
     }
+    if (argc >= 4 && std::string(argv[3]) == "--fit") {
+        // test_engine <tiny models dir> <llama.cpp dir> --fit
+        for (const char * m : {"llama-dense.gguf", "qwen35-dense.gguf", "gemma3-dense.gguf"}) test_fit(dir + "/" + m);
+        test_fit(dir + "/llama-dense.gguf", true);
+        std::printf("\n%s (%d failures)\n", g_failures ? "FAILED" : "ALL PASSED", g_failures);
+        return g_failures ? 1 : 0;
+    }
     if (argc >= 5 && std::string(argv[3]) == "--cut") {
         // test_engine <tiny models dir> <llama.cpp dir> --cut <model.gguf>
         test_context_cut(argv[4]);
@@ -2003,6 +2058,8 @@ int main(int argc, char ** argv) {
 
     test_cache(dir + "/qwen35-dense.gguf", true, false);
     test_cache(dir + "/llama-dense.gguf", true, true);
+    for (const char * m : {"llama-dense.gguf", "qwen35-dense.gguf", "gemma3-dense.gguf"}) test_fit(dir + "/" + m);
+    test_fit(dir + "/llama-dense.gguf", true);
     test_bench(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/qwen35-dense.gguf");
     test_chat_smoke(dir + "/llama-dense.gguf");

@@ -372,6 +372,59 @@ static bool load_progress(float p, void * data) {
     return (b->fn && *b->fn) ? (*b->fn)(p) : true;
 }
 
+// The conversation memory (KV cache and any recurrent state) and the working space of a context,
+// from llama's own accounting.
+static void memory_of(const llama_context * ctx, size_t & context, size_t & compute) {
+    context = 0;
+    compute = 0;
+    try {
+        for (const auto & [buft, d] : llama_get_memory_breakdown(ctx)) {
+            context += d.context;
+            compute += d.compute;
+        }
+    } catch (...) {
+    }
+}
+
+// The longest context, at most cp.n_ctx, whose conversation memory and working space fit in
+// [budget] bytes; never under kMinFitCtx. Measured on two small contexts made and dropped for it
+// (1024 and 2048 positions): the difference is what each position costs for this model in this
+// layout (sliding windows, recurrent layers, 8-bit memory all included), the rest is fixed. A
+// fixed bytes-per-token guess was 4x off either way between models, and a context too long for
+// the phone either crawled (pages read back from storage on every word) or got the app closed.
+static constexpr int kMinFitCtx = 2048;
+static uint32_t fit_context(llama_model * model, const llama_context_params & cp, int64_t budget,
+                            size_t & per_pos_out) {
+    per_pos_out = 0;
+    if (budget <= 0 || cp.n_ctx <= (uint32_t) kMinFitCtx) return cp.n_ctx;
+    size_t c[2] = {0, 0}, w[2] = {0, 0};
+    const uint32_t at[2] = {1024, 2048};
+    for (int i = 0; i < 2; i++) {
+        auto p = cp;
+        p.n_ctx = at[i];
+        p.n_batch = std::min(p.n_batch, at[i]);
+        p.n_ubatch = std::min(p.n_ubatch, p.n_batch);
+        llama_context * probe = nullptr;
+        try {
+            probe = llama_init_from_model(model, p);
+        } catch (...) {
+            probe = nullptr;
+        }
+        if (!probe) return std::min<uint32_t>(cp.n_ctx, kMinFitCtx);
+        memory_of(probe, c[i], w[i]);
+        llama_free(probe);
+    }
+    if (c[1] <= c[0]) return cp.n_ctx;  // nothing grows with the length: any length fits
+    const double per = (double) (c[1] - c[0]) / (at[1] - at[0]);
+    const double fixed = (double) c[0] - per * at[0];
+    // the working space grows a little with the length (attention over more positions)
+    const double room = (double) budget - fixed - 1.25 * (double) std::max(w[0], w[1]) - 32.0 * 1024 * 1024;
+    per_pos_out = (size_t) per;
+    if (room <= per * kMinFitCtx) return std::min<uint32_t>(cp.n_ctx, kMinFitCtx);
+    const uint64_t fit = (uint64_t) (room / per) / 1024 * 1024;
+    return (uint32_t) std::min<uint64_t>(cp.n_ctx, std::max<uint64_t>(kMinFitCtx, fit));
+}
+
 static size_t compute_bytes_of(const llama_context * ctx) {
     if (!ctx) return 0;
     size_t total = 0;
@@ -610,6 +663,16 @@ bool Engine::load(const std::string & path, const LoadParams & params, std::stri
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     }
 
+    // a context longer than this phone's memory can hold is shortened to what fits (not with
+    // other phones: their parts of the memory are theirs)
+    n_ctx_asked_ = (int) cp.n_ctx;
+    if (params.mem_budget > 0 && n_remote_ == 0) {
+        size_t per_pos = 0;
+        // a separate drafter keeps a memory of the same length of its own: count some room for it
+        const int64_t budget = use_drafter && block_drafter ? params.mem_budget * 4 / 5 : params.mem_budget;
+        cp.n_ctx = fit_context(model_, cp, budget, per_pos);
+    }
+
     ctx_ = llama_init_from_model(model_, cp);
     if (!ctx_ && cp.n_rs_seq > 0) {
         // the copies of the recurrent state did not fit: go on without drafting
@@ -762,6 +825,7 @@ ModelInfo Engine::info() const {
     mi.n_params = llama_model_n_params(model_);
     mi.n_ctx_train = llama_model_n_ctx_train(model_);
     mi.n_ctx = ctx_ ? (int) llama_n_ctx(ctx_) : 0;
+    mi.n_ctx_asked = n_ctx_asked_;
     mi.n_threads = params_.n_threads;
     if (tmpls_) {
         mi.supports_thinking = common_chat_templates_support_enable_thinking(tmpls_);

@@ -103,6 +103,7 @@ std::string parse_load_options(JNIEnv * env, jbyteArray joptions, oa::LoadParams
         p.low_memory = o.value("low_memory", p.low_memory);
         p.kv_q8 = o.value("kv_q8", p.kv_q8);
         p.swa_full = o.value("swa_full", p.swa_full);
+        p.mem_budget = o.value("mem_budget", p.mem_budget);
         p.spec_n_max = o.value("spec_n_max", p.spec_n_max);
         p.spec_ngram = o.value("spec_ngram", p.spec_ngram);
         p.drafter_path = o.value("drafter", std::string());
@@ -228,6 +229,7 @@ Java_app_offlineai_chat_engine_NativeEngine_nativeInfo(JNIEnv * env, jclass) {
         {"n_params", mi.n_params},
         {"n_ctx_train", mi.n_ctx_train},
         {"n_ctx", mi.n_ctx},
+        {"n_ctx_asked", mi.n_ctx_asked},
         {"n_threads", mi.n_threads},
         {"supports_thinking", mi.supports_thinking},
         {"has_template", mi.has_template},

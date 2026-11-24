@@ -79,7 +79,8 @@ class SettingsActivity : AppCompatActivity() {
 
         section("Model and memory")
         choice("Context size",
-            "How much of the conversation the model holds at once. Larger uses more memory.$reloadNote",
+            "How much of the conversation the model holds at once. Larger uses more memory: when the phone's free " +
+                "memory cannot hold this much, the model gets as much as fits instead of crawling or being closed.$reloadNote",
             Settings.CONTEXT_SIZES.map { "$it tokens" }, Settings.CONTEXT_SIZES.indexOf(s.contextSize)) {
             s.contextSize = Settings.CONTEXT_SIZES[it]
         }
@@ -335,7 +336,9 @@ class SettingsActivity : AppCompatActivity() {
         group.addView(note(
             "Nyx ${BuildConfig.VERSION_NAME}, running llama.cpp ${BuildConfig.LLAMA_CPP_VERSION} on the CPU." +
                 (loaded?.let { m ->
-                    "\n\nLoaded: ${m.displayName} (${m.info.desc}), ${m.nCtx} context, ${if (m.config.lowMemory) "low-memory" else "fast"} mode, " +
+                    "\n\nLoaded: ${m.displayName} (${m.info.desc}), ${m.nCtx} context" +
+                        (if (m.ctxFitted) " (${m.config.nCtx} did not fit)" else "") +
+                        ", ${if (m.config.lowMemory) "low-memory" else "fast"} mode, " +
                         "loaded in ${String.format(Locale.US, "%.1f", m.loadMs / 1000.0)}s."
                 } ?: "") +
                 "\n\nThe phone: ${Device.cores()} cores (${Device.fastCores()} fast), ${ModelStore.formatBytes(app.totalRam)} of memory, " +

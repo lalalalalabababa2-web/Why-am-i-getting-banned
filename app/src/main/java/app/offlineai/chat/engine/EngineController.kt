@@ -17,6 +17,8 @@ data class ModelInfo(
     val nParams: Long,
     val nCtxTrain: Int,
     val nCtx: Int,
+    /** The context asked for: more than [nCtx] when that much did not fit in this phone's memory. */
+    val nCtxAsked: Int = 0,
     val nThreads: Int,
     val supportsThinking: Boolean,
     val hasTemplate: Boolean,
@@ -43,6 +45,7 @@ data class ModelInfo(
                 nParams = j.optLong("n_params"),
                 nCtxTrain = j.optInt("n_ctx_train"),
                 nCtx = j.optInt("n_ctx"),
+                nCtxAsked = j.optInt("n_ctx_asked"),
                 nThreads = j.optInt("n_threads"),
                 supportsThinking = j.optBoolean("supports_thinking"),
                 hasTemplate = j.optBoolean("has_template"),
@@ -79,8 +82,13 @@ data class LoadConfig(
     val swaFull: Boolean = true,
     /** Parts of the model on other phones (Phones working together); empty: all of it here. */
     val rpc: List<app.offlineai.chat.pool.RpcPart> = emptyList(),
+    /**
+     * Bytes the conversation memory and working space may take; the engine shortens the context
+     * to what fits (0: as asked). Decided from the free memory at load, so not part of the shape.
+     */
+    val memBudget: Long = 0,
 ) {
-    fun sameShape(o: LoadConfig) = copy(nThreads = 0) == o.copy(nThreads = 0)
+    fun sameShape(o: LoadConfig) = copy(nThreads = 0, memBudget = 0) == o.copy(nThreads = 0, memBudget = 0)
 
     fun toJson(): JSONObject = JSONObject()
         .put("n_ctx", nCtx)
@@ -95,6 +103,7 @@ data class LoadConfig(
         .put("mmproj", mmprojPath)
         .put("image_max_tokens", imageMaxTokens)
         .put("swa_full", swaFull)
+        .put("mem_budget", memBudget)
         .put("rpc", org.json.JSONArray().apply {
             rpc.forEach { put(JSONObject().put("endpoint", it.endpoint).put("share", it.share.toDouble())) }
         })
@@ -108,7 +117,10 @@ data class LoadedModel(
     val info: ModelInfo,
     val loadMs: Long,
 ) {
-    val nCtx: Int get() = config.nCtx
+    /** The context it was loaded with: shorter than the setting when that did not fit. */
+    val nCtx: Int get() = info.nCtx.takeIf { it > 0 } ?: config.nCtx
+    /** The context was shortened to fit this phone's memory. */
+    val ctxFitted: Boolean get() = info.nCtx in 1 until config.nCtx
 }
 
 /** The outcome of one reply. */

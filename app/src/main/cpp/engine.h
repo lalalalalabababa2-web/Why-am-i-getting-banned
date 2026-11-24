@@ -60,6 +60,9 @@ struct LoadParams {
     // dropped and drafting works. Off saves a lot of memory on big Gemma models; their memory is
     // then handled with snapshots like a hybrid model's, and they do not draft.
     bool swa_full   = true;
+    // Bytes the conversation memory and the working space may take (what is free once the weights
+    // are in). The context is shortened to what fits; 0 keeps n_ctx as asked.
+    int64_t mem_budget = 0;
 
     // Speculative decoding. 0 turns it off. Otherwise the most tokens a drafter may propose per
     // step (the model's MTP head, or the drafter file below); 1 to 4 make sense on a phone.
@@ -180,6 +183,7 @@ struct ModelInfo {
     uint64_t    n_params          = 0;
     int         n_ctx_train       = 0;
     int         n_ctx             = 0;
+    int         n_ctx_asked       = 0;      // the length asked for; n_ctx is less when that did not fit
     int         n_threads         = 0;
     bool        supports_thinking = false;
     bool        has_template      = false;
@@ -394,6 +398,7 @@ private:
     uint32_t               rpc_lost0_ = 0;       // lost-connection count when the model was loaded
     int                    n_layer_ = 0;
     int                    n_remote_ = 0;
+    int                    n_ctx_asked_ = 0;  // the context asked for at load (n_ctx is less when it did not fit)
     bool add_phones(const LoadParams & params, std::vector<::ggml_backend_device *> & devs, std::string & err);
     int                    spec_n_max_ = 0;        // drafter tokens per step
     int                    spec_n_out_ = 1;        // outputs per step the context was made for

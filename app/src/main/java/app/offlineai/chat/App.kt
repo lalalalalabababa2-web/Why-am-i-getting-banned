@@ -228,7 +228,7 @@ class App : Application() {
     fun estimatedRam(model: LocalModel): Long {
         val weights = model.memBytes
         val config = configFor(model)
-        val ctxBytes = settings.contextSize.toLong() * (if (config.kvQ8) 20_000L else 40_000L)
+        val ctxBytes = fittedCtx() * (if (config.kvQ8) 20_000L else 40_000L)
         val drafter = if (config.drafterPath.isNotEmpty()) model.drafterFile.length() else 0L
         return weights + ctxBytes + drafter + 300_000_000L
     }
@@ -242,7 +242,27 @@ class App : Application() {
             MemoryMode.AUTO -> c.residentBytes > totalRam * 0.45
         }
         val kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO)
-        return weights + settings.contextSize.toLong() * (if (kvQ8) 20_000L else 40_000L) + 300_000_000L
+        return weights + fittedCtx() * (if (kvQ8) 20_000L else 40_000L) + 300_000_000L
+    }
+
+    /**
+     * The context counted when asking whether a model fits: a long one is shortened at load to
+     * what the free memory holds (see [contextBudget]), so only the first 4096 positions are a must.
+     */
+    private fun fittedCtx(): Long = minOf(settings.contextSize, 4096).toLong()
+
+    /**
+     * What the conversation memory and the engine's working space may take for [model], so that it
+     * all stays in RAM: what is free (with what the model loaded now gives back), less the weights,
+     * its drafter and room for the app. The engine shortens the context to fit it. Android closes
+     * cached apps for the app in front, so at least 45% of the phone's memory counts as there.
+     */
+    private fun contextBudget(model: LocalModel, drafter: Boolean): Long {
+        val now = engine.loaded
+        val freed = now?.let { l -> (models.find(l.key)?.memBytes ?: 0L) + l.info.computeBytes } ?: 0L
+        val room = maxOf(availableRam() + freed, (totalRam * 0.45).toLong())
+        val weights = model.memBytes + (if (drafter) model.drafterFile.length() else 0L)
+        return maxOf(1L, (room * 0.9).toLong() - weights - 150_000_000L)
     }
 
     /** What the paired phones that answer now could take of a model (Phones together); 0 without any. */
@@ -319,6 +339,7 @@ class App : Application() {
         val parts = poolFor(model, fresh)
         val low = lowMemoryFor(model, 1f - parts.sumOf { it.share.toDouble() }.toFloat())
         val drafts = settings.draftsFor(model.file.name)
+        val drafter = drafts > 0 && model.hasDrafter
         return LoadConfig(
             nCtx = settings.contextSize,
             nThreads = settings.baseThreads(),
@@ -328,12 +349,14 @@ class App : Application() {
             kvQ8 = settings.kvQ8 || (low && settings.memoryMode == MemoryMode.AUTO) || tightFor(model, fresh),
             specNMax = drafts,
             specNgram = settings.copyDrafts,
-            drafterPath = if (drafts > 0 && model.hasDrafter) model.drafterFile.absolutePath else "",
+            drafterPath = if (drafter) model.drafterFile.absolutePath else "",
             mmprojPath = if (model.hasPictures) model.picturesFile.absolutePath else "",
             imageMaxTokens = settings.pictureDetail.maxTokens,
             // big Gemma models: a compact sliding-window cache (much less memory, no drafting)
             swaFull = !low,
             rpc = parts,
+            // decided anew for each load, from the memory free then (not part of the config's shape)
+            memBudget = if (fresh && parts.isEmpty()) contextBudget(model, drafter) else 0L,
         )
     }
 

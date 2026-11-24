@@ -318,6 +318,16 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         // The message box floats over the end of the chat: the conversation scrolls on under it and
         // shows through, frosted, instead of stopping at a hard edge above it.
         val dock = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // the chat fades out behind the box: no words in the gap under it, over the keyboard
+        val fade = View(this).apply {
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0), Palette.bg, Palette.bg),
+            )
+            isClickable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        middle.addView(fade, FrameLayout.LayoutParams(MATCH, dp(40), Gravity.BOTTOM))
         middle.addView(dock, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
         val glass = { a: Int -> androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, a) }
 
@@ -394,6 +404,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             })
         }
         input.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        // Enter in an empty box (or before the first word) only made blank lines: the box grew
+        // taller, its hint went, and the button turned into a microphone over nothing to send
+        input.filters = arrayOf(android.text.InputFilter { source, start, end, dest, dstart, _ ->
+            val added = source.subSequence(start, end)
+            if ('\n' !in added || dest.subSequence(0, dstart).isNotBlank()) null
+            else added.toString().trimStart('\n', '\r', ' ', '\t')
+        })
         composer.addView(input, lp(0, WRAP, 1f))
         input.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             val want = if (input.lineCount > 1) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
@@ -433,6 +450,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             val wasFollowing = scroller.following
             // after this layout pass, not during it
             list.post {
+                // from the box's middle down it is solid; above that the chat fades into it
+                fade.layoutParams = fade.layoutParams.apply { height = h / 2 + dp(28) }
                 list.setPadding(0, 0, 0, h + dp(12))
                 // the empty screen's buttons stay above the box too
                 empty.setPadding(empty.paddingLeft, empty.paddingTop, empty.paddingRight, h + dp(16))
@@ -1169,7 +1188,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 e.lastError
             }
             loaded == null -> "No model loaded · tap to choose"
-            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.config.lowMemory) " · low memory" else "") +
+            else -> "Ready · ${loaded.nCtx} context" + (if (loaded.ctxFitted) " (fit to memory)" else "") +
+                (if (loaded.config.lowMemory) " · low memory" else "") +
                 (if (loaded.info.nRemoteLayers > 0) " · shared with ${loaded.config.rpc.size} phone${if (loaded.config.rpc.size > 1) "s" else ""}" else "") +
                 (if (loaded.info.vision) " · sees pictures" else "") + " · tap to change"
         }
