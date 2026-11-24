@@ -30,8 +30,66 @@ index 805b868..235c421 100644
      ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
          const bool force_prec_f32 = ggml_ext_force_prec_f32(ctx, this->force_prec_f32, precision_flags);
          ggml_tensor* w            = params["weight"];
+diff --git a/src/model/diffusion/flux.hpp b/src/model/diffusion/flux.hpp
+index 01b4609..25ae6f2 100644
+--- a/src/model/diffusion/flux.hpp
++++ b/src/model/diffusion/flux.hpp
+@@ -1445,6 +1445,10 @@ namespace Flux {
+             flux.get_param_tensors(tensors, prefix);
+         }
+ 
++        void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) override {
++            flux.get_param_tensor_ops(tensor_ops);
++        }
++
+         std::vector<float> fetch_dct_pos(int patch_size, int max_freqs) {
+             const float PI = 3.14159265358979323846f;
+ 
+diff --git a/src/model/diffusion/model.hpp b/src/model/diffusion/model.hpp
+index ed20c80..e7ad35d 100644
+--- a/src/model/diffusion/model.hpp
++++ b/src/model/diffusion/model.hpp
+@@ -248,6 +248,8 @@ public:
+ 
+     virtual void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors,
+                                    const std::string& prefix) = 0;
++
++    virtual void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) {}
+ };
+ 
+ #endif  // __SD_MODEL_DIFFUSION_MODEL_HPP__
+diff --git a/src/model/diffusion/unet.hpp b/src/model/diffusion/unet.hpp
+index 767dfc1..200d5e4 100644
+--- a/src/model/diffusion/unet.hpp
++++ b/src/model/diffusion/unet.hpp
+@@ -773,6 +773,10 @@ struct UNetModelRunner : public DiffusionModelRunner {
+         unet.get_param_tensors(tensors, prefix);
+     }
+ 
++    void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) override {
++        unet.get_param_tensor_ops(tensor_ops);
++    }
++
+     ggml_cgraph* build_graph(const sd::Tensor<float>& x_tensor,
+                              const sd::Tensor<float>& timesteps_tensor,
+                              const sd::Tensor<float>& context_tensor               = {},
+diff --git a/src/model/diffusion/z_image.hpp b/src/model/diffusion/z_image.hpp
+index 43df4d3..c07abb9 100644
+--- a/src/model/diffusion/z_image.hpp
++++ b/src/model/diffusion/z_image.hpp
+@@ -935,6 +935,10 @@ namespace ZImage {
+             z_image.get_param_tensors(tensors, prefix);
+         }
+ 
++        void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) override {
++            z_image.get_param_tensor_ops(tensor_ops);
++        }
++
+         bool control_enabled() const {
+             return z_image.control_enabled;
+         }
 diff --git a/src/model_manager.cpp b/src/model_manager.cpp
-index bfdf262..0bedcb0 100644
+index bfdf262..4cde1cb 100644
 --- a/src/model_manager.cpp
 +++ b/src/model_manager.cpp
 @@ -2,6 +2,8 @@
@@ -92,7 +150,19 @@ index bfdf262..0bedcb0 100644
      return sd_backend_is_cpu(state.compute_backend) ||
             sd_backend_is_cpu(state.params_backend) ||
             backend_supports_host_buffer(state.compute_backend);
-@@ -1132,7 +1162,36 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
+@@ -918,6 +948,11 @@ bool ModelManager::alloc_params_buffers(const std::vector<TensorState*>& states,
+                 return false;
+             }
+             ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++            const auto& extra = cpu_extra_buffer_types();
++            if (std::find(extra.begin(), extra.end(), params_buft) != extra.end()) {
++                LOG_INFO("%s: %zu weights (%.1f MB) repacked for the CPU",
++                         ggml_backend_buft_name(params_buft), chunk.size(), chunk_size / (1024.0 * 1024.0));
++            }
+ 
+             std::vector<ggml_tensor*> initialized_tensors;
+             void* base    = ggml_backend_buffer_get_base(buffer);
+@@ -1132,7 +1167,36 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
      return true;
  }
  
@@ -129,7 +199,7 @@ index bfdf262..0bedcb0 100644
      if (state.params_backend == nullptr) {
          LOG_ERROR("model manager params backend is null for tensor '%s'", state.name.c_str());
          return nullptr;
-@@ -1149,7 +1208,7 @@ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorStat
+@@ -1149,7 +1213,7 @@ ggml_backend_buffer_type_t ModelManager::params_buffer_type_for(const TensorStat
      if (params_buft == nullptr) {
          params_buft = ggml_backend_get_default_buffer_type(state.params_backend);
      }
@@ -150,3 +220,16 @@ index f592a63..93f7483 100644
      bool alloc_params_buffers(const std::vector<TensorState*>& states,
                                std::vector<ParamsStorageBlock*>& created_storage_blocks);
      bool load_tensors(const std::vector<TensorState*>& states);
+diff --git a/src/pipeline/diffusion_engine.cpp b/src/pipeline/diffusion_engine.cpp
+index 5666680..eef68a1 100644
+--- a/src/pipeline/diffusion_engine.cpp
++++ b/src/pipeline/diffusion_engine.cpp
+@@ -324,7 +324,7 @@ bool StableDiffusionGGML::register_runner_params(ModelComponent component,
+     std::map<std::string, ggml_tensor*> group_tensors;
+     std::map<ggml_tensor*, enum ggml_op> tensor_ops;
+     model->get_param_tensors(group_tensors);
+-    if constexpr (std::is_base_of_v<Conditioner, T>) {
++    if constexpr (std::is_base_of_v<Conditioner, T> || std::is_base_of_v<DiffusionModelRunner, T>) {
+         model->get_param_tensor_ops(tensor_ops);
+     }
+     if (model_manager == nullptr) {

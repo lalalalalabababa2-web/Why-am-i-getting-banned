@@ -9,7 +9,7 @@
 #include <string>
 
 static void log_cb(enum sd_log_level_t level, const char * text, void *) {
-    if (level >= SD_LOG_WARN) std::fprintf(stderr, "%s", text);
+    if (level >= SD_LOG_WARN || (level == SD_LOG_INFO && std::strstr(text, "repacked"))) std::fprintf(stderr, "%s", text);
 }
 static void progress_cb(int step, int steps, float t, void *) {
     std::fprintf(stderr, "  step %d/%d %.2fs\n", step, steps, t);
