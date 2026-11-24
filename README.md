@@ -277,11 +277,12 @@ sums V in 32 bits (16-bit sums could overflow on long contexts), which costs abo
 instructions on ARM, and for one query it walks a thread's stretch of the conversation memory once
 per query head; with grouped-query attention, where 4 to 8 query heads share a K/V head, every K
 and V row came in from memory 4 to 8 times per token, and long chats wrote about 30% slower on the
-ARM runner than with b11700. Now each row is read once for all the heads that share it: up to four
-heads' scores per K row load, one softmax rescale per block of 16 positions, and the block's V sums
-kept in registers. `tools/host-test/test_fa_decode.cpp` holds it to ggml's reference over head
-sizes 64 to 512, 1 to 8 heads per K/V head, masks with holes, soft-capping, ALiBi and sinks (x86,
-and ARM with and without 16-bit arithmetic under qemu). One attention step at 8192 positions on
+ARM runner than with b11700. Checking a draft (2 to 31 tokens at once) was worse: every query of
+every head walked the whole memory on its own. Now each row is read once for all the rows (query
+and head) that share it, eight at a time: up to four of them scored per K row load, one softmax
+rescale per block of 16 positions, and the block's V sums kept in registers. `tools/host-test/test_fa_decode.cpp` holds it to ggml's reference over head
+sizes 64 to 512, 1 to 8 heads per K/V head, 1 to 31 queries with causal masks and holes,
+soft-capping, ALiBi and sinks (x86, and ARM with and without 16-bit arithmetic under qemu). One attention step at 8192 positions on
 four x86 cores: 2.2 ms instead of 3.4 (Llama 3.2 1B's shape), 0.9 instead of 2.3 (Gemma 4 E2B),
 3.6 instead of 8.1 (Qwen3.5 4B). `OA_FA_PLAIN=1` turns it off.
 

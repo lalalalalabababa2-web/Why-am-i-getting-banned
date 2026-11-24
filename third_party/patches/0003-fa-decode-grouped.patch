@@ -1,12 +1,12 @@
 diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
-index 26b4a01c..12a063b5 100644
+index 26b4a01c..cba970ed 100644
 --- a/ggml/src/ggml-cpu/ops.cpp
 +++ b/ggml/src/ggml-cpu/ops.cpp
 @@ -9579,6 +9579,9 @@ static void ggml_flash_attn_ext_reduce_partials(
      }
  }
  
-+// Offline AI: one query, grouped-query attention, each K/V row read once for all its heads
++// Offline AI: one query or a few, grouped-query attention, each K/V row read once for all its heads
 +#include "fa-decode.inc"
 +
  static void ggml_compute_forward_flash_attn_ext_f16(
@@ -29,3 +29,15 @@ index 26b4a01c..12a063b5 100644
              }
          } else {
              for (int64_t q_head = 0; q_head < neq2; q_head++) {
+@@ -9702,6 +9707,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+ #endif
+         use_tiled &= (DV % f32_epr == 0);
+ #endif
++        // Offline AI: a few queries (a draft being checked), grouped by the K/V head they read
++        if (!use_ref && !use_tiled && oa_fa_rows_grouped(params, dst)) {
++            return;
++        }
++
+         int current_chunk = ith;
+ 
+         while (current_chunk < nchunk) {

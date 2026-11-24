@@ -1,7 +1,9 @@
-// Offline AI: flash attention for writing one token (one query), with grouped-query attention.
+// Offline AI: flash attention for writing (one query) and for checking a draft (a few queries),
+// with grouped-query attention.
 //
 // ggml's split-KV path gives each thread a stretch of the conversation memory and walks it once
-// per query head. With grouped-query attention 4 to 8 query heads share one K/V head, so the same
+// per query head, and with a few queries (a draft of up to 31 tokens being checked) each thread
+// walks all of it once per query and head. With grouped-query attention 4 to 8 query heads share one K/V head, so the same
 // K and V rows came in from memory 4 to 8 times for every token written: on a phone, where the
 // memory is the slow part, that is most of the time spent in attention once a chat is long. Here
 // each K/V row is read once for all the heads that share it, the softmax runs over blocks of 16
@@ -9,9 +11,10 @@
 // in registers instead of going back to memory after every position. The V sums are 32-bit, as in
 // upstream ggml since it stopped summing in 16 bits (which could overflow on long contexts).
 //
-// Included from ggml-cpu/ops.cpp (0003-fa-decode-grouped.patch). Returns false when the case is
-// not one it handles (the caller then runs ggml's own path): K and V in F16, one query, the same
-// heads sharing K and V, no kv rows or bias tables. OA_FA_PLAIN=1 turns it off for comparisons.
+// Included from ggml-cpu/ops.cpp (0003-fa-decode-grouped.patch). The entry points return false
+// when the case is not one they handle (the caller then runs ggml's own path): K and V in F16,
+// the same heads sharing K and V, no kv rows or bias tables, no broadcast over the 4th dimension.
+// OA_FA_PLAIN=1 turns them off for comparisons.
 
 #include <cstdlib>
 #include <cstring>
@@ -94,147 +97,223 @@ static inline void oa_fa_kdot_heads(int64_t DK, const ggml_fp16_t * k, const ggm
     }
 }
 
-// One thread's stretch [ic_start, ic_end) of the memory for every query head; writes the partial
-// results (M, S, VKQ) the way ggml_compute_forward_flash_attn_ext_f16_one_chunk does.
-static bool oa_fa_decode_grouped(
-        const ggml_compute_params * params, ggml_tensor * dst,
-        int64_t ic_start, int64_t ic_end, float * partials, int64_t partial_stride) {
+struct oa_fa_op {
+    const ggml_tensor * q;
+    const ggml_tensor * k;
+    const ggml_tensor * v;
+    const ggml_tensor * mask;
+    const ggml_tensor * sinks;
+    ggml_tensor * dst;
+    int64_t DK, DV, n_head, n_head_k, rk2;
+    float scale, max_bias, softcap, m0, m1;
+    uint32_t n_head_log2;
+};
+
+static constexpr int     OA_FA_G = 8;     // rows (query and head) at once
+static constexpr int     OA_FA_B = 16;    // positions per softmax block
+static constexpr int64_t OA_FA_D = 512;   // largest head size
+
+static bool oa_fa_off() {
     static const bool plain = [] {
         const char * e = std::getenv("OA_FA_PLAIN");
         return e && *e && std::strcmp(e, "0") != 0;
     }();
-    if (plain) return false;
+    return plain;
+}
 
-    const ggml_tensor * q     = dst->src[0];
-    const ggml_tensor * k     = dst->src[1];
-    const ggml_tensor * v     = dst->src[2];
-    const ggml_tensor * mask  = dst->src[3];
-    const ggml_tensor * sinks = dst->src[4];
+static bool oa_fa_prepare(ggml_tensor * dst, oa_fa_op & o) {
+    if (oa_fa_off()) return false;
+    o.dst   = dst;
+    o.q     = dst->src[0];
+    o.k     = dst->src[1];
+    o.v     = dst->src[2];
+    o.mask  = dst->src[3];
+    o.sinks = dst->src[4];
     if (dst->src[5] || dst->src[6] || dst->src[7]) return false;  // kv rows, bias tables
-    if (q->type != GGML_TYPE_F32 || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16) return false;
-    if (mask && mask->type != GGML_TYPE_F16) return false;
-
-    constexpr int     G_MAX = 8;    // query heads at once
-    constexpr int     B     = 16;   // positions per softmax block
-    constexpr int64_t D_MAX = 512;
-
-    const int64_t DK = k->ne[0];
-    const int64_t DV = v->ne[0];
-    if (DK > D_MAX || DV > D_MAX || DV % 32 != 0) return false;
-    if (q->ne[1] != 1 || q->ne[3] != 1 || k->ne[3] != 1 || v->ne[3] != 1) return false;
-    const int64_t n_head   = q->ne[2];
-    const int64_t n_head_k = k->ne[2];
-    if (n_head_k <= 0 || v->ne[2] != n_head_k || n_head % n_head_k != 0) return false;
-    const int64_t rk2 = n_head / n_head_k;
+    if (o.q->type != GGML_TYPE_F32 || o.k->type != GGML_TYPE_F16 || o.v->type != GGML_TYPE_F16) return false;
+    if (o.mask && o.mask->type != GGML_TYPE_F16) return false;
+    o.DK = o.k->ne[0];
+    o.DV = o.v->ne[0];
+    if (o.DK > OA_FA_D || o.DV > OA_FA_D || o.DV % 32 != 0) return false;
+    if (o.k->ne[3] != o.q->ne[3] || o.v->ne[3] != o.q->ne[3]) return false;
+    o.n_head   = o.q->ne[2];
+    o.n_head_k = o.k->ne[2];
+    if (o.n_head_k <= 0 || o.v->ne[2] != o.n_head_k || o.n_head % o.n_head_k != 0) return false;
+    o.rk2 = o.n_head / o.n_head_k;
     // rows must be plain, as the vec dot and the loads assume
-    if (k->nb[0] != sizeof(ggml_fp16_t) || v->nb[0] != sizeof(ggml_fp16_t) || q->nb[0] != sizeof(float)) return false;
+    if (o.k->nb[0] != sizeof(ggml_fp16_t) || o.v->nb[0] != sizeof(ggml_fp16_t) || o.q->nb[0] != sizeof(float)) return false;
+    o.scale = 1.0f;
+    o.max_bias = 0.0f;
+    o.softcap = 0.0f;
+    memcpy(&o.scale,    (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&o.max_bias, (float *) dst->op_params + 1, sizeof(float));
+    memcpy(&o.softcap,  (float *) dst->op_params + 2, sizeof(float));
+    if (o.softcap != 0) o.scale /= o.softcap;
+    o.n_head_log2 = 1u << (uint32_t) floor(log2((double) o.n_head));
+    o.m0 = powf(2.0f, -(o.max_bias       ) / o.n_head_log2);
+    o.m1 = powf(2.0f, -(o.max_bias / 2.0f) / o.n_head_log2);
+    return true;
+}
 
-    float scale = 1.0f, max_bias = 0.0f, logit_softcap = 0.0f;
-    memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
-    memcpy(&max_bias,      (float *) dst->op_params + 1, sizeof(float));
-    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
-    if (logit_softcap != 0) scale /= logit_softcap;
+// Rows (head hs[i], query q1s[i]) of batch iq3, all reading K/V head g, over the positions
+// [c_begin, c_end). With partials: M, S and the V sums go to partials + head * partial_stride
+// for ggml's reduction (one query); without: the finished rows go to dst.
+static void oa_fa_group(const oa_fa_op & o, int64_t iq3, int64_t g, const int64_t * hs, const int64_t * q1s, int G,
+                        int64_t c_begin, int64_t c_end, bool with_sinks, float * partials, int64_t partial_stride) {
+    const ggml_tensor * q = o.q;
+    const ggml_tensor * k = o.k;
+    const ggml_tensor * v = o.v;
+    const ggml_tensor * mask = o.mask;
+    const int64_t DK = o.DK, DV = o.DV;
 
-    const uint32_t n_head_log2 = 1u << (uint32_t) floor(log2((double) n_head));
-    const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
-    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+    alignas(64) float       acc[OA_FA_G][OA_FA_D];
+    alignas(64) ggml_fp16_t qh[OA_FA_G][OA_FA_D];
+    float s[OA_FA_G][OA_FA_B];
+    float w[OA_FA_G][OA_FA_B];
+    float M[OA_FA_G], S[OA_FA_G], slope[OA_FA_G], mvs[OA_FA_G], dots[OA_FA_G];
+    const ggml_fp16_t * mp[OA_FA_G];
+    const ggml_fp16_t * vrow[OA_FA_B];
 
-    alignas(64) float       acc[G_MAX][D_MAX];
-    alignas(64) ggml_fp16_t qh[G_MAX][D_MAX];
-    float s[G_MAX][B];
-    float w[G_MAX][B];
-    float M[G_MAX], S[G_MAX], slope[G_MAX], mvs[G_MAX], dots[G_MAX];
-    const ggml_fp16_t * mp[G_MAX];
-    const ggml_fp16_t * vrow[B];
+    for (int i = 0; i < G; i++) {
+        const int64_t h = hs[i];
+        M[i] = -INFINITY;
+        S[i] = 0.0f;
+        slope[i] = (o.max_bias > 0.0f) ? (h < o.n_head_log2 ? powf(o.m0, h + 1) : powf(o.m1, 2*(h - o.n_head_log2) + 1)) : 1.0f;
+        memset(acc[i], 0, DV * sizeof(float));
+        const float * pq = (const float *) ((const char *) q->data + q1s[i] * q->nb[1] + h * q->nb[2] + iq3 * q->nb[3]);
+        ggml_cpu_fp32_to_fp16(pq, qh[i], DK);
+        mp[i] = mask ? (const ggml_fp16_t *) ((const char *) mask->data + q1s[i] * mask->nb[1] +
+                                              (h % mask->ne[2]) * mask->nb[2] + (iq3 % mask->ne[3]) * mask->nb[3]) : nullptr;
+    }
+    const char * kbase = (const char *) k->data + g * k->nb[2] + iq3 * k->nb[3];
+    const char * vbase = (const char *) v->data + g * v->nb[2] + iq3 * v->nb[3];
 
-    for (int64_t g = 0; g < n_head_k; g++) {
-        for (int64_t h0 = g * rk2; h0 < (g + 1) * rk2; h0 += G_MAX) {
-            const int G = (int) std::min<int64_t>(G_MAX, (g + 1) * rk2 - h0);
+    for (int64_t c0 = c_begin; c0 < c_end; c0 += OA_FA_B) {
+        const int nb = (int) std::min<int64_t>(OA_FA_B, c_end - c0);
+        // scores: each K row once, for every row of the group that reads it
+        for (int j = 0; j < nb; j++) {
+            const int64_t c = c0 + j;
+            const ggml_fp16_t * kr = (const ggml_fp16_t *) (kbase + c * k->nb[1]);
+            vrow[j] = (const ggml_fp16_t *) (vbase + c * v->nb[1]);
+            // a position no row of the group sees (padding past the end, the future of a draft) is not read
+            bool any = false;
             for (int i = 0; i < G; i++) {
-                const int64_t h = h0 + i;
-                M[i] = -INFINITY;
-                S[i] = 0.0f;
-                slope[i] = (max_bias > 0.0f) ? (h < n_head_log2 ? powf(m0, h + 1) : powf(m1, 2*(h - n_head_log2) + 1)) : 1.0f;
-                memset(acc[i], 0, DV * sizeof(float));
-                const float * pq = (const float *) ((const char *) q->data + h * q->nb[2]);
-                ggml_cpu_fp32_to_fp16(pq, qh[i], DK);
-                mp[i] = mask ? (const ggml_fp16_t *) ((const char *) mask->data + (h % mask->ne[2]) * mask->nb[2]) : nullptr;
+                mvs[i] = mp[i] ? slope[i] * GGML_CPU_FP16_TO_FP32(mp[i][c]) : 0.0f;
+                any = any || mvs[i] != -INFINITY;
             }
-            const char * kbase = (const char *) k->data + g * k->nb[2];
-            const char * vbase = (const char *) v->data + g * v->nb[2];
-
-            for (int64_t c0 = ic_start; c0 < ic_end; c0 += B) {
-                const int nb = (int) std::min<int64_t>(B, ic_end - c0);
-                // scores: each K row once, for every head that reads it
-                for (int j = 0; j < nb; j++) {
-                    const int64_t c = c0 + j;
-                    const ggml_fp16_t * kr = (const ggml_fp16_t *) (kbase + c * k->nb[1]);
-                    vrow[j] = (const ggml_fp16_t *) (vbase + c * v->nb[1]);
-                    // a position no head of the group sees (padding past the end) is not read at all
-                    bool any = false;
-                    for (int i = 0; i < G; i++) {
-                        mvs[i] = mp[i] ? slope[i] * GGML_CPU_FP16_TO_FP32(mp[i][c]) : 0.0f;
-                        any = any || mvs[i] != -INFINITY;
-                    }
-                    if (!any) {
-                        for (int i = 0; i < G; i++) s[i][j] = -INFINITY;
-                        continue;
-                    }
-                    oa_fa_kdot_heads(DK, kr, qh, G, dots);
-                    for (int i = 0; i < G; i++) {
-                        if (mvs[i] == -INFINITY) {
-                            s[i][j] = -INFINITY;
-                            continue;
-                        }
-                        float d = dots[i] * scale;
-                        if (logit_softcap != 0.0f) d = logit_softcap * tanhf(d);
-                        s[i][j] = d + mvs[i];
-                    }
-                }
-                // online softmax over the block, then the V sums
-                for (int i = 0; i < G; i++) {
-                    float bm = -INFINITY;
-                    for (int j = 0; j < nb; j++) bm = std::max(bm, s[i][j]);
-                    if (bm == -INFINITY) continue;  // all masked
-                    if (bm > M[i]) {
-                        const float ms = M[i] == -INFINITY ? 0.0f : expf(M[i] - bm);
-                        if (ms != 1.0f) {
-                            ggml_vec_scale_f32((int) DV, acc[i], ms);
-                            S[i] *= ms;
-                        }
-                        M[i] = bm;
-                    }
-                    float sum = 0.0f;
-                    for (int j = 0; j < nb; j++) {
-                        w[i][j] = s[i][j] == -INFINITY ? 0.0f : expf(s[i][j] - M[i]);
-                        sum += w[i][j];
-                    }
-                    S[i] += sum;
-                    oa_fa_vmad_block(DV, acc[i], vrow, w[i], nb);
-                }
+            if (!any) {
+                for (int i = 0; i < G; i++) s[i][j] = -INFINITY;
+                continue;
             }
-
+            oa_fa_kdot_heads(DK, kr, qh, G, dots);
             for (int i = 0; i < G; i++) {
-                const int64_t h = h0 + i;
-                // sinks count once, with the first stretch
-                if (sinks && ic_start == 0) {
-                    const float sv = ((const float *) sinks->data)[h];
-                    if (sv > M[i]) {
-                        const float ms = M[i] == -INFINITY ? 0.0f : expf(M[i] - sv);
-                        ggml_vec_scale_f32((int) DV, acc[i], ms);
-                        S[i] = S[i] * ms + 1.0f;
-                        M[i] = sv;
-                    } else {
-                        S[i] += expf(sv - M[i]);
-                    }
+                if (mvs[i] == -INFINITY) {
+                    s[i][j] = -INFINITY;
+                    continue;
                 }
-                float * partial = partials + h * partial_stride;
-                partial[0] = M[i];
-                partial[1] = S[i];
-                memcpy(partial + 2, acc[i], DV * sizeof(float));
+                float d = dots[i] * o.scale;
+                if (o.softcap != 0.0f) d = o.softcap * tanhf(d);
+                s[i][j] = d + mvs[i];
             }
+        }
+        // online softmax over the block, then the V sums
+        for (int i = 0; i < G; i++) {
+            float bm = -INFINITY;
+            for (int j = 0; j < nb; j++) bm = std::max(bm, s[i][j]);
+            if (bm == -INFINITY) continue;  // all masked
+            if (bm > M[i]) {
+                const float ms = M[i] == -INFINITY ? 0.0f : expf(M[i] - bm);
+                if (ms != 1.0f) {
+                    ggml_vec_scale_f32((int) DV, acc[i], ms);
+                    S[i] *= ms;
+                }
+                M[i] = bm;
+            }
+            float sum = 0.0f;
+            for (int j = 0; j < nb; j++) {
+                w[i][j] = s[i][j] == -INFINITY ? 0.0f : expf(s[i][j] - M[i]);
+                sum += w[i][j];
+            }
+            S[i] += sum;
+            oa_fa_vmad_block(DV, acc[i], vrow, w[i], nb);
+        }
+    }
+
+    for (int i = 0; i < G; i++) {
+        const int64_t h = hs[i];
+        // sinks count once: with the first stretch, or the whole of it
+        if (o.sinks && with_sinks) {
+            const float sv = ((const float *) o.sinks->data)[h];
+            if (sv > M[i]) {
+                const float ms = M[i] == -INFINITY ? 0.0f : expf(M[i] - sv);
+                ggml_vec_scale_f32((int) DV, acc[i], ms);
+                S[i] = S[i] * ms + 1.0f;
+                M[i] = sv;
+            } else {
+                S[i] += expf(sv - M[i]);
+            }
+        }
+        if (partials) {
+            float * partial = partials + h * partial_stride;
+            partial[0] = M[i];
+            partial[1] = S[i];
+            memcpy(partial + 2, acc[i], DV * sizeof(float));
+        } else {
+            ggml_vec_scale_f32((int) DV, acc[i], S[i] == 0.0f ? 0.0f : 1.0f / S[i]);
+            const ggml_tensor * dst = o.dst;
+            // permute(0, 2, 1, 3)
+            memcpy((char *) dst->data + (iq3 * dst->ne[2] * dst->ne[1] + h + q1s[i] * dst->ne[1]) * dst->nb[1], acc[i],
+                   DV * sizeof(float));
+        }
+    }
+}
+
+// Writing one token: this thread's stretch [ic_start, ic_end) of the memory for every query head,
+// as partial results for ggml's reduction (ggml's split-KV path).
+static bool oa_fa_decode_grouped(
+        const ggml_compute_params * params, ggml_tensor * dst,
+        int64_t ic_start, int64_t ic_end, float * partials, int64_t partial_stride) {
+    oa_fa_op o;
+    if (!oa_fa_prepare(dst, o) || o.q->ne[1] != 1 || o.q->ne[3] != 1) return false;
+    int64_t hs[OA_FA_G];
+    const int64_t q1s[OA_FA_G] = {0};
+    for (int64_t g = 0; g < o.n_head_k; g++) {
+        for (int64_t h0 = g * o.rk2; h0 < (g + 1) * o.rk2; h0 += OA_FA_G) {
+            const int G = (int) std::min<int64_t>(OA_FA_G, (g + 1) * o.rk2 - h0);
+            for (int i = 0; i < G; i++) hs[i] = h0 + i;
+            oa_fa_group(o, 0, g, hs, q1s, G, ic_start, ic_end, ic_start == 0, partials, partial_stride);
         }
     }
     GGML_UNUSED(params);
+    return true;
+}
+
+// A few queries (a draft being checked, 2 to 63 tokens): the work is split into groups of up to
+// eight rows (query and head) that read the same K/V head, each walking the whole memory once,
+// handed out to the threads as they come free. The threadpool's chunk counter must stand at
+// the thread count, as ggml's own loop expects it.
+static bool oa_fa_rows_grouped(const ggml_compute_params * params, ggml_tensor * dst) {
+    oa_fa_op o;
+    if (!oa_fa_prepare(dst, o)) return false;
+    const int64_t nq  = o.q->ne[1];
+    const int64_t nq3 = o.q->ne[3];
+    if (nq < 2) return false;
+    const int64_t R   = o.rk2 * nq;                          // rows reading one K/V head
+    const int64_t per = (R + OA_FA_G - 1) / OA_FA_G;         // groups of them
+    const int64_t n_items = nq3 * o.n_head_k * per;
+    const int64_t n_kv = o.k->ne[1];
+    int64_t hs[OA_FA_G], q1s[OA_FA_G];
+    for (int64_t item = params->ith; item < n_items; item = ggml_threadpool_chunk_add(params->threadpool, 1)) {
+        const int64_t iq3 = item / (o.n_head_k * per);
+        const int64_t rem = item % (o.n_head_k * per);
+        const int64_t g   = rem / per;
+        const int64_t r0  = (rem % per) * OA_FA_G;
+        const int G = (int) std::min<int64_t>(OA_FA_G, R - r0);
+        for (int i = 0; i < G; i++) {
+            hs[i]  = g * o.rk2 + (r0 + i) % o.rk2;
+            q1s[i] = (r0 + i) / o.rk2;
+        }
+        oa_fa_group(o, iq3, g, hs, q1s, G, 0, n_kv, true, nullptr, 0);
+    }
     return true;
 }

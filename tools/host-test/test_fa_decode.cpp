@@ -22,6 +22,7 @@ struct Case {
     int dk, dv, n_head, n_head_kv, n_kv;
     float softcap, max_bias;
     bool sinks, holes;
+    int nq = 1;  // queries: 1 while writing, a few while a draft is checked
 };
 
 static int g_fail = 0;
@@ -31,21 +32,26 @@ static int g_fail = 0;
 static std::vector<float> run(const Case & c, int threads, bool ref, double * ms_per_op, int reps) {
     ggml_init_params ip = {(size_t) 64 * 1024 * 1024 + (size_t) c.n_kv * c.n_head_kv * (c.dk + c.dv) * 2 * 2, nullptr, false};
     ggml_context * ctx = ggml_init(ip);
-    ggml_tensor * q  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, c.dk, c.n_head, 1);                 // [DK, heads, tokens]
+    ggml_tensor * q  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, c.dk, c.n_head, c.nq);              // [DK, heads, tokens]
     ggml_tensor * kc = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, c.dk, c.n_head_kv, c.n_kv);         // the cache, per position
     ggml_tensor * vc = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, c.dv, c.n_head_kv, c.n_kv);
-    ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, c.n_kv, 1);
+    ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, c.n_kv, c.nq);
     std::mt19937 rng(c.dk * 131 + c.n_head * 17 + c.n_kv);
     std::normal_distribution<float> nd(0.0f, 1.0f);
     for (int64_t i = 0; i < ggml_nelements(q); i++) ((float *) q->data)[i] = nd(rng);
     for (int64_t i = 0; i < ggml_nelements(kc); i++) ((ggml_fp16_t *) kc->data)[i] = ggml_fp32_to_fp16(nd(rng));
     for (int64_t i = 0; i < ggml_nelements(vc); i++) ((ggml_fp16_t *) vc->data)[i] = ggml_fp32_to_fp16(nd(rng) * 3.0f);
     std::uniform_real_distribution<float> ud(0.0f, 1.0f);
-    for (int i = 0; i < c.n_kv; i++) {
-        float m = 0.0f;
-        if (c.holes && (ud(rng) < 0.2f || i >= c.n_kv - 37)) m = -INFINITY;   // padding at the end, holes elsewhere
-        if (c.max_bias > 0.0f && m == 0.0f) m = -(float) (c.n_kv - i) * 0.01f;
-        ((ggml_fp16_t *) mask->data)[i] = ggml_fp32_to_fp16(m);
+    // the queries are the last nq positions before the padding, each seeing itself and what came before
+    const int pad = c.holes ? 37 : 0;
+    for (int t = 0; t < c.nq; t++) {
+        for (int i = 0; i < c.n_kv; i++) {
+            float m = 0.0f;
+            if (i >= c.n_kv - pad - (c.nq - 1 - t)) m = -INFINITY;
+            if (c.holes && ud(rng) < 0.2f) m = -INFINITY;
+            if (c.max_bias > 0.0f && m == 0.0f) m = -(float) (c.n_kv - i) * 0.01f;
+            ((ggml_fp16_t *) mask->data)[t * c.n_kv + i] = ggml_fp32_to_fp16(m);
+        }
     }
     ggml_tensor * qv = ggml_permute(ctx, q, 0, 2, 1, 3);                                          // [DK, tokens, heads]
     ggml_tensor * kv = ggml_permute(ctx, kc, 0, 2, 1, 3);                                         // [DK, n_kv, heads_kv]
@@ -85,8 +91,8 @@ static void check(const Case & c, int threads) {
     }
     const bool ok = err <= 2e-3 * std::max(1.0, norm);
     if (!ok) g_fail++;
-    std::printf("  %s D=%d/%d heads %d/%d positions %d softcap %g alibi %g%s%s, %d threads: max error %.2e (largest value %.2f)\n",
-                ok ? "ok  " : "FAIL", c.dk, c.dv, c.n_head, c.n_head_kv, c.n_kv, c.softcap, c.max_bias,
+    std::printf("  %s D=%d/%d heads %d/%d positions %d queries %d softcap %g alibi %g%s%s, %d threads: max error %.2e (largest value %.2f)\n",
+                ok ? "ok  " : "FAIL", c.dk, c.dv, c.n_head, c.n_head_kv, c.n_kv, c.nq, c.softcap, c.max_bias,
                 c.sinks ? ", sinks" : "", c.holes ? ", holes" : "", threads, err, norm);
 }
 
@@ -110,19 +116,35 @@ int main(int argc, char ** argv) {
         check({256, 256, 8, 1, 1536, 0.0f, 0.0f, false, false}, 1);
         check({96, 64, 16, 4, 1024, 0.0f, 0.0f, false, true}, 4);   // K and V of different sizes
         check({192, 80, 16, 16, 777, 0.0f, 0.0f, false, true}, 4);   // V not a multiple of 32 wide: ggml's own path
+        // a draft being checked: a few queries at once, under and over 512 positions
+        for (int nq : {2, 4, 8, 31}) {
+            for (auto hk : std::vector<std::pair<int, int>>{{32, 8}, {8, 1}, {16, 4}, {12, 12}}) {
+                for (int d : {64, 256}) {
+                    check({d, d, hk.first, hk.second, 300, 0.0f, 0.0f, false, true, nq}, 4);
+                    check({d, d, hk.first, hk.second, 2048, 0.0f, 0.0f, false, true, nq}, 3);
+                }
+            }
+        }
+        check({128, 128, 32, 8, 1024, 30.0f, 0.0f, true, true, 8}, 4);
+        check({64, 64, 16, 4, 1024, 0.0f, 8.0f, false, true, 5}, 2);
+        check({512, 512, 8, 1, 700, 0.0f, 0.0f, false, false, 3}, 1);
     }
     std::printf("== one attention step at 8192 positions (%s)\n", plain ? "ggml's own path" : "fa-decode.inc");
     const int threads = std::max(1, std::atoi(std::getenv("BENCH_THREADS") ? std::getenv("BENCH_THREADS") : "4"));
-    for (auto c : std::vector<Case>{
-             {64, 64, 32, 8, 8192, 0.0f, 0.0f, false, false},     // Llama 3.2 1B
-             {256, 256, 8, 1, 8192, 0.0f, 0.0f, false, false},    // Gemma 4 E2B
-             {256, 256, 16, 4, 8192, 0.0f, 0.0f, false, false},   // Qwen3.5 4B / 9B
-             {128, 128, 32, 8, 8192, 0.0f, 0.0f, false, false},   // Llama 8B class
-         }) {
-        double ms = 0.0;
-        run(c, threads, false, &ms, 50);
-        std::printf("SPEED: attention, D=%d heads %d/%d, 8192 positions, %d threads, %s: %.3f ms a step\n",
-                    c.dk, c.n_head, c.n_head_kv, threads, plain ? "ggml's own" : "grouped", ms);
+    for (int nq : {1, 8}) {
+        for (auto c : std::vector<Case>{
+                 {64, 64, 32, 8, 8192, 0.0f, 0.0f, false, false},     // Llama 3.2 1B
+                 {256, 256, 8, 1, 8192, 0.0f, 0.0f, false, false},    // Gemma 4 E2B
+                 {256, 256, 16, 4, 8192, 0.0f, 0.0f, false, false},   // Qwen3.5 4B / 9B
+                 {128, 128, 32, 8, 8192, 0.0f, 0.0f, false, false},   // Llama 8B class
+             }) {
+            c.nq = nq;
+            double ms = 0.0;
+            run(c, threads, false, &ms, nq == 1 ? 50 : 10);
+            std::printf("SPEED: attention, D=%d heads %d/%d, 8192 positions, %d %s, %d threads, %s: %.3f ms a step\n",
+                        c.dk, c.n_head, c.n_head_kv, nq, nq == 1 ? "query" : "queries (a draft)", threads,
+                        plain ? "ggml's own" : "grouped", ms);
+        }
     }
     if (!bench_only) std::printf("\n%s (%d failures)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail);
     return g_fail ? 1 : 0;

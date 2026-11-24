@@ -42,7 +42,8 @@ import csv, sys
 kind, name, cache, fa = sys.argv[1:5]
 rows = list(csv.DictReader(sys.stdin))
 cells = ", ".join("%.1f at %s" % (float(r["avg_ts"]), r["n_depth"]) for r in rows)
-print(f"SPEED: [{kind} llama.cpp] {name}, {cache} memory, flash attention {\"on\" if fa == \"1\" else \"off\"}: tokens/s writing {cells}")
+fa = "on" if fa == "1" else "off"
+print(f"SPEED: [{kind} llama.cpp] {name}, {cache} memory, flash attention {fa}: tokens/s writing {cells}")
 ' "$kind" "$name" "$cache" "$fa" || echo "SPEED: [$kind] $name $cache fa=$fa: failed"
       done
     done
