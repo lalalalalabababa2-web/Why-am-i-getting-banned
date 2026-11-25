@@ -1110,14 +1110,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         val team = TeamDialog.summary(app)
         sheet.divider()
-            .item("Work together", detail = if (team.isEmpty()) "Several answers, then a review" else team) {
+            .item("Work together", R.drawable.ic_people, detail = if (team.isEmpty()) "Several answers, then a review" else team) {
                 TeamDialog.show(this, app) { refreshAll() }
             }
-            .item("All models", detail = "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
+            .item("All models", R.drawable.ic_download, "Download, add or remove") { startActivity(Intent(this, ModelsActivity::class.java)) }
             .item("Characters", R.drawable.ic_spark, "Chat with someone: a storyteller, a tutor, your own") {
                 CharactersSheet.show(this, app) { input.setText("") }
             }
-            .item("Phones together", detail = "Bigger models across your phones on the same Wi-Fi") {
+            .item("Phones together", R.drawable.ic_phone, "Bigger models across your phones on the same Wi-Fi") {
                 startActivity(Intent(this, PhonesActivity::class.java))
             }
             .item("Pictures", R.drawable.ic_image, "Make pictures from words") { openPictures() }
