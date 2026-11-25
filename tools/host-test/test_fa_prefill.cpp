@@ -107,8 +107,20 @@ static void check(const Case & c, int threads) {
     const double cosv = dot / std::sqrt(gg * sw + 1e-30);
     // 8-bit scores: a mean error of about 2e-4 (each of Q and K rounded to 1/254 of its largest
     // value), like the 8-bit inputs of a Q8_0 projector's matrix products. A dropped key, a wrong
-    // row or a wrong weight shows as a mean error a hundred times that.
-    const bool ok = std::isfinite(err) && nmse <= 5e-4 && cosv >= 0.9997;
+    // row or a wrong weight shows as a mean error a hundred times that. With outlier channels the
+    // balance between Q and K must at least halve the error it would have without.
+    bool ok = std::isfinite(err) && nmse <= 5e-4 && cosv >= 0.9997;
+    double plain = 0.0;
+    if (c.outliers > 0.0f) {
+        setenv("OA_FA8_SMOOTH", "0", 1);
+        const auto raw = run(c, threads, false, true, nullptr, 0);
+        unsetenv("OA_FA8_SMOOTH");
+        double se0 = 0.0;
+        for (size_t i = 0; i < raw.size(); i++) se0 += (double) (raw[i] - want[i]) * (raw[i] - want[i]);
+        plain = sw > 0.0 ? se0 / sw : se0;
+        ok = std::isfinite(err) && nmse <= 1.5e-3 && nmse * 2.0 <= plain;
+        std::printf("       (without the channel balance: mean %.1e)\n", plain);
+    }
     if (!ok) g_fail++;
     std::printf("  %s D=%d heads %d patches %d mask %s k-offset %g outliers %g, %d threads: max error %.2e (largest %.2f), mean %.1e, cosine %.6f\n",
                 ok ? "ok  " : "FAIL", c.d, c.n_head, c.n, c.mask == 0 ? "none" : c.mask == 1 ? "windows" : "holes",
