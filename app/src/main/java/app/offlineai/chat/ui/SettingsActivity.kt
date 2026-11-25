@@ -649,7 +649,8 @@ class SettingsActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
         r.addView(text(title, 15f))
-        r.addView(text(value, 13f, Palette.text2).apply { maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END })
+        // the whole help text: at four lines Context size's was cut off mid-word
+        r.addView(text(value, 13f, Palette.text2).apply { maxLines = 12; ellipsize = android.text.TextUtils.TruncateAt.END })
         group.addView(r, lp(MATCH, WRAP))
     }
 

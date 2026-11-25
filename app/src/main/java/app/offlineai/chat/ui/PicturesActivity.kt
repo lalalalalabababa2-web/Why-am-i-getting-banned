@@ -216,12 +216,18 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
     private fun buildComposer(): View {
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            // the page fades into the composer, solid behind the chips and the box, so the grid
-            // scrolling under them never shows through their edges
-            background = android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(Palette.bg, Palette.bg, androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0)),
-            ).apply { setColors(intArrayOf(Palette.bg, Palette.bg, androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0)), floatArrayOf(0f, 0.72f, 1f)) }
+            // the page fades into the composer over the 28 dp above the chips and is solid behind the
+            // chips and the box, however many rows the chips take (a fade by fraction of the height
+            // left the top of the chips over half-faded text)
+            val fade = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.bg, 0), Palette.bg),
+            )
+            background = android.graphics.drawable.LayerDrawable(arrayOf(fade, android.graphics.drawable.ColorDrawable(Palette.bg))).apply {
+                setLayerHeight(0, dp(28))
+                setLayerGravity(0, Gravity.TOP or Gravity.FILL_HORIZONTAL)
+                setLayerInsetTop(1, dp(28))
+            }
             setPadding(dp(10), dp(28), dp(10), dp(10))
         }
         val chips = FlowLayout(this).apply { setPadding(dp(4), 0, dp(4), dp(8)) }
