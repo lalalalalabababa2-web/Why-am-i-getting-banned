@@ -313,7 +313,7 @@ class MessageAdapter(
                 sheet.item("Remember this", R.drawable.ic_spark, "Nyx keeps it in mind in every chat (Settings, Memory)") {
                     remember(v.context, m.content)
                 }
-                sheet.item("Translate or rewrite", R.drawable.ic_refresh, "Tools: translate, humanize, summarize, fix") {
+                sheet.item("Translate or rewrite", R.drawable.ic_translate, "Tools: translate, humanize, summarize, fix") {
                     v.context.startActivity(android.content.Intent(v.context, ToolsActivity::class.java)
                         .putExtra(ToolsActivity.EXTRA_TEXT, m.content))
                 }

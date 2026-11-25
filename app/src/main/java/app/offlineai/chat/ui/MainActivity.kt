@@ -283,7 +283,13 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             }, lp(WRAP, WRAP).apply { topMargin = dp(8); gravity = Gravity.CENTER_HORIZONTAL })
         }
         empty.addView(starters, lp(MATCH, WRAP).apply { topMargin = dp(12) })
-        talk = pill("Talk instead of typing") { startTalk() }.apply { visibility = View.GONE }
+        talk = pill("Talk instead of typing") { startTalk() }.apply {
+            visibility = View.GONE
+            // the same icon-and-words shape as the buttons under it
+            setCompoundDrawablesRelativeWithIntrinsicBounds(
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_mic)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
+            compoundDrawablePadding = dp(8)
+        }
         empty.addView(talk, lp(WRAP, WRAP).apply { topMargin = dp(16); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(pill("Chat with a character") { CharactersSheet.show(this, app) { input.setText("") } }.apply {
             setCompoundDrawablesRelativeWithIntrinsicBounds(
@@ -297,7 +303,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(pill("Translate, humanize, fix text") { startActivity(Intent(this, ToolsActivity::class.java)) }.apply {
             setCompoundDrawablesRelativeWithIntrinsicBounds(
-                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_refresh)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
+                ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_translate)?.mutate()?.apply { setTint(Palette.accent) }, null, null, null)
             compoundDrawablePadding = dp(8)
         }, lp(WRAP, WRAP).apply { topMargin = dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         empty.addView(text("About & credits", 13f, Palette.text3).apply {
@@ -1115,7 +1121,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 startActivity(Intent(this, PhonesActivity::class.java))
             }
             .item("Pictures", R.drawable.ic_image, "Make pictures from words") { openPictures() }
-            .item("Tools", R.drawable.ic_refresh, "Translate, humanize, summarize, fix grammar, rewrite") {
+            .item("Tools", R.drawable.ic_translate, "Translate, humanize, summarize, fix grammar, rewrite") {
                 startActivity(Intent(this, ToolsActivity::class.java))
             }
             .show()

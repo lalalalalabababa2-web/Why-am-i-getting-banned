@@ -235,6 +235,10 @@ object Markdown {
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             background = rounded(Palette.surface1, ctx.dp(14).toFloat(), ctx.dp(1), Palette.border)
             clipToOutline = true
+            // a narrow table fills the card, its columns spread out: the header's tint stopped at
+            // the last column and left the rest of the card's top row bare
+            isFillViewport = true
+            table.isStretchAllColumns = true
             addView(table, android.widget.FrameLayout.LayoutParams(WRAP, WRAP))
         }
 
@@ -249,7 +253,7 @@ object Markdown {
                 val tr = android.widget.TableRow(ctx)
                 if (r == 0) tr.setBackgroundColor(Palette.surface2)
                 for (cell in row) {
-                    tr.addView(ctx.text(style(cell), 14f, if (r == 0) Palette.text else Palette.text, bold = r == 0).apply {
+                    tr.addView(ctx.text(style(cell), 14f, Palette.text, bold = r == 0).apply {
                         setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
                         maxWidth = maxCell
                     })

@@ -274,7 +274,8 @@ fun Activity.edgeToEdge(root: View) {
 fun Activity.topBar(title: String): LinearLayout = LinearLayout(this).apply {
     orientation = LinearLayout.HORIZONTAL
     gravity = Gravity.CENTER_VERTICAL
-    setPadding(dp(4), dp(4), dp(12), dp(4))
+    // the back button's circle 10 dp from the screen's edge (at 6 it looked pressed against it)
+    setPadding(dp(8), dp(4), dp(12), dp(4))
     addView(iconButton(R.drawable.ic_back, "Back") { finish() })
     addView(text(title, 22f, bold = true).apply {
         setPadding(dp(4), 0, 0, 0)
