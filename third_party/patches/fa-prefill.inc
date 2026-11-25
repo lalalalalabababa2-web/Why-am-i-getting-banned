@@ -92,8 +92,12 @@ static void oa8_prep_head(const ggml_tensor * q, const ggml_tensor * k, const gg
     float *  kbar = (float *) (ws + L.kbar);
     float *  cs   = (float *) (ws + L.cs);  // K's channel scales, then Q's (their inverses)
     float *  qs   = cs + L.dkp;
+    // one pass over K: each channel's sum, smallest and largest value
+    float kmin[256], kmx[256];
     for (int64_t d = 0; d < DK; d++) {
         kbar[d] = 0.0f;
+        kmin[d] = INFINITY;
+        kmx[d] = -INFINITY;
     }
     const char * kb = (const char *) k->data + ik2 * k->nb[2] + ik3 * k->nb[3];
     for (int64_t j = 0; j < nk; j++) {
@@ -101,28 +105,29 @@ static void oa8_prep_head(const ggml_tensor * q, const ggml_tensor * k, const gg
         int64_t d = 0;
         for (; d + 8 <= DK; d += 8) {
             const float16x8_t h = vld1q_f16((const __fp16 *) row + d);
-            vst1q_f32(kbar + d, vaddq_f32(vld1q_f32(kbar + d), vcvt_f32_f16(vget_low_f16(h))));
-            vst1q_f32(kbar + d + 4, vaddq_f32(vld1q_f32(kbar + d + 4), vcvt_high_f32_f16(h)));
+            const float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
+            const float32x4_t hi = vcvt_high_f32_f16(h);
+            vst1q_f32(kbar + d, vaddq_f32(vld1q_f32(kbar + d), lo));
+            vst1q_f32(kbar + d + 4, vaddq_f32(vld1q_f32(kbar + d + 4), hi));
+            vst1q_f32(kmin + d, vminq_f32(vld1q_f32(kmin + d), lo));
+            vst1q_f32(kmin + d + 4, vminq_f32(vld1q_f32(kmin + d + 4), hi));
+            vst1q_f32(kmx + d, vmaxq_f32(vld1q_f32(kmx + d), lo));
+            vst1q_f32(kmx + d + 4, vmaxq_f32(vld1q_f32(kmx + d + 4), hi));
         }
         for (; d < DK; d++) {
-            kbar[d] += GGML_CPU_FP16_TO_FP32(row[d]);
+            const float x = GGML_CPU_FP16_TO_FP32(row[d]);
+            kbar[d] += x;
+            kmin[d] = std::min(kmin[d], x);
+            kmx[d] = std::max(kmx[d], x);
         }
     }
     const float inv_n = 1.0f / (float) nk;
-    for (int64_t d = 0; d < DK; d++) {
-        kbar[d] *= inv_n;
-    }
     // the largest |K - mean| and |Q| of each channel, over the head (and the query heads sharing it)
     float kmax[256], qmax[256];
     for (int64_t d = 0; d < DK; d++) {
-        kmax[d] = 0.0f;
+        kbar[d] *= inv_n;
+        kmax[d] = std::max(kmx[d] - kbar[d], kbar[d] - kmin[d]);
         qmax[d] = 0.0f;
-    }
-    for (int64_t j = 0; j < nk; j++) {
-        const ggml_fp16_t * row = (const ggml_fp16_t *) (kb + j * k->nb[1]);
-        for (int64_t d = 0; d < DK; d++) {
-            kmax[d] = std::max(kmax[d], std::fabs(GGML_CPU_FP16_TO_FP32(row[d]) - kbar[d]));
-        }
     }
     const int64_t rk2 = q->ne[2] / k->ne[2];
     const int64_t rk3 = q->ne[3] / k->ne[3];
@@ -130,7 +135,11 @@ static void oa8_prep_head(const ggml_tensor * q, const ggml_tensor * k, const gg
         for (int64_t i2 = ik2 * rk2; i2 < (ik2 + 1) * rk2; i2++) {
             for (int64_t i1 = 0; i1 < q->ne[1]; i1++) {
                 const float * qr = (const float *) ((const char *) q->data + i1 * q->nb[1] + i2 * q->nb[2] + i3 * q->nb[3]);
-                for (int64_t d = 0; d < DK; d++) {
+                int64_t d = 0;
+                for (; d + 4 <= DK; d += 4) {
+                    vst1q_f32(qmax + d, vmaxq_f32(vld1q_f32(qmax + d), vabsq_f32(vld1q_f32(qr + d))));
+                }
+                for (; d < DK; d++) {
                     qmax[d] = std::max(qmax[d], std::fabs(qr[d]));
                 }
             }
