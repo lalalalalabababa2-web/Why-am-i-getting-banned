@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Builds ggml for ARM (with 16-bit float arithmetic, then plain ARMv8.0) and runs test_fa_decode.cpp:
-# the attention kernel for writing one token (fa-decode.inc) against ggml's reference, then its
-# speed against ggml's own path. On an x86 computer it cross-compiles and runs under qemu-aarch64
+# Builds ggml for ARM (with 16-bit float arithmetic and int8 dot products, with int8 matrix multiply
+# too, dot products alone, then plain ARMv8.0) and runs test_fa_decode.cpp: the attention kernel for
+# writing one token (fa-decode.inc) against ggml's reference, then its speed against ggml's own
+# path; and test_fa_prefill.cpp: attention over a picture's patches with 8-bit scores
+# (fa-prefill.inc), the same way. On an x86 computer it cross-compiles and runs under qemu-aarch64
 # (the timings mean nothing there), see q1q2_mulmat.sh for the packages.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -17,7 +19,7 @@ if [ "$(uname -m)" != "aarch64" ]; then
 fi
 CXX="${CROSS:+aarch64-linux-gnu-g++}"
 CXX="${CXX:-c++}"
-for arch in "armv8.2-a+dotprod+fp16" "armv8-a"; do
+for arch in "armv8.2-a+dotprod+fp16" "armv8.6-a+dotprod+fp16+i8mm" "armv8.2-a+dotprod" "armv8-a"; do
   B="$OUT/${arch//+/_}"
   cmake -S "$SRC" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release "${CROSS[@]}" \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF \
@@ -27,12 +29,21 @@ for arch in "armv8.2-a+dotprod+fp16" "armv8-a"; do
   cmake --build "$B" --target ggml >/dev/null
   "$CXX" -std=c++17 -O2 -march="$arch" -I "$SRC/ggml/include" "$ROOT/tools/host-test/test_fa_decode.cpp" \
     "$B/ggml/src/libggml.a" "$B/ggml/src/libggml-cpu.a" "$B/ggml/src/libggml-base.a" -lm -lpthread -o "$B/test_fa_decode"
+  "$CXX" -std=c++17 -O2 -march="$arch" -I "$SRC/ggml/include" "$ROOT/tools/host-test/test_fa_prefill.cpp" \
+    "$B/ggml/src/libggml.a" "$B/ggml/src/libggml-cpu.a" "$B/ggml/src/libggml-base.a" -lm -lpthread -o "$B/test_fa_prefill"
   echo "== $arch"
   if [ ${#RUN[@]} -eq 0 ]; then
-    "$B/test_fa_decode"
-    OA_FA_PLAIN=1 "$B/test_fa_decode" --bench
+    if [ "${FA_ONLY_PREFILL:-0}" != 1 ]; then
+      "$B/test_fa_decode"
+      OA_FA_PLAIN=1 "$B/test_fa_decode" --bench
+    fi
+    # attention over a picture's patches: 8-bit scores (fa-prefill.inc) against ggml's tiled path
+    "$B/test_fa_prefill"
   else
     # correctness only: under qemu the timings say nothing
-    "${RUN[@]}" "$B/test_fa_decode" | grep -v '^SPEED'
+    if [ "${FA_ONLY_PREFILL:-0}" != 1 ]; then
+      "${RUN[@]}" "$B/test_fa_decode" | grep -v '^SPEED'
+    fi
+    "${RUN[@]}" "$B/test_fa_prefill" --check
   fi
 done

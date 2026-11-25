@@ -3,8 +3,8 @@
 //
 //   bench_vision <model.gguf> <mmproj.gguf> <label> [side=1024] [max_tokens=1024] [threads=4]
 //
-// Each mode loads the projector afresh (MTMD_CPU_REPACK=0, native, then the default), reads the
-// same picture twice and prints the second time, the memory the process holds afterwards, and the
+// Each mode loads the projector afresh (plain; repacked; repacked with 8-bit attention scores),
+// reads the same picture twice and prints the second time, the memory the process holds afterwards, and the
 // readings' agreement with the plain layout's (cosine similarity and relative error).
 #include "llama.h"
 #include "mtmd.h"
@@ -97,9 +97,18 @@ int main(int argc, char ** argv) {
             std::fclose(f);
         }
     }
-    const char * modes[] = { "0", "native", "1" };
-    for (const char * mode : modes) {
-        setenv("MTMD_CPU_REPACK", mode, 1);
+    // the plain layout and ggml's attention (the reference), the repacked weights, then the
+    // repacked weights with 8-bit attention scores (fa-prefill.inc)
+    struct Mode { const char * repack, * fa8, * name; };
+    const Mode modes[] = {
+        { "0", "0", "plain" },
+        { "1", "0", "repacked" },
+        { "1", "1", "repacked + 8-bit attention" },
+    };
+    for (const Mode & md : modes) {
+        const char * mode = md.repack;
+        setenv("MTMD_CPU_REPACK", md.repack, 1);
+        setenv("OA_FA8", md.fa8, 1);
         auto cp = mtmd_context_params_default();
         cp.use_gpu = false;
         cp.print_timings = false;
@@ -107,7 +116,7 @@ int main(int argc, char ** argv) {
         cp.warmup = false;
         cp.image_max_tokens = max_tok;
         Profile prof;
-        const bool profiling = std::getenv("BENCH_VISION_PROFILE") != nullptr && std::strcmp(mode, "0") != 0 && std::strcmp(mode, "native") != 0;
+        const bool profiling = std::getenv("BENCH_VISION_PROFILE") != nullptr && std::strcmp(md.fa8, "0") != 0;
         if (profiling) {
             cp.cb_eval = profile_cb;
             cp.cb_eval_user_data = &prof;
@@ -151,7 +160,7 @@ int main(int argc, char ** argv) {
         const float * e = mtmd_get_output_embd(ctx);
         std::vector<float> out(e, e + n_tok * n_embd);
         double cos = 1, rel = 0;
-        if (const char * df = std::getenv("BENCH_VISION_DUMP"); df && std::strcmp(mode, "0") == 0) {
+        if (const char * df = std::getenv("BENCH_VISION_DUMP"); df && std::strcmp(md.fa8, "0") == 0 && std::strcmp(mode, "0") == 0) {
             if (FILE * f = std::fopen(df, "wb")) {
                 std::fwrite(out.data(), sizeof(float), out.size(), f);
                 std::fclose(f);
@@ -172,7 +181,7 @@ int main(int argc, char ** argv) {
             cos = dot / std::sqrt(na * nb + 1e-30);
             rel = std::sqrt(se / (nb + 1e-30));
         }
-        const char * name = std::strcmp(mode, "0") == 0 ? "plain" : std::strcmp(mode, "native") == 0 ? "repacked, F16 kept" : "repacked, F16 as Q8_0";
+        const char * name = md.name;
         std::printf("SPEED: %s, a %dx%d picture (%zu tokens) on %d threads, %s: %.0f ms (first %.0f ms, load %.0f ms), "
                     "memory %ld MB, cosine %.6f, relative error %.4f\n",
                     label.c_str(), side, side, n_tok, threads, name, second, first, load_ms, rss_mb(), cos, rel);

@@ -9,6 +9,8 @@
 #     for the 16-bit and the 8-bit conversation memory
 #   0004-mtmd-cpu-repack.patch + mtmd-repack.inc: the picture and sound encoders' matmul weights
 #     in the CPU's repacked layout (F16/BF16 made Q8_0 for it), as the chat model's already are
+#   0005-fa-prefill-int8.patch + fa-prefill.inc + fa-prefill-size.h: attention over a picture's
+#     patches with 8-bit scores (ARM int8 dot products) and 16-bit V sums, for mtmd's attention ops
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
 #   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
 #     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
@@ -26,6 +28,8 @@ copy() {
 copy "$HERE/q1q2-neon.inc" "$SRC/ggml/src/ggml-cpu/arch/arm/q1q2-neon.inc"
 copy "$HERE/fa-decode.inc" "$SRC/ggml/src/ggml-cpu/fa-decode.inc"
 copy "$HERE/mtmd-repack.inc" "$SRC/tools/mtmd/mtmd-repack.inc"
+copy "$HERE/fa-prefill.inc" "$SRC/ggml/src/ggml-cpu/fa-prefill.inc"
+copy "$HERE/fa-prefill-size.h" "$SRC/ggml/src/ggml-cpu/fa-prefill-size.h"
 for p in "$HERE"/*.patch; do
   if (cd "$SRC" && git apply --reverse --check "$p" 2>/dev/null); then
     continue  # already in

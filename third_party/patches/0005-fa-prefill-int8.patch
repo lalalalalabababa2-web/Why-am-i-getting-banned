@@ -1,0 +1,58 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 1a1d6f18..930f61af 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -15,6 +15,7 @@
+ #include "ggml.h"
+ #include "common.h"
+ #include "tiled/tiled.h"
++#include "fa-prefill-size.h"  // Offline AI
+ 
+ #if defined(_MSC_VER) || defined(__MINGW32__)
+ #include <malloc.h> // using malloc.h with MSC/MINGW
+@@ -3095,6 +3096,11 @@ struct ggml_cplan ggml_graph_plan(
+                         size_t decode   = sizeof(float)*(neq2*n_chunks*(2+DV) + n_tasks*(DK + 2*DV));
+ 
+                         cur += MAX(prefill, decode);
++
++                        // Offline AI: 8-bit attention over many queries (fa-prefill.inc)
++                        if (strncmp(node->name, "oa_fa8", 6) == 0) {
++                            cur = MAX(cur, oa_fa8_layout_for(node->src[1]->ne[1], DK, DV).total*n_tasks);
++                        }
+                     } break;
+                 case GGML_OP_FLASH_ATTN_BACK:
+                     {
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index f1a09137..e93dd736 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -9731,9 +9731,16 @@ static void ggml_compute_forward_flash_attn_ext_f16(
+     }
+ }
+ 
++// Offline AI: 8-bit attention over many queries (a picture's patches)
++#include "fa-prefill.inc"
++
+ void ggml_compute_forward_flash_attn_ext(
+         const ggml_compute_params * params,
+         ggml_tensor * dst) {
++    // Offline AI: a picture's patches, with 8-bit scores (fa-prefill.inc)
++    if (!params->use_ref && oa_fa8_prefill(params, dst)) {
++        return;
++    }
+     switch (ggml_prec_get_acc(dst)) {
+         case GGML_PREC_UNDEFINED:
+         case GGML_PREC_F32:
+diff --git a/tools/mtmd/mtmd-graph.cpp b/tools/mtmd/mtmd-graph.cpp
+index a22f41d3..ee27f127 100644
+--- a/tools/mtmd/mtmd-graph.cpp
++++ b/tools/mtmd/mtmd-graph.cpp
+@@ -589,6 +589,8 @@ ggml_tensor * mtmd_graph::build_attn(
+         GGML_ASSERT(!kq_mask || kq_mask->type == GGML_TYPE_F16);
+ 
+         cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, 0.0f, 0.0f);
++        // Offline AI: the CPU may score this one in 8 bits (ggml-cpu/fa-prefill.inc)
++        ggml_set_name(cur, "oa_fa8");
+         ggml_prec_set_acc(cur, GGML_PREC_F32);
+         if (sinks != nullptr) {
+             ggml_flash_attn_ext_add_sinks(cur, sinks);
