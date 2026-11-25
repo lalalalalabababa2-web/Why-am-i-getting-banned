@@ -99,16 +99,23 @@ int main(int argc, char ** argv) {
     }
     // the plain layout and ggml's attention (the reference), the repacked weights, then the
     // repacked weights with 8-bit attention scores (fa-prefill.inc)
-    struct Mode { const char * repack, * fa8, * name; };
-    const Mode modes[] = {
-        { "0", "0", "plain" },
-        { "1", "0", "repacked" },
-        { "1", "1", "repacked + 8-bit attention" },
+    // (BENCH_VISION_MORE=1: also without its channel balance, and with 32-bit V sums)
+    struct Mode { const char * repack, * fa8, * smooth, * v32, * name; };
+    std::vector<Mode> modes = {
+        { "0", "0", "1", "0", "plain" },
+        { "1", "0", "1", "0", "repacked" },
+        { "1", "1", "1", "0", "repacked + 8-bit attention" },
     };
+    if (const char * more = std::getenv("BENCH_VISION_MORE"); more && *more && std::strcmp(more, "0") != 0) {
+        modes.push_back({ "1", "1", "0", "0", "repacked + 8-bit attention without channel balance" });
+        modes.push_back({ "1", "1", "1", "1", "repacked + 8-bit attention with 32-bit V sums" });
+    }
     for (const Mode & md : modes) {
         const char * mode = md.repack;
         setenv("MTMD_CPU_REPACK", md.repack, 1);
         setenv("OA_FA8", md.fa8, 1);
+        setenv("OA_FA8_SMOOTH", md.smooth, 1);
+        setenv("OA_FA8_V32", md.v32, 1);
         auto cp = mtmd_context_params_default();
         cp.use_gpu = false;
         cp.print_timings = false;
@@ -116,7 +123,8 @@ int main(int argc, char ** argv) {
         cp.warmup = false;
         cp.image_max_tokens = max_tok;
         Profile prof;
-        const bool profiling = std::getenv("BENCH_VISION_PROFILE") != nullptr && std::strcmp(md.fa8, "0") != 0;
+        const bool profiling = std::getenv("BENCH_VISION_PROFILE") != nullptr && std::strcmp(md.fa8, "0") != 0 &&
+                               std::strcmp(md.smooth, "1") == 0 && std::strcmp(md.v32, "0") == 0;
         if (profiling) {
             cp.cb_eval = profile_cb;
             cp.cb_eval_user_data = &prof;

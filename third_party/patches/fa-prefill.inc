@@ -9,15 +9,20 @@
 //     instructions: SMMLA (int8 matrix multiply, 32 multiply-adds an instruction) where the CPU
 //     has it, SDOT (16) otherwise, against 4 for a 32-bit FMA. K is centred first (its mean over
 //     the keys taken out): that shifts every score of a query by the same amount, which the
-//     softmax ignores, and leaves the 8 bits for what tells the keys apart. This is the precision
-//     of the 8-bit (Q8_0) projector files, whose matrix products take 8-bit inputs as well.
+//     softmax ignores, and leaves the 8 bits for what tells the keys apart. Then each channel d
+//     of K is multiplied by s_d and the same channel of Q divided by it, s_d = sqrt(max|Q_d| /
+//     max|K_d|) over the head (SmoothQuant's balance): the products are unchanged, and a channel
+//     much larger in one of them than in the other no longer takes most of that row's 8 bits.
+//     This is about the precision of the 8-bit (Q8_0) projector files, whose matrix products
+//     take 8-bit inputs as well.
 //   - the softmax is in 32 bits, base 2 (the scale and log2(e) folded into the score's scale);
 //   - P times V is summed in 16 bits over 32 keys at a time and added to 32-bit totals (weights
 //     are at most 1; a head whose V could overflow 16 bits there is summed in 32 bits instead).
 //
 // Only for the attention ops mtmd names "oa_fa8" (0004-mtmd-cpu-repack.patch): Q in F32, K and V
 // in F16, an optional F16 mask, no sinks, soft-capping or ALiBi, at least 64 queries. Included
-// from ggml-cpu/ops.cpp after fa-decode.inc (0003); OA_FA8=0 turns it off for comparisons.
+// from ggml-cpu/ops.cpp after fa-decode.inc (0003); OA_FA8=0 turns it off for comparisons,
+// OA_FA8_SMOOTH=0 the channel balance and OA_FA8_V32=1 the 16-bit V sums.
 
 #include "fa-prefill-size.h"
 
@@ -78,13 +83,15 @@ static inline float oa8_quant_row(const float * x, int64_t n, int64_t dkp, int8_
 
 // K of one head: its mean over the keys taken out, each row in 8 bits with its scale; rows past
 // the last key are zero. Also the largest |V| of the head (whether 16-bit V sums are safe).
-static void oa8_prep_head(const ggml_tensor * k, const ggml_tensor * v, int64_t ik2, int64_t ik3, int64_t nk,
+static void oa8_prep_head(const ggml_tensor * q, const ggml_tensor * k, const ggml_tensor * v, int64_t ik2, int64_t ik3, int64_t nk,
                           const oa_fa8_layout & L, char * ws, float * vmax_out) {
     const int64_t DK = k->ne[0];
     const int64_t DV = v->ne[0];
     int8_t * K8   = (int8_t *) (ws + L.k8);
     float *  sk   = (float *) (ws + L.sk);
     float *  kbar = (float *) (ws + L.kbar);
+    float *  cs   = (float *) (ws + L.cs);  // K's channel scales, then Q's (their inverses)
+    float *  qs   = cs + L.dkp;
     for (int64_t d = 0; d < DK; d++) {
         kbar[d] = 0.0f;
     }
@@ -105,17 +112,51 @@ static void oa8_prep_head(const ggml_tensor * k, const ggml_tensor * v, int64_t 
     for (int64_t d = 0; d < DK; d++) {
         kbar[d] *= inv_n;
     }
+    // the largest |K - mean| and |Q| of each channel, over the head (and the query heads sharing it)
+    float kmax[256], qmax[256];
+    for (int64_t d = 0; d < DK; d++) {
+        kmax[d] = 0.0f;
+        qmax[d] = 0.0f;
+    }
+    for (int64_t j = 0; j < nk; j++) {
+        const ggml_fp16_t * row = (const ggml_fp16_t *) (kb + j * k->nb[1]);
+        for (int64_t d = 0; d < DK; d++) {
+            kmax[d] = std::max(kmax[d], std::fabs(GGML_CPU_FP16_TO_FP32(row[d]) - kbar[d]));
+        }
+    }
+    const int64_t rk2 = q->ne[2] / k->ne[2];
+    const int64_t rk3 = q->ne[3] / k->ne[3];
+    for (int64_t i3 = ik3 * rk3; i3 < (ik3 + 1) * rk3; i3++) {
+        for (int64_t i2 = ik2 * rk2; i2 < (ik2 + 1) * rk2; i2++) {
+            for (int64_t i1 = 0; i1 < q->ne[1]; i1++) {
+                const float * qr = (const float *) ((const char *) q->data + i1 * q->nb[1] + i2 * q->nb[2] + i3 * q->nb[3]);
+                for (int64_t d = 0; d < DK; d++) {
+                    qmax[d] = std::max(qmax[d], std::fabs(qr[d]));
+                }
+            }
+        }
+    }
+    const char * e = std::getenv("OA_FA8_SMOOTH");
+    const bool smooth = !(e != nullptr && std::strcmp(e, "0") == 0);
+    for (int64_t d = 0; d < DK; d++) {
+        float s = 1.0f;
+        if (smooth && kmax[d] > 0.0f && qmax[d] > 0.0f) {
+            s = std::min(64.0f, std::max(1.0f / 64.0f, std::sqrt(qmax[d] / kmax[d])));
+        }
+        cs[d] = s;
+        qs[d] = 1.0f / s;
+    }
     float x[256];
     for (int64_t j = 0; j < nk; j++) {
         const ggml_fp16_t * row = (const ggml_fp16_t *) (kb + j * k->nb[1]);
         int64_t d = 0;
         for (; d + 8 <= DK; d += 8) {
             const float16x8_t h = vld1q_f16((const __fp16 *) row + d);
-            vst1q_f32(x + d, vsubq_f32(vcvt_f32_f16(vget_low_f16(h)), vld1q_f32(kbar + d)));
-            vst1q_f32(x + d + 4, vsubq_f32(vcvt_high_f32_f16(h), vld1q_f32(kbar + d + 4)));
+            vst1q_f32(x + d, vmulq_f32(vsubq_f32(vcvt_f32_f16(vget_low_f16(h)), vld1q_f32(kbar + d)), vld1q_f32(cs + d)));
+            vst1q_f32(x + d + 4, vmulq_f32(vsubq_f32(vcvt_high_f32_f16(h), vld1q_f32(kbar + d + 4)), vld1q_f32(cs + d + 4)));
         }
         for (; d < DK; d++) {
-            x[d] = GGML_CPU_FP16_TO_FP32(row[d]) - kbar[d];
+            x[d] = (GGML_CPU_FP16_TO_FP32(row[d]) - kbar[d]) * cs[d];
         }
         sk[j] = oa8_quant_row(x, DK, L.dkp, K8, j);
     }
@@ -354,6 +395,7 @@ static bool oa_fa8_prefill(const ggml_compute_params * params, ggml_tensor * dst
     __fp16 (*P16)[OA8_KB]   = (__fp16 (*)[OA8_KB]) (ws + L.p16);
     float (*MF)[OA8_KB]     = (float (*)[OA8_KB]) (ws + L.mf);
     float *   O    = (float *) (ws + L.o);
+    const float * qsc = (const float *) (ws + L.cs) + L.dkp;  // Q's channel scales (oa8_prep_head)
 
     if (ith == 0) {
         ggml_threadpool_chunk_set(params->threadpool, nth);
@@ -371,9 +413,11 @@ static bool oa_fa8_prefill(const ggml_compute_params * params, ggml_tensor * dst
         const int64_t head = ik3 * k->ne[2] + ik2;
         if (head != prepared) {
             float vmax = 0.0f;
-            oa8_prep_head(k, v, ik2, ik3, nk, L, ws, &vmax);
+            oa8_prep_head(q, k, v, ik2, ik3, nk, L, ws, &vmax);
             // 32 weights of at most 1 times |V|, with room to spare under 16 bits' 65504
-            v16 = vmax * OA8_PV < 30000.0f;
+            // (OA_FA8_V32=1: always 32-bit sums, for comparisons)
+            const char * e32 = std::getenv("OA_FA8_V32");
+            v16 = vmax * OA8_PV < 30000.0f && !(e32 != nullptr && std::strcmp(e32, "1") == 0);
             prepared = head;
         }
         const char * vb = (const char *) v->data + ik2 * v->nb[2] + ik3 * v->nb[3];
@@ -384,7 +428,16 @@ static bool oa_fa8_prefill(const ggml_compute_params * params, ggml_tensor * dst
             for (int i = 0; i < OA8_QB; i++) {
                 if (i < rows) {
                     const float * qr = (const float *) ((const char *) q->data + (r0 + i) * q->nb[1] + iq2 * q->nb[2] + iq3 * q->nb[3]);
-                    sq[i] = oa8_quant_row(qr, DK, L.dkp, Q8, i) * s2;
+                    // each channel divided by K's scale for it (the products stay the same)
+                    float qx[256];
+                    int64_t d = 0;
+                    for (; d + 4 <= DK; d += 4) {
+                        vst1q_f32(qx + d, vmulq_f32(vld1q_f32(qr + d), vld1q_f32(qsc + d)));
+                    }
+                    for (; d < DK; d++) {
+                        qx[d] = qr[d] * qsc[d];
+                    }
+                    sq[i] = oa8_quant_row(qx, DK, L.dkp, Q8, i) * s2;
                 } else {
                     for (int64_t c = 0; c < L.dkp / 8; c++) {
                         std::memset(oa8_at(Q8, i, c, L.dkp), 0, 8);

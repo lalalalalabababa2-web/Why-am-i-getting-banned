@@ -23,14 +23,14 @@ g++ -std=c++17 -O2 -I "$SRC/include" -I "$SRC/ggml/include" -I "$SRC/tools/mtmd"
   "$ROOT/tools/host-test/bench_vision.cpp" -L "$OUT/llama/bin" -lmtmd -lllama -lggml -lggml-base \
   -Wl,-rpath,"$OUT/llama/bin" -o "$OUT/bench_vision"
 
-one() {  # model, projector, label
+one() {  # model, projector, label, [1: also the 8-bit attention's variants]
   local m="$REAL_MODELS/$1" p="$REAL_MODELS/$2"
   if [ ! -f "$m" ] || [ ! -f "$p" ]; then echo "== $3: not downloaded, skipped"; return; fi
   echo "== $3"
-  BENCH_VISION_PROFILE=1 "$OUT/bench_vision" "$m" "$p" "$3, Detailed" 1024 1024 "$THREADS" 2>&1 | grep -E '^SPEED|^  |repacked layout|GGML_ASSERT|error' || echo "FAIL: $3 (Detailed)"
+  BENCH_VISION_PROFILE=1 BENCH_VISION_MORE=${4:-} "$OUT/bench_vision" "$m" "$p" "$3, Detailed" 1024 1024 "$THREADS" 2>&1 | grep -E '^SPEED|^  |repacked layout|GGML_ASSERT|error' || echo "FAIL: $3 (Detailed)"
   "$OUT/bench_vision" "$m" "$p" "$3, Normal" 768 400 "$THREADS" 2>&1 | grep -E '^SPEED|repacked layout|GGML_ASSERT|error' || echo "FAIL: $3 (Normal)"
 }
-one Ternary-Bonsai-2-9B-Q2_0.gguf Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf "Ternary Bonsai 2 9B (Q8_0 projector)"
+one Ternary-Bonsai-2-9B-Q2_0.gguf Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf "Ternary Bonsai 2 9B (Q8_0 projector)" 1
 one gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf mmproj-F16.gguf "Gemma 4 E2B (F16 projector)"
 one Qwen3.5-0.8B-Q4_K_M.gguf mmproj-Qwen3.5-0.8B-F16.gguf "Qwen3.5 0.8B (F16 projector)"
 one LFM2.5-VL-1.6B-Q4_K_M.gguf mmproj-LFM2.5-VL-1.6b-Q8_0.gguf "LFM2.5-VL 1.6B (Q8_0 projector)"

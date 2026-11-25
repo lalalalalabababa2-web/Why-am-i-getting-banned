@@ -9,7 +9,7 @@
 #define OA_FA8_KB 64  // keys per softmax block
 
 struct oa_fa8_layout {
-    size_t k8, sk, kbar, q8, sq, dots, l, p16, mf, o;  // offsets
+    size_t k8, sk, kbar, cs, q8, sq, dots, l, p16, mf, o;  // offsets
     size_t total;                                      // bytes for one thread
     int64_t dkp, nkp;                                  // padded head size and key count
 };
@@ -24,6 +24,7 @@ static inline struct oa_fa8_layout oa_fa8_layout_for(int64_t nk, int64_t dk, int
     l.k8   = at; at = oa_fa8_pad64(at + (size_t) (l.nkp * l.dkp));                // K, 8-bit
     l.sk   = at; at = oa_fa8_pad64(at + sizeof(float) * (size_t) l.nkp);         // K scales
     l.kbar = at; at = oa_fa8_pad64(at + sizeof(float) * (size_t) l.dkp);         // K mean
+    l.cs   = at; at = oa_fa8_pad64(at + sizeof(float) * 2 * (size_t) l.dkp);     // channel scales and their inverses
     l.q8   = at; at = oa_fa8_pad64(at + (size_t) (OA_FA8_QB * l.dkp));           // Q rows, 8-bit
     l.sq   = at; at = oa_fa8_pad64(at + sizeof(float) * OA_FA8_QB);              // Q scales
     l.dots = at; at = oa_fa8_pad64(at + sizeof(int32_t) * OA_FA8_QB * OA_FA8_KB); // integer scores

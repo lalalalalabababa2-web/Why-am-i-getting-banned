@@ -11,6 +11,8 @@
 #     in the CPU's repacked layout (F16/BF16 made Q8_0 for it), as the chat model's already are
 #   0005-fa-prefill-int8.patch + fa-prefill.inc + fa-prefill-size.h: attention over a picture's
 #     patches with 8-bit scores (ARM int8 dot products) and 16-bit V sums, for mtmd's attention ops
+#   0006-arm-f16-gemm-and-neon-on-sve.patch + f16-gemm.inc: F16 weights against many columns as a
+#     blocked product on ARM, and NEON for ggml's small GEMM in SVE builds (it was scalar there)
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
 #   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
 #     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
@@ -30,6 +32,7 @@ copy "$HERE/fa-decode.inc" "$SRC/ggml/src/ggml-cpu/fa-decode.inc"
 copy "$HERE/mtmd-repack.inc" "$SRC/tools/mtmd/mtmd-repack.inc"
 copy "$HERE/fa-prefill.inc" "$SRC/ggml/src/ggml-cpu/fa-prefill.inc"
 copy "$HERE/fa-prefill-size.h" "$SRC/ggml/src/ggml-cpu/fa-prefill-size.h"
+copy "$HERE/f16-gemm.inc" "$SRC/ggml/src/ggml-cpu/f16-gemm.inc"
 for p in "$HERE"/*.patch; do
   if (cd "$SRC" && git apply --reverse --check "$p" 2>/dev/null); then
     continue  # already in

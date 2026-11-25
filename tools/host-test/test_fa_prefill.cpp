@@ -26,6 +26,7 @@ struct Case {
     int mask = 0;               // 0 none, 1 windows of 256 patches, 2 holes
     float k_offset = 0.0f;      // a shift shared by every key (what centring K takes out)
     float v_mul = 3.0f;
+    float outliers = 0.0f;      // a few channels this many times larger in K (and others in Q)
 };
 
 static int g_fail = 0;
@@ -41,8 +42,11 @@ static std::vector<float> run(const Case & c, int threads, bool ref, bool named,
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::vector<float> off(c.d);
     for (auto & o : off) o = nd(rng) * c.k_offset;
-    for (int64_t i = 0; i < ggml_nelements(q); i++) ((float *) q->data)[i] = nd(rng) * 1.5f;
-    for (int64_t i = 0; i < ggml_nelements(k); i++) ((ggml_fp16_t *) k->data)[i] = ggml_fp32_to_fp16(nd(rng) * 1.5f + off[i % c.d]);
+    // with outliers: channels 3 and 17 of K, and 5 of Q, much larger than the rest, as vision towers have
+    auto kmul = [&](int64_t i) { const int d = (int) (i % c.d); return c.outliers > 0.0f && (d == 3 || d == 17) ? c.outliers : 1.0f; };
+    auto qmul = [&](int64_t i) { const int d = (int) (i % c.d); return c.outliers > 0.0f && d == 5 ? c.outliers : (c.outliers > 0.0f && (d == 3 || d == 17) ? 1.0f / c.outliers : 1.0f); };
+    for (int64_t i = 0; i < ggml_nelements(q); i++) ((float *) q->data)[i] = nd(rng) * 1.5f * qmul(i);
+    for (int64_t i = 0; i < ggml_nelements(k); i++) ((ggml_fp16_t *) k->data)[i] = ggml_fp32_to_fp16(nd(rng) * 1.5f * kmul(i) + off[i % c.d]);
     for (int64_t i = 0; i < ggml_nelements(v); i++) ((ggml_fp16_t *) v->data)[i] = ggml_fp32_to_fp16(nd(rng) * c.v_mul);
     ggml_tensor * mask = nullptr;
     if (c.mask) {
@@ -83,7 +87,10 @@ static std::vector<float> run(const Case & c, int threads, bool ref, bool named,
     return res;
 }
 
+static void check_ggml(const Case & c, int threads);
+
 static void check(const Case & c, int threads) {
+    check_ggml(c, threads);
     const auto got  = run(c, threads, false, true, nullptr, 0);
     const auto want = run(c, threads, true, false, nullptr, 0);
     double err = 0.0, norm = 0.0, se = 0.0, sw = 0.0, dot = 0.0, gg = 0.0;
@@ -103,9 +110,28 @@ static void check(const Case & c, int threads) {
     // row or a wrong weight shows as a mean error a hundred times that.
     const bool ok = std::isfinite(err) && nmse <= 5e-4 && cosv >= 0.9997;
     if (!ok) g_fail++;
-    std::printf("  %s D=%d heads %d patches %d mask %s k-offset %g, %d threads: max error %.2e (largest %.2f), mean %.1e, cosine %.6f\n",
+    std::printf("  %s D=%d heads %d patches %d mask %s k-offset %g outliers %g, %d threads: max error %.2e (largest %.2f), mean %.1e, cosine %.6f\n",
                 ok ? "ok  " : "FAIL", c.d, c.n_head, c.n, c.mask == 0 ? "none" : c.mask == 1 ? "windows" : "holes",
-                c.k_offset, threads, err, norm, nmse, cosv);
+                c.k_offset, c.outliers, threads, err, norm, nmse, cosv);
+}
+
+// ggml's own tiled path (the op not named) against its reference: on SVE builds its small GEMM
+// is now NEON instead of scalar (0006), so it is checked here too
+static void check_ggml(const Case & c, int threads) {
+    const auto got  = run(c, threads, false, false, nullptr, 0);
+    const auto want = run(c, threads, true, false, nullptr, 0);
+    double se = 0.0, sw = 0.0;
+    bool finite = true;
+    for (size_t i = 0; i < got.size(); i++) {
+        finite = finite && std::isfinite(got[i]);
+        se += (double) (got[i] - want[i]) * (got[i] - want[i]);
+        sw += (double) want[i] * want[i];
+    }
+    const double nmse = sw > 0.0 ? se / sw : se;
+    if (!finite || nmse > 1e-8) {
+        g_fail++;
+        std::printf("  FAIL ggml's tiled path, D=%d heads %d patches %d: mean error %.1e\n", c.d, c.n_head, c.n, nmse);
+    }
 }
 
 int main(int argc, char ** argv) {
@@ -126,6 +152,8 @@ int main(int argc, char ** argv) {
         check({64, 2, 129, 0}, 1);
         check({96, 3, 150, 0, 0.0f, 2000.0f}, 4);  // V too large for 16-bit sums: 32-bit ones
         check({40, 4, 100, 0}, 4);                 // a head size not a multiple of 16
+        check({72, 4, 500, 0, 0.0f, 3.0f, 12.0f}, 4);  // outlier channels (the channel balance)
+        check({64, 4, 300, 2, 2.0f, 3.0f, 30.0f}, 3);
     }
     if (check_only) {
         std::printf("\n%s (%d failures)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail);
