@@ -304,6 +304,44 @@ tokens/s): Llama 3.2 1B 25.3 and 20.1 (b11700: 23.6 and 18.0; b12670 without `00
 (b11700: 21.6 and 19.4; without `0003`: 16.4 and 13.1), with the 8-bit memory 21.8 and 19.7
 (b11700: 18.5 and 15.3).
 
+Reading a picture (the projector, mtmd) is `0004` to `0006`. On "Detailed" a picture is up to 4096
+patches through 12 to 27 transformer layers, and with b12670 that took minutes on a phone's CPU:
+
+- `0004` with `mtmd-repack.inc`: mtmd kept its weights in a plain CPU buffer, so the vision tower
+  ran ggml's generic row-by-row dot products while the chat model next to it used llama.cpp's
+  repacked layouts. After the first graph is built, every weight that only feeds a 2-D matmul moves
+  to the CPU's repack buffer, F16 and BF16 ones as Q8_0 (half the memory; they agree with the F16
+  reading about as closely as Qwen's own Q8_0 file does: cosine 0.9923 against 0.9925 for
+  Qwen3-VL 2B). The old copy's pages go back to the system tensor by tensor.
+- `0005` with `fa-prefill.inc`: attention over the patches with 8-bit scores. Q and K rows are 8-bit
+  with a scale per row (K centred first, and each channel balanced between Q and K as in
+  SmoothQuant, neither of which changes a score), scored with the int8 matrix-multiply (SMMLA) or
+  dot-product (SDOT) instructions; the softmax is 32-bit and P times V is summed in 16 bits over
+  32 keys. `tools/host-test/test_fa_prefill.cpp` holds it to ggml's reference on five ARM levels
+  (mean error about 2e-4; with outlier channels 6e-4, where it is 9e-2 without the balance), and
+  against ggml's tiled path it is 2 to 2.5 times faster on the ARM runner.
+- `0006` with `f16-gemm.inc`: F16 weights against many columns as a blocked product (4 rows by 4
+  columns at a time, K in slices of 256), 2.5 times ggml's row-by-row F16 path (3.8 in an SVE
+  build). Qwen3.5's and SigLIP2's `ffn_down` rows are 4304 long, which Q8_0 cannot hold, so those
+  stay F16. And ggml's small GEMM in `simd-gemm.h` fell back to scalar code in SVE builds, which
+  Android's armv9 variants are (phones with SVE2): ggml's own tiled flash attention, used for
+  every prompt of 64 tokens or more, ran about 9 times slower there. It is NEON there now.
+
+`tools/host-test/vision.sh` (the `only=vision` CI job) times real projectors on the ARM runner, 4
+threads, a 1024 px picture ("Detailed") and a 768 px one ("Normal"):
+
+| Projector | b12670, Detailed | now | b12670, Normal | now | agreement with b12670 |
+|---|---|---|---|---|---|
+| Ternary Bonsai 2 9B (Q8_0) | 186 s | 23.4 s | 40.1 s | 7.1 s | cosine 0.9958 |
+| Gemma 4 E2B (F16) | 94.6 s | 5.9 s | 41.6 s | 2.6 s | 0.9995 |
+| Qwen3.5 0.8B (F16) | 65.2 s | 4.2 s | 16.3 s | 1.1 s | 0.9871 (0.9890 from the Q8_0 weights alone) |
+| LFM2.5-VL 1.6B (Q8_0) | 184 s | 23.1 s | 39.9 s | 7.0 s | 0.9979 |
+
+What is left for Bonsai on "Detailed": the F16 `ffn_down` matmuls (42%), attention (36%) and the
+Q8_0 ones (20%). After the projector, the chat model still reads the picture's 1024 tokens as a
+prompt: Ternary Bonsai 2 9B reads 17.6 tokens/s on the runner, about a minute more.
+`MTMD_CPU_REPACK=0`, `OA_FA8=0` and `OA_F16_GEMM=0` turn the three parts off.
+
 ## Tests
 
 `tools/host-test/run.sh` builds llama.cpp for the computer it runs on, makes tiny random models

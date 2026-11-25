@@ -7,9 +7,19 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 6
+    const val VERSION = 7
 
     private val ITEMS = listOf(
+        "Pictures read up to 16 times faster" to "Reading a picture on Detailed took minutes; on our ARM test " +
+            "machine Gemma 4 E2B now reads one in 6 seconds instead of 95, Qwen3.5 in 4 instead of 65, and " +
+            "Ternary Bonsai 2 9B and LFM2.5-VL in 23 instead of about 185. The picture part now uses the " +
+            "processor's fast matrix layout and its 8-bit dot-product instructions, like the chat models do. " +
+            "Picture parts that come as 16-bit files also take half the memory.",
+        "Faster on newer phones" to "On phones whose processor has SVE2, part of reading every long message " +
+            "ran without the processor's vector instructions. It uses them now.",
+        "Tidier screens" to "The send button sits evenly inside the message box, tables fill their card, every " +
+            "row of the model menu lines up, Tools has its own icon, and the Pictures screen's buttons no " +
+            "longer sit over text.",
         "No more crashes from a long context" to "A context size bigger than the phone's free memory can hold no " +
             "longer slows a model to a crawl or gets Nyx closed: each model gets as much of it as fits, measured " +
             "for that model when it loads, and the top of the chat says \"fit to memory\" when it was lowered.",
