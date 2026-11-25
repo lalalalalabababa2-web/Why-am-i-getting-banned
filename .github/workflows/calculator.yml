@@ -1,0 +1,63 @@
+name: Calc+
+
+on:
+  push:
+    branches: [claude/calculator-app-overhaul-zfzh91]
+    paths: ['calculator/**', '.github/workflows/calculator.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: calculator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build the APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      # The solver against the homework it was built for (calculator/test/engine.test.js).
+      - name: Engine tests
+        run: node calculator/test/engine.test.js
+
+      - name: Build
+        run: ci/gradle.sh -p calculator :app:assembleRelease
+
+      - name: Check the APK
+        run: |
+          cp calculator/app/build/outputs/apk/release/*.apk Calculator.apk
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify Calculator.apk
+          "$ANDROID_HOME/build-tools/$BT/aapt2" dump badging Calculator.apk | head -3
+          unzip -l Calculator.apk 'assets/*'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Calculator-apk
+          path: Calculator.apk
+          if-no-files-found: error
+
+      # A release with a fixed name, so the download link never changes:
+      # https://github.com/<owner>/<repo>/releases/download/calculator-latest/Calculator.apk
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<NOTES
+          Calc+ built from ${GITHUB_SHA::7}. Its engine tests passed before it was published.
+
+          Install: open Calculator.apk on the phone and allow installs from your browser when Android asks. New builds install over old ones and keep your history.
+          NOTES
+          gh release delete calculator-latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create calculator-latest Calculator.apk --target "$GITHUB_SHA" --title "Calc+ (build $GITHUB_RUN_NUMBER)" --notes-file notes.md --latest=false
