@@ -118,7 +118,8 @@ static void check(const Case & c, int threads) {
         double se0 = 0.0;
         for (size_t i = 0; i < raw.size(); i++) se0 += (double) (raw[i] - want[i]) * (raw[i] - want[i]);
         plain = sw > 0.0 ? se0 / sw : se0;
-        ok = std::isfinite(err) && nmse <= 1.5e-3 && nmse * 2.0 <= plain;
+        // (a CPU without int8 dot products runs ggml's path both times: exact, nothing to halve)
+        ok = std::isfinite(err) && (plain <= 1e-8 ? nmse <= 1e-8 : (nmse <= 1.5e-3 && nmse * 2.0 <= plain));
         std::printf("       (without the channel balance: mean %.1e)\n", plain);
     }
     if (!ok) g_fail++;
