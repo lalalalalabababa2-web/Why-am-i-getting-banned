@@ -683,7 +683,9 @@ jobs:
           REAL_MODELS: ${{ github.workspace }}/real-models
         run: |
           set -o pipefail
-          tools/host-test/vision.sh 2>&1 | grep -v '^CMAKE' | tee real.log
+          # the attention kernel alone, against ggml's reference and its tiled path (fa-prefill.inc)
+          FA_ONLY_PREFILL=1 tools/host-test/fa_decode.sh 2>&1 | grep -v '^CMAKE' | tee real.log
+          tools/host-test/vision.sh 2>&1 | grep -v '^CMAKE' | tee -a real.log
 
       - name: Results
         if: always()
