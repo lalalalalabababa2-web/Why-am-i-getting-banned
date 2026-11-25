@@ -364,10 +364,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             // one line: the buttons sit level with the text, whatever the font size; several
             // lines: they stay at the bottom, next to the line being typed (see below)
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            // 6 dp round a 44 dp button: the box is a 56 dp pill, and the send button's circle sits
+            // in its end with the same gap all round (see sendBackground)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             // translucent: what is behind shows through, blurred by the backdrop under it
             background = rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.surface1, if (Palette.dark) 0xB8 else 0xC4),
-                dp(26).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x90))
+                dp(28).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x90))
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
         composer.addView(attach, lp(dp(44), dp(44)))
@@ -422,7 +424,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         send = ImageButton(this).apply {
             scaleType = android.widget.ImageView.ScaleType.CENTER
-            background = ripple(rounded(Palette.accent, dp(22).toFloat()), dp(22).toFloat())
+            background = sendBackground(Palette.accent)
             setOnClickListener { onSendOrStop() }
             setOnLongClickListener {
                 if (!micShown) return@setOnLongClickListener false
@@ -436,7 +438,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             elevation = dp(4).toFloat()
             outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) =
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(26).toFloat())
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(28).toFloat())
             }
             clipToOutline = true
         }
@@ -963,12 +965,20 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         if (sendListening != listening) {
             sendListening = listening
-            val r = dp(22).toFloat()
-            send.background = ripple(rounded(if (listening) Palette.danger else Palette.accent, r), r)
+            send.background = sendBackground(if (listening) Palette.danger else Palette.accent)
         }
         val enabled = generating || listening || mic || speaking || (app.engine.loaded != null && hasSomething && preparing == 0)
         send.alpha = if (enabled) 1f else 0.4f
         send.isEnabled = enabled || app.engine.loaded == null
+    }
+
+    /**
+     * The send button's circle: 40 dp inside its 44 dp touch area, so it keeps 8 dp from the box's
+     * edge on every side (it sat 4 dp from it and looked pressed against the border).
+     */
+    private fun sendBackground(color: Int): android.graphics.drawable.Drawable {
+        val r = dp(20).toFloat()
+        return android.graphics.drawable.InsetDrawable(ripple(rounded(color, r), r), dp(2))
     }
 
     private fun updateJump() {

@@ -236,8 +236,9 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(4), dp(4), dp(4))
-            background = rounded(Palette.surface1, dp(26).toFloat(), dp(1), Palette.border)
+            // like the chat's box: a 56 dp pill with the button's circle 8 dp from its edge all round
+            setPadding(dp(20), dp(6), dp(6), dp(6))
+            background = rounded(Palette.surface1, dp(28).toFloat(), dp(1), Palette.border)
             elevation = dp(3).toFloat()
         }
         prompt = EditText(this).apply {
@@ -254,7 +255,7 @@ class PicturesActivity : AppCompatActivity(), PictureJobs.Listener {
         box.addView(prompt, lp(0, WRAP, 1f))
         make = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER
-            background = rounded(Palette.accent, dp(22).toFloat())
+            background = android.graphics.drawable.InsetDrawable(rounded(Palette.accent, dp(20).toFloat()), dp(2))
             contentDescription = "Make the picture"
             setOnClickListener { start(null) }
         }.pressable(0.86f)
