@@ -1,0 +1,42 @@
+diff --git a/tools/mtmd/mtmd-model.h b/tools/mtmd/mtmd-model.h
+index 10c3154e..7f7ea6fd 100644
+--- a/tools/mtmd/mtmd-model.h
++++ b/tools/mtmd/mtmd-model.h
+@@ -1161,6 +1161,10 @@ struct mtmd_model {
+     ggml_backend_buffer_ptr buf;
+     std::map<ggml_backend_dev_t, size_t> mem_weights;
+ 
++    // Offline AI: the matmul weights moved to the CPU's repacked layout (mtmd-repack.inc)
++    mutable std::vector<ggml_backend_buffer_ptr> oa_bufs_repack;
++    mutable bool oa_repacked = false;
++
+     // embeddings
+     ggml_tensor * class_embedding = nullptr;
+     ggml_tensor * class_position_embedding = nullptr;
+diff --git a/tools/mtmd/mtmd-subcontext.cpp b/tools/mtmd/mtmd-subcontext.cpp
+index 078f154c..36dc3595 100644
+--- a/tools/mtmd/mtmd-subcontext.cpp
++++ b/tools/mtmd/mtmd-subcontext.cpp
+@@ -20,6 +20,8 @@
+ #include <stdexcept>
+ #include <vector>
+ 
++#include "mtmd-repack.inc"  // Offline AI
++
+ // ggml_backend_cpu_set_n_threads(backend_cpu, n_threads);
+ static void mtmd_backend_cpu_set_n_threads(ggml_backend_t backend_cpu, int n_threads) {
+     ggml_backend_dev_t dev = ggml_backend_get_device(backend_cpu);
+@@ -209,6 +211,13 @@ void mtmd_subcontext::warmup(const mtmd_image_f32_batch & batch) {
+ 
+     is_allocated = true; // mark buffers as allocated
+ 
++    // Offline AI: on the CPU, the weights move to its repacked layout once the graph shows how
++    // each is used (mtmd-repack.inc)
++    if (backends.backend == backends.backend_cpu) {
++        auto builder = mtmd_get_graph_builder(this, batch);
++        oa_mtmd_repack(model, builder->build(), backends.backend_cpu);
++    }
++
+     LOG_INF("%s: flash attention is %s\n", __func__,
+         (flash_attn_type == MTMD_FLASH_ATTN_TYPE_ENABLED) ? "enabled" : "disabled");
+ 

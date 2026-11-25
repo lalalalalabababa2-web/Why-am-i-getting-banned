@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator. "images": only the picture models, on an ARM machine. "bench": only writing speed by llama.cpp version and attention path, on an ARM machine.'
+        description: 'Leave empty for everything. "screens": only pictures of every screen, from the emulator. "images": only the picture models, on an ARM machine. "bench": only writing speed by llama.cpp version and attention path, on an ARM machine. "vision": only how fast pictures are read, on an ARM machine.'
         required: false
         default: ''
 
@@ -21,7 +21,7 @@ concurrency:
 jobs:
   engine-tests:
     name: Engine tests (desktop, tiny random models)
-    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench' && inputs.only != 'vision'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -54,7 +54,7 @@ jobs:
   # models. Once on an x86 runner and once on an ARM one (closer to a phone, still not a phone).
   real-models:
     name: Real models (${{ matrix.cpu }})
-    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench' && inputs.only != 'vision'
     strategy:
       fail-fast: false
       matrix:
@@ -264,7 +264,7 @@ jobs:
 
   apk:
     name: Build the APK
-    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench'
+    if: inputs.only != 'screens' && inputs.only != 'images' && inputs.only != 'bench' && inputs.only != 'vision'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -644,6 +644,46 @@ jobs:
           tools/host-test/fa_decode.sh 2>&1 | grep -v '^CMAKE' | tee real.log
           tools/host-test/bench_versions.sh 23f7aabc16c72f6f707dba227251c35d7bd1ed96 \
             real-models/Llama-3.2-1B-Instruct-Q4_K_M.gguf real-models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf 2>&1 | tee -a real.log
+
+      - name: Results
+        if: always()
+        run: python3 ci/real_report.py real.log arm64
+
+  # How fast real projectors read a large picture (the app's "Detailed" and "Normal"), plain and
+  # with the weights in the CPU's repacked layout. Started by hand with only=vision.
+  vision:
+    name: Picture reading speed (arm64)
+    if: inputs.only == 'vision'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: true
+
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Models
+        run: |
+          mkdir -p real-models && cd real-models
+          get() { curl -fsSL --retry 4 --retry-delay 10 -o "${3:-$2}" "https://huggingface.co/$1/resolve/main/$2"; ls -la "${3:-$2}"; }
+          get prism-ml/Ternary-Bonsai-2-9B-gguf Ternary-Bonsai-2-9B-Q2_0.gguf
+          get prism-ml/Ternary-Bonsai-2-9B-gguf Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf
+          get unsloth/gemma-4-E2B-it-qat-GGUF gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf
+          get unsloth/gemma-4-E2B-it-qat-GGUF mmproj-F16.gguf
+          get unsloth/Qwen3.5-0.8B-MTP-GGUF Qwen3.5-0.8B-Q4_K_M.gguf
+          get unsloth/Qwen3.5-0.8B-MTP-GGUF mmproj-F16.gguf mmproj-Qwen3.5-0.8B-F16.gguf
+          get LiquidAI/LFM2.5-VL-1.6B-GGUF LFM2.5-VL-1.6B-Q4_K_M.gguf
+          get LiquidAI/LFM2.5-VL-1.6B-GGUF mmproj-LFM2.5-VL-1.6b-Q8_0.gguf
+          nproc ; lscpu | grep -iE 'model name|flags' | cut -c1-300
+
+      - name: Run
+        env:
+          REAL_MODELS: ${{ github.workspace }}/real-models
+        run: |
+          set -o pipefail
+          tools/host-test/vision.sh 2>&1 | grep -v '^CMAKE' | tee real.log
 
       - name: Results
         if: always()

@@ -7,6 +7,8 @@
 #   0003-fa-decode-grouped.patch + fa-decode.inc: attention while writing reads each K/V row once
 #     for all the query heads that share it (grouped-query attention), in blocks of 16 positions,
 #     for the 16-bit and the 8-bit conversation memory
+#   0004-mtmd-cpu-repack.patch + mtmd-repack.inc: the picture and sound encoders' matmul weights
+#     in the CPU's repacked layout (F16/BF16 made Q8_0 for it), as the chat model's already are
 #   sd/0001-ggml-without-diag-mask-inf.patch: stable-diffusion.cpp on a ggml without that op
 #   sd/0002-picture-speed-and-memory.patch: the diffusion model's weights in the CPU's own matmul
 #     layout (llama.cpp's repacking, about 3x faster), the text encoder's pages let go once the
@@ -23,6 +25,7 @@ copy() {
 }
 copy "$HERE/q1q2-neon.inc" "$SRC/ggml/src/ggml-cpu/arch/arm/q1q2-neon.inc"
 copy "$HERE/fa-decode.inc" "$SRC/ggml/src/ggml-cpu/fa-decode.inc"
+copy "$HERE/mtmd-repack.inc" "$SRC/tools/mtmd/mtmd-repack.inc"
 for p in "$HERE"/*.patch; do
   if (cd "$SRC" && git apply --reverse --check "$p" 2>/dev/null); then
     continue  # already in
