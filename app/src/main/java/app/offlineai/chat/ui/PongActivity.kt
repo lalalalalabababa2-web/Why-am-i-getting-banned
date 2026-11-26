@@ -106,7 +106,7 @@ class PongActivity : AppCompatActivity() {
         val levels = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         var level = app.settings.gameLevel
         val chips = LEVELS.mapIndexed { i, l ->
-            pill(l, primary = i == level) {}.also { levels.addView(it, lp(0, WRAP, 1f).apply { marginEnd = if (i < 2) dp(8) else 0 }) }
+            pill(l, primary = i == level) {}.oneLine().also { levels.addView(it, lp(0, WRAP, 1f).apply { marginEnd = if (i < 2) dp(8) else 0 }) }
         }
         fun paint(chipsSel: Int, list: List<android.widget.TextView>) = list.forEachIndexed { k, o ->
             o.background = ripple(
@@ -126,7 +126,7 @@ class PongActivity : AppCompatActivity() {
         val sounds = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         var sound = app.settings.gameSound
         val soundChips = listOf("On", "Off").mapIndexed { i, l ->
-            pill(l, primary = (i == 0) == sound) {}.also { sounds.addView(it, lp(0, WRAP, 1f).apply { marginEnd = if (i == 0) dp(8) else 0 }) }
+            pill(l, primary = (i == 0) == sound) {}.oneLine().also { sounds.addView(it, lp(0, WRAP, 1f).apply { marginEnd = if (i == 0) dp(8) else 0 }) }
         }
         soundChips.forEachIndexed { i, c ->
             c.setOnClickListener {
@@ -152,6 +152,13 @@ class PongActivity : AppCompatActivity() {
         }
         sheet.setOnDismissListener { if (!isFinishing) game.resume() }
         sheet.show()
+    }
+
+    /** Three to a row with a large font: the word stays whole ("Leagu" / "e" before). */
+    private fun android.widget.TextView.oneLine() = apply {
+        isSingleLine = true
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(dp(6), paddingTop, dp(6), paddingBottom)
     }
 
     companion object {
@@ -341,13 +348,14 @@ class PongView(context: Context, private var player: String, private var level: 
     override fun onSizeChanged(nw: Int, nh: Int, ow: Int, oh: Int) {
         w = nw.toFloat()
         h = nh.toFloat()
-        // the near edge of the table spans 92% of the width
+        // the near edge of the table spans 80% of the width: a ball going wide, and your racket
+        // going after it, stay on the screen
         cx0 = w / 2
         cy0 = 0f
         focal = 1f
         project(HALF_W, 0f, 0f)
         val nearX = px - cx0
-        focal = (w * 0.46f) / nearX
+        focal = (w * 0.40f) / nearX
         // then the near edge sits at 70% of the height, or a little higher on short screens
         project(0f, 0f, 0f)
         val nearY = py
@@ -563,8 +571,17 @@ class PongView(context: Context, private var player: String, private var level: 
     }
 
     private fun serveCpu() {
-        val tx = (Random.nextFloat() - 0.5f) * 1.1f
-        serveTo(ball, tx, 0.3f + Random.nextFloat() * 0.4f, false)
+        var tx = (Random.nextFloat() - 0.5f) * 1.1f
+        val ty = 0.3f + Random.nextFloat() * 0.4f
+        val x0 = ball.x; val y0 = ball.y; val z0 = ball.z
+        serveTo(ball, tx, ty, false)
+        var k = 0
+        while (k < 6 && abs(crossingX(ball)) > CROSS_MAX) {
+            tx *= 0.7f
+            ball.x = x0; ball.y = y0; ball.z = z0
+            serveTo(ball, tx, ty, false)
+            k++
+        }
         startRally(Side.CPU, serve = true)
         sounds.play(Sounds.RACKET, soundOn, ball.y)
     }
@@ -620,8 +637,16 @@ class PongView(context: Context, private var player: String, private var level: 
                 else -> { clear = -0.06f; t *= 0.85f }               // net
             }
         }
-        aim(ball, tx, ty, t, clear)
         ball.curve = (Random.nextFloat() - 0.5f) * 0.6f
+        aim(ball, tx, ty, t, clear)
+        // a good shot crosses your end where your racket can get to it on the screen
+        var k = 0
+        while (!blunder && k < 8 && abs(crossingX(ball)) > CROSS_MAX) {
+            tx *= 0.75f
+            ball.curve *= 0.5f
+            aim(ball, tx, ty, t, clear)
+            k++
+        }
         hitter = Side.CPU
         bouncedReceiver = false
         cpuTilt = ((ball.x - cpuX) / REACH).coerceIn(-1f, 1f) * 18f
@@ -681,6 +706,17 @@ class PongView(context: Context, private var player: String, private var level: 
                 ball.y > TABLE_L + 0.06f && abs(ball.x - cpuX) < REACH * CPU_REACH[level] && ball.z in -0.15f..0.7f
             ) hitCpu()
         }
+    }
+
+    /** Where [b] will cross your end of the table, followed through its bounce. */
+    private fun crossingX(b: Ball): Float {
+        ghost.set(b)
+        var n = 0
+        while (n < 900 && ghost.y > -0.2f) {
+            if (physics(ghost, 1f / 240f) == HIT_DEAD) break
+            n++
+        }
+        return ghost.x
     }
 
     /** The computer watches the ball and moves to where it will be, at the speed its level allows. */
@@ -743,9 +779,10 @@ class PongView(context: Context, private var player: String, private var level: 
         val nearEdge = py
         val frac = ((sy - nearEdge) / max(1f, h - nearEdge)).coerceIn(0f, 1f)
         wantY = 0.05f - 0.55f * frac
-        // sideways the racket goes 1.4 times as far as the finger from the middle: the table's near
-        // edge is at the screen's edges, so a wide ball needed a finger off the screen to reach it
-        wantX = (unprojectX(sx, wantY, 0.2f) * 1.4f).coerceIn(-HALF_W - 0.6f, HALF_W + 0.6f)
+        // the racket stays near the finger (a little further out, so the edge of the table needs no
+        // finger on the edge of the glass), and never leaves the screen
+        val edge = unprojectX(w, wantY, 0.2f) - BLADE
+        wantX = (unprojectX(sx, wantY, 0.2f) * 1.15f).coerceIn(-edge, edge)
     }
 
     // ---------------------------------------------------------------- drawing
@@ -1091,6 +1128,8 @@ class PongView(context: Context, private var player: String, private var level: 
         private const val REACH = 0.17f
         // yours, a little more forgiving than the computer's at its lowest level
         private const val MY_REACH = 0.21f
+        /** The computer's shots cross your end no wider than this (the table's edge is 0.76). */
+        private const val CROSS_MAX = 0.72f
 
         // the camera: behind your end, above the table
         private const val CAM_BACK = 1.25f

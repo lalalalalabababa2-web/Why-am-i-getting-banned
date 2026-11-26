@@ -40,6 +40,8 @@ enum class PictureDetail(val label: String, val maxSide: Int, val maxTokens: Int
     LOW("Quick", 512, 160, "Smaller pictures: read in a few seconds, fewer details."),
     NORMAL("Normal", 768, 400, "A good balance for photos and screenshots."),
     HIGH("Detailed", 1024, 1024, "Small text and fine details; several times slower to read."),
+    FINEST("Finest", 1024, 768, "The whole picture plus close-ups of its parts, for the smallest text and details; " +
+        "3 to 5 times slower than Detailed."),
 }
 
 enum class Accent(val label: String, val dark: Int, val light: Int) {

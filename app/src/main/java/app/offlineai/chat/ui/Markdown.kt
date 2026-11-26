@@ -487,13 +487,25 @@ object Markdown {
                 }
             }
             // [text](link): the text, tappable (a web address opens in the browser)
+            // (also "[text] (link)", and links with brackets or spaces in them, as models write)
             if (c == '[') {
-                val close = s.indexOf("](", i + 1)
-                val paren = if (close > 0) s.indexOf(')', close + 2) else -1
-                if (close > i && paren > close) {
+                val close = s.indexOf(']', i + 1)
+                var open = close + 1
+                if (close > 0 && open < s.length - 1 && s[open] == ' ' && s.startsWith("(http", open + 1)) open++
+                var paren = -1
+                if (close > i && open < s.length && s[open] == '(') {
+                    var depth = 0
+                    var j = open
+                    while (j < s.length && s[j] != '\n') {
+                        if (s[j] == '(') depth++
+                        if (s[j] == ')' && --depth == 0) { paren = j; break }
+                        j++
+                    }
+                }
+                if (paren > close) {
                     val st = sb.length
                     sb.append(s, i + 1, close)
-                    val url = s.substring(close + 2, paren).trim()
+                    val url = s.substring(open + 1, paren).trim().replace(" ", "%20")
                     if (url.startsWith("http://") || url.startsWith("https://")) {
                         sb.setSpan(LinkSpan(url), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     } else {

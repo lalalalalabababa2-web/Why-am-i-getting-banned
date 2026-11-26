@@ -249,7 +249,8 @@ thread.
 ## Changes to llama.cpp and stable-diffusion.cpp
 
 `third_party/patches/` holds the app's own changes, applied to the submodules at build time by
-`apply.sh` (the Android build and the test scripts run it). For b12670 they were moved onto
+`apply.sh` (the Android build and the test scripts run it); they apply unchanged to b12800, the
+llama.cpp the app is built on now. For b12670 they were moved onto
 ggml's new mul_mat, which runs a multi-row kernel's rows as separate streams of the chunk: the
 4x4 kernels write four streams by four columns, and a fourth case in its de-interleave puts them
 back (`tools/host-test/test_q1q2_mulmat.c` checks 324 shapes against a plain reference, with and
@@ -341,6 +342,12 @@ What is left for Bonsai on "Detailed": the F16 `ffn_down` matmuls (42%), attenti
 Q8_0 ones (20%). After the projector, the chat model still reads the picture's 1024 tokens as a
 prompt: Ternary Bonsai 2 9B reads 17.6 tokens/s on the runner, about a minute more.
 `MTMD_CPU_REPACK=0`, `OA_FA8=0` and `OA_F16_GEMM=0` turn the three parts off.
+
+"Finest" (Settings, Picture detail) sends the whole picture and close-ups of its parts with it, each
+up to 1024 px: a tall screenshot is cut in 2 to 4 from top to bottom, a wide picture from left to
+right, anything else 2 by 2, each part reaching a tenth into its neighbours, and each labelled
+("close-up 2 of 3: middle") so the model knows where it is. Small text that the whole picture shrinks
+to a few pixels is read at twice the size or more, for 3 to 5 times the reading time.
 
 ## Web search
 

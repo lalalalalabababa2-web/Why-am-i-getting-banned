@@ -7,9 +7,17 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 12
+    const val VERSION = 13
 
     private val ITEMS = listOf(
+        "Finest picture detail" to "Settings, Picture detail, Finest: the model sees the whole picture and close-ups of " +
+            "its parts, so small text and fine details are read. Tap a picture's close-ups with Next close-up.",
+        "Searches when unsure" to "On Auto, a reply that says it is not sure or only knows up to its training is " +
+            "searched on the web and written again. Replies only give links the search found.",
+        "Fixes" to "The send button no longer slides off the edge with Search on; tapping Search or Think no longer " +
+            "queues notes; links written as [text] (link) open; newest llama.cpp (b12800).",
+        "Table tennis" to "The camera sits further back, so wide balls and your racket stay on the screen, the racket " +
+            "stays under your finger, and the levels fit on one line.",
         "Auto web search" to "The Search button under the message box goes Off, Auto and Always. On Auto, questions " +
             "about facts, news, prices, dates or people are searched on the web first, and replies trust the results " +
             "over what the model remembers.",
@@ -73,7 +81,7 @@ object WhatsNew {
             "the picture.",
         "Ping Pong" to "Real table tennis now: a regulation table in perspective, a ball that flies and bounces, " +
             "rackets, the rules (first to 11, serve every two points) and the sounds.",
-        "Faster engine" to "llama.cpp b12670, with the app's own ARM kernels moved onto it.",
+        "Faster engine" to "llama.cpp b12670 (now b12800), with the app's own ARM kernels moved onto it.",
         "Encrypted" to "Chats, Memory, characters and paired phones are now encrypted on the phone with a key kept in " +
             "its Keystore, and the app's code is scrambled so it is hard to read if the APK is taken apart.",
         "Reply versions" to "Write again keeps the earlier replies: flip between them with the arrows under the last " +

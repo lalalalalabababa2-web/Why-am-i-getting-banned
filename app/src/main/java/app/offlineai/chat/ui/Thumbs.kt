@@ -148,7 +148,7 @@ object Thumbs {
         }
         showFrame()
         val b = AlertDialog.Builder(ctx).setView(box).setPositiveButton("Close", null)
-        if (a.files.size > 1) b.setNeutralButton("Next frame", null)
+        if (a.files.size > 1) b.setNeutralButton(if (a.kind == "video") "Next frame" else "Next close-up", null)
         val d = b.show()
         if (a.files.size > 1) {
             d.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {

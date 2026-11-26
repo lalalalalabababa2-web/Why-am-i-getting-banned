@@ -553,7 +553,21 @@ class ChatController(private val app: App) {
                 }
             }
         }
+        val unsureCarried = continuedFrom
         continuedFrom = null
+        // Auto search: a reply that was not searched and says it does not know, or knows only up to
+        // its training, is searched and written again
+        val user = convo?.messages?.let { m -> m.getOrNull(m.indexOf(reply) - 1) }?.takeIf { it.role == "user" }
+        val model = app.engine.loaded
+        if (o.ok && unsureCarried == null && reply.versions.isEmpty() && o.stopReason != "stopped" && model != null &&
+            convo === conversation && user != null && user.content.isNotBlank() && user.sources.isEmpty() &&
+            user.webError.isEmpty() && app.settings.webSearch && !app.settings.webAlways && WebSearch.unsure(reply.content)
+        ) {
+            convo.messages.remove(reply)
+            changed()
+            startReply(model, searchFor = user)
+            return
+        }
         // into the chat it was written for, which may not be the one open now
         convo?.let { app.chats.saveAsync(it) }
         changed()

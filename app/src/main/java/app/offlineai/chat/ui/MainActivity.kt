@@ -35,6 +35,7 @@ import app.offlineai.chat.data.Attachment
 import app.offlineai.chat.data.Catalog
 import app.offlineai.chat.data.Device
 import app.offlineai.chat.data.MediaImport
+import app.offlineai.chat.data.PictureDetail
 import app.offlineai.chat.data.ModelStore
 import app.offlineai.chat.data.Settings
 import app.offlineai.chat.data.SoundRecorder
@@ -384,11 +385,16 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
         tools.addView(attach, lp(dp(40), dp(40)))
+        // the chips share what the send button leaves: a large font clips them, never the button
+        val chips = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         webButton = chip(R.drawable.ic_globe, "Search") { cycleWebSearch() }
-        tools.addView(webButton, lp(WRAP, dp(34)).apply { marginStart = dp(2) })
+        chips.addView(webButton, lp(WRAP, dp(34)).apply { marginStart = dp(2) })
         thinkButton = chip(R.drawable.ic_think, "Think") { toggleThinking() }
-        tools.addView(thinkButton, lp(WRAP, dp(34)).apply { marginStart = dp(6) })
-        tools.addView(View(this), lp(0, 1, 1f))
+        chips.addView(thinkButton, lp(WRAP, dp(34)).apply { marginStart = dp(6) })
+        tools.addView(chips, lp(0, WRAP, 1f))
         updateWeb()
         updateThink()
         input = EditText(this).apply {
@@ -564,6 +570,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     private fun toast(s: String?) = Toast.makeText(this, s ?: "Something went wrong.", Toast.LENGTH_LONG).show()
 
+    private var lastNote: Toast? = null
+
+    /** A short note that replaces the one before: quick taps no longer queue a line of them. */
+    private fun note(s: String) {
+        lastNote?.cancel()
+        lastNote = Toast.makeText(this, s, Toast.LENGTH_SHORT).also { it.show() }
+    }
+
     // ---------------------------------------------------------------- attachments
 
     /** The Pictures screen, with what is in the message box as the picture's description. */
@@ -642,7 +656,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             for (uri in uris) {
                 val result = runCatching {
                     when (kind) {
-                        "image" -> MediaImport.image(ctx, uri, dir, detail.maxSide)
+                        "image" -> MediaImport.image(ctx, uri, dir, detail.maxSide, closeUps = detail == PictureDetail.FINEST)
                         "video" -> MediaImport.video(ctx, uri, dir, frames, detail.maxSide)
                         else -> MediaImport.audio(ctx, uri, dir, Settings.MAX_SOUND_SECONDS)
                     }
@@ -779,7 +793,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
 
     private fun updateWeb() {
         val s = app.settings
-        lightChip(webButton, s.webSearch, if (!s.webSearch) "Search" else if (s.webAlways) "Search: always" else "Search: auto")
+        lightChip(webButton, s.webSearch, if (!s.webSearch) "Search" else if (s.webAlways) "Always" else "Auto")
         webButton.contentDescription = when {
             !s.webSearch -> "Web search is off. Tap to turn it on."
             s.webAlways -> "Every message is searched on the web. Tap to turn web search off."
@@ -792,7 +806,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val s = app.settings
         when {
             !s.webSearch -> { s.webAlways = false; setWebSearch(true) }
-            !s.webAlways -> { s.webAlways = true; updateWeb(); toast("Search: always. Every message is searched on the web.") }
+            !s.webAlways -> { s.webAlways = true; updateWeb(); note("Web search: always. Every message is searched.") }
             else -> { s.webAlways = false; setWebSearch(false) }
         }
     }
@@ -810,7 +824,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val s = app.settings
         s.thinking = !s.thinking
         updateThink()
-        toast(if (s.thinking) "Thinking on: it thinks first (up to ${s.thinkingBudget} tokens), better on hard questions."
+        note(if (s.thinking) "Thinking on: it thinks first (up to ${s.thinkingBudget} tokens), better on hard questions."
             else "Thinking off: it answers straight away, with fewer tokens.")
     }
 
@@ -846,9 +860,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         s.webSearch = on
         updateWeb()
-        toast(if (!on) "Web search off: nothing leaves the phone."
-            else if (s.webAlways) "Search: always. Every message is searched on the web."
-            else "Search: auto. Questions that need facts are searched on the web.")
+        note(if (!on) "Web search off: nothing leaves the phone."
+            else if (s.webAlways) "Web search: always. Every message is searched."
+            else "Web search: auto. Questions that need facts are searched.")
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {

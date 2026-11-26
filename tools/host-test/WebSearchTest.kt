@@ -129,6 +129,12 @@ fun main() {
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")
     check(prompt.startsWith("What is x?") && prompt.contains("Web search results") && prompt.contains("[1]"), "prompt: the message, then the results")
+    check(WebSearch.unsure("As of my last update in 2024, GTA 6 was set for late 2025."), "unsure: knowledge cut-off")
+    check(WebSearch.unsure("I don't have real-time information about prices."), "unsure: no live data")
+    check(!WebSearch.unsure("Paris is the capital of France."), "unsure: a plain answer")
+    check(WebSearch.needsSearch("When does GTA 6 come out?", false), "auto: a release date")
+    check(!WebSearch.needsSearch("write me a poem about rain", false), "auto: writing is not searched")
+    check(!WebSearch.needsSearch("hey how are you", false), "auto: chat is not searched")
 
     println("== a real search and page, read")
     val live2 = runCatching { WebSearch.bing("grand theft auto 6 release date") }

@@ -122,7 +122,8 @@ object WebSearch {
     fun prompt(context: String, message: String): String =
         message + "\n\n" + context.trim() + "\n\nAnswer the message above from these web results. They are from " +
             "today and newer than your training: where they differ from what you remember, they are right. Cite them " +
-            "like [1], do not list them at the end, and if they do not cover it, say so in a few words."
+            "like [1], do not list them at the end, give only links that appear in them, and if they do not cover " +
+            "it, say so in a few words."
 
     /**
      * Whether a message needs a web search when search is on Auto: it asks about something that
@@ -130,6 +131,20 @@ object WebSearch {
      * a question), or doubts an answer that came from a search ("you sure?", "it's out already").
      * Writing, coding and small talk do not.
      */
+    /**
+     * A reply that says it does not know, cannot look it up, or knows only up to its training: on
+     * Auto it is searched and written again.
+     */
+    fun unsure(reply: String): Boolean = UNSURE.containsMatchIn(reply.take(1500))
+
+    private val UNSURE = Regex(
+        "(?i)\\b(as of my (last|latest|most recent) (update|knowledge|training)|my (knowledge|training)( data)? " +
+            "(cutoff|cut-off|only goes|is limited|ends)|i (do not|don't|cannot|can't) (have|access) (real-time|current|live|up-to-date)|" +
+            "i (do not|don't|cannot|can't) (browse|search) (the )?(internet|web)|i'?m not (sure|certain|aware)|i am not (sure|certain|aware)|" +
+            "i (do not|don't) (know|have (any )?information)|(cannot|can't) (verify|confirm)|not (been )?(officially )?(announced|confirmed|released) yet|" +
+            "(check|visit) (the )?(official|latest)|may have changed since)",
+    )
+
     fun needsSearch(text: String, afterSearch: Boolean): Boolean {
         val t = text.trim().lowercase(Locale.ROOT)
         if (t.length < 3) return false

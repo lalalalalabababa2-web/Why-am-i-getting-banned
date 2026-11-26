@@ -48,14 +48,16 @@ object MediaImport {
     }
 
     /** A picture, scaled so its longest side is at most [maxSide] pixels (models shrink it anyway). */
-    fun image(context: Context, uri: Uri, dir: File, maxSide: Int): Attachment {
+    fun image(context: Context, uri: Uri, dir: File, maxSide: Int, closeUps: Boolean = false): Attachment {
+        // with close-ups the picture is read at up to twice the size, then cut into parts
+        val readSide = if (closeUps) maxSide * 2 else maxSide
         val bitmap = try {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
                 val w = info.size.width
                 val h = info.size.height
                 val longest = maxOf(w, h)
-                if (longest > maxSide) {
-                    val scale = maxSide.toFloat() / longest
+                if (longest > readSide) {
+                    val scale = readSide.toFloat() / longest
                     decoder.setTargetSize(maxOf(1, (w * scale).toInt()), maxOf(1, (h * scale).toInt()))
                 }
                 // a software bitmap, so it can be written out as JPEG
@@ -64,13 +66,84 @@ object MediaImport {
         } catch (e: Exception) {
             throw IOException("That picture could not be opened (${e.message ?: "unknown format"}).")
         }
-        val file = newFile(dir, "jpg")
+        val files = mutableListOf<String>()
+        val labels = mutableListOf<String>()
         try {
-            saveJpeg(bitmap, file)
+            val parts = if (closeUps) closeUps(bitmap.width, bitmap.height) else emptyList()
+            val whole = scaled(bitmap, maxSide)
+            try {
+                files += newFile(dir, "jpg").also { saveJpeg(whole, it) }.absolutePath
+            } finally {
+                if (whole !== bitmap) whole.recycle()
+            }
+            if (parts.isNotEmpty()) labels += "(the whole picture; close-ups of its parts follow)"
+            for ((k, p) in parts.withIndex()) {
+                val crop = Bitmap.createBitmap(bitmap, p.x, p.y, p.w, p.h)
+                val part = scaled(crop, maxSide)
+                try {
+                    files += newFile(dir, "jpg").also { saveJpeg(part, it) }.absolutePath
+                    labels += "(close-up ${k + 1} of ${parts.size}: ${p.where})"
+                } finally {
+                    if (part !== crop) part.recycle()
+                    crop.recycle()
+                }
+            }
         } finally {
             bitmap.recycle()
         }
-        return Attachment("image", listOf(file.absolutePath), name = displayName(context, uri))
+        return Attachment("image", files, labels, name = displayName(context, uri))
+    }
+
+    private class Part(val x: Int, val y: Int, val w: Int, val h: Int, val where: String)
+
+    /**
+     * The parts a picture is cut into for close-ups, each a little into its neighbours: a tall
+     * screenshot in 2 to 4 from top to bottom, a wide one from left to right, anything else 2 by 2.
+     */
+    private fun closeUps(w: Int, h: Int): List<Part> {
+        if (maxOf(w, h) < 640) return emptyList()  // small enough to read whole
+        val rows: Int
+        val cols: Int
+        when {
+            h > w * 1.4f -> { cols = 1; rows = Math.ceil(h / (w * 1.25)).toInt().coerceIn(2, 4) }
+            w > h * 1.4f -> { rows = 1; cols = Math.ceil(w / (h * 1.25)).toInt().coerceIn(2, 4) }
+            else -> { rows = 2; cols = 2 }
+        }
+        val rowName = when (rows) {
+            1 -> listOf("")
+            2 -> listOf("top", "bottom")
+            3 -> listOf("top", "middle", "bottom")
+            else -> listOf("top", "upper middle", "lower middle", "bottom")
+        }
+        val colName = when (cols) {
+            1 -> listOf("")
+            2 -> listOf("left", "right")
+            3 -> listOf("left", "centre", "right")
+            else -> listOf("far left", "left of centre", "right of centre", "far right")
+        }
+        val cw = w / cols
+        val ch = h / rows
+        val ox = if (cols > 1) cw / 10 else 0
+        val oy = if (rows > 1) ch / 10 else 0
+        val out = mutableListOf<Part>()
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val x0 = (c * cw - ox).coerceAtLeast(0)
+                val y0 = (r * ch - oy).coerceAtLeast(0)
+                val x1 = ((c + 1) * cw + ox).coerceAtMost(w)
+                val y1 = ((r + 1) * ch + oy).coerceAtMost(h)
+                out += Part(x0, y0, x1 - x0, y1 - y0, listOf(rowName[r], colName[c]).filter { it.isNotEmpty() }.joinToString(" "))
+            }
+        }
+        return out
+    }
+
+    /** [b] with its longest side at most [maxSide] ([b] itself when it is already). */
+    private fun scaled(b: Bitmap, maxSide: Int): Bitmap {
+        val longest = maxOf(b.width, b.height)
+        if (longest <= maxSide) return b
+        val s = maxSide.toFloat() / longest
+        return Bitmap.createScaledBitmap(b, maxOf(1, (b.width * s).toInt()), maxOf(1, (b.height * s).toInt()), true)
     }
 
     fun timeLabel(ms: Long): String = String.format(Locale.US, "[%dm%.1fs]", ms / 60_000, (ms % 60_000) / 1000.0)
