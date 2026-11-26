@@ -612,6 +612,9 @@ class ChatController(private val app: App) {
         var last: JSONObject? = null
         val turns = if (nextMessage == null) conversation.messages
         else conversation.messages + ChatMessage(role = "user", content = nextMessage)
+        // only your last message goes with what its web search found: older results stay out (they
+        // cost tokens on every turn, and the model answered later questions from them)
+        val lastUser = turns.lastOrNull { it.role == "user" && !it.error }
         for (m in turns) {
             if (m.error || m.greeting) continue
             if (m.role == "assistant" && m.content.isBlank()) continue
@@ -619,7 +622,7 @@ class ChatController(private val app: App) {
             val prev = last
             if (prev != null && prev.getString("role") == m.role) {
                 prev.put("content", prev.getString("content") + "\n\n" +
-                    (if (m.role == "user" && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content))
+                    (if (m === lastUser && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content))
                 if (media != null) {
                     val into = prev.optJSONArray("media") ?: JSONArray().also { prev.put("media", it) }
                     for (k in 0 until media.length()) into.put(media.get(k))
@@ -627,7 +630,7 @@ class ChatController(private val app: App) {
                 continue
             }
             // a message searched on the web goes to the model with what the search found in front of it
-            val text = if (m.role == "user" && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content
+            val text = if (m === lastUser && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content
             val j = JSONObject().put("role", m.role).put("content", text)
             // a team reply's separate answers stay out of the conversation; only its reply goes back
             if (m.role == "assistant" && m.reasoning.isNotBlank() && m.team == 0) j.put("reasoning", m.reasoning)

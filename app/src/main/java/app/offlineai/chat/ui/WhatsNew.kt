@@ -7,9 +7,12 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 10
+    const val VERSION = 11
 
     private val ITEMS = listOf(
+        "Web search fixes" to "Misspelt names are corrected before searching (\"sparyground\" finds Sprayground), only " +
+            "your latest message goes to the model with its results (older ones no longer cost tokens or confuse " +
+            "replies), and when the pages say little, the search engines' own top results are used.",
         "Web search: more sites, quicker" to "It now asks DuckDuckGo and Bing at once, so answers come from many sites, " +
             "not just Wikipedia, and no longer waits for one that is slow (about 3 seconds instead of 8). Questions are " +
             "searched as keywords (\"come out\" becomes \"release date\"), and pages that only share a word with your " +

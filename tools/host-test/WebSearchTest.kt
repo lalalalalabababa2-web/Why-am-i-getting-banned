@@ -112,9 +112,19 @@ fun main() {
     check(WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "tell me when GTA 6 comes out" ||
         WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "when GTA 6 comes out",
         "searchable: \"${WebSearch.searchable("Can you tell me when GTA 6 comes out?")}\"")
+    check(WebSearch.keywords("Were can i buy sparyground bags") == "sparyground bags", "keywords: \"${WebSearch.keywords("Were can i buy sparyground bags")}\"")
     check(WebSearch.keywords("When did GTA 6 come out and how much does it cost?") == "GTA 6 release date price",
         "keywords: \"${WebSearch.keywords("When did GTA 6 come out and how much does it cost?")}\"")
     check(WebSearch.terms("GTA 6 price").contains("6"), "terms: numbers kept")
+    // a misspelt name still finds its passages (the engines correct it, the pages spell it right)
+    val typo = listOf(WebSearch.Passage(0, "Shop Sprayground backpacks and bags at the official Sprayground store, with free shipping."),
+        WebSearch.Passage(1, "A completely unrelated paragraph about the weather in a faraway town by the sea."))
+    val tp = WebSearch.rank(typo, WebSearch.terms("where can i buy sparyground bags"), 600, "where can i buy sparyground bags",
+        core = WebSearch.terms(WebSearch.keywords("where can i buy sparyground bags")))
+    check(tp.size == 1 && tp[0].hit == 0, "rank: a misspelt word matched (${tp.map { it.text.take(30) }})")
+    check(WebSearch.fix("sparyground bags", listOf("buy sprayground backpack", "sprayground bags")) == "sprayground bags", "fix: a typo corrected")
+    check(WebSearch.fix("GTA 6 release date", listOf("gta 6 release date price")) == "GTA 6 release date", "fix: nothing to correct")
+    check(WebSearch.fix("python list sort", listOf("python sorted dict")) == "python list sort", "fix: a different search left alone")
     check(WebSearch.searchable("search the web for lisbon hotels") == "lisbon hotels", "searchable: \"${WebSearch.searchable("search the web for lisbon hotels")}\"")
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")

@@ -52,7 +52,7 @@ object WebSearch {
         if (q.isEmpty()) return WebResult(q, emptyList(), "", "Nothing to search for.")
         status("Searching the web…")
         var why: String? = null
-        val sq = keywords(q)
+        val sq = corrected(keywords(q))
         // the free engines together (DuckDuckGo and Bing at once, merged); else the one set
         var hits = runCatching { if (engine is Engine.DuckDuckGo) both(sq) else engine.search(sq) }.getOrElse { why = it.message; emptyList() }
         // DuckDuckGo sometimes asks a busy network to prove it is a person: its lite page, then
@@ -89,7 +89,23 @@ object WebSearch {
         hits.forEachIndexed { i, h -> if (h.snippet.length >= 30) cands += Passage(i, h.snippet, snippet = true) }
         texts.forEachIndexed { i, t -> chunks(t).forEach { cands += Passage(i, it) } }
         val picked = rank(cands, terms(q + " " + sq), budget, q, core = terms(sq))
-        if (picked.isEmpty()) return WebResult(q, emptyList(), "", "The pages found did not say anything about it.")
+        if (picked.isEmpty()) {
+            // nothing in the pages held enough of the question's words (a misspelt name the engines
+            // corrected, a shopping question): the engines' own top results, which they matched
+            // (a result whose title has none of the search's words is an engine's guess: a store's
+            // front page, a dictionary entry)
+            val core = terms(sq)
+            val top = hits.withIndex().filter { (_, h) ->
+                h.snippet.length >= 30 && (core.isEmpty() || words(h.title).any { w -> core.any { matches(w, it) } })
+            }.take(3)
+            if (top.isEmpty()) return WebResult(q, emptyList(), "", "The pages found did not say anything about it.")
+            val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.US).format(Date())
+            val sb = StringBuilder("Web results ($date):")
+            top.forEachIndexed { n, (_, h) ->
+                sb.append("\n[").append(n + 1).append("] ").append(h.source.domain).append(": ").append(h.title).append(". ").append(h.snippet)
+            }
+            return WebResult(q, top.map { it.value.source }, sb.toString().take(budget + 200))
+        }
 
         // the sources the passages come from, numbered in the search's order
         val used = picked.map { it.hit }.distinct().sorted()
@@ -114,6 +130,8 @@ object WebSearch {
         "they", "them", "their", "he", "she", "his", "her", "can", "could", "would", "should", "will", "shall", "may",
         "might", "please", "tell", "explain", "give", "show", "find", "search", "know", "there", "this", "that",
         "these", "those", "if", "so", "as", "than", "then", "just", "also", "any", "some", "hey", "hi", "nyx",
+        // "buy" brings stores' front pages and dictionaries; the thing itself finds where to buy it
+        "buy", "purchase", "get",
     )
 
     /**
@@ -135,6 +153,33 @@ object WebSearch {
         Regex("(?i)\\bwho won\\b") to "winner",
         Regex("(?i)\\bhow (do i|to|can i|do you)\\b") to "how to",
     )
+
+    /**
+     * [q] with its typos fixed from DuckDuckGo's suggestions ("sparyground bags": "sprayground
+     * bags"): a word changes only when the suggestion's word is a typo away from it. Unchanged when
+     * the suggestions do not answer within 1.5 s or suggest something else.
+     */
+    fun corrected(q: String): String {
+        val json = runCatching { fetch("https://duckduckgo.com/ac/?type=list&q=" + URLEncoder.encode(q, "UTF-8"), timeoutMs = 1500) }
+            .getOrNull() ?: return q
+        val list = runCatching { org.json.JSONArray(json).getJSONArray(1) }.getOrNull() ?: return q
+        return fix(q, (0 until list.length()).map { list.optString(it) })
+    }
+
+    /**
+     * [q] with each word that is not among the [suggestions]' words replaced by the one of them a
+     * typo away from it, if any; every other word as it was.
+     */
+    fun fix(q: String, suggestions: List<String>): String {
+        val vocab = suggestions.flatMap { it.lowercase(Locale.ROOT).split(' ') }.filter { it.length >= 3 }.toSet()
+        if (vocab.isEmpty()) return q
+        return q.split(' ').filter { it.isNotEmpty() }.joinToString(" ") { w ->
+            val low = w.lowercase(Locale.ROOT)
+            if (low.length < 4 || low in vocab || low.any { it.isDigit() }) w
+            else vocab.filter { kotlin.math.abs(it.length - low.length) <= 2 && typos(low, it, if (low.length >= 8) 2 else 1) }
+                .minByOrNull { kotlin.math.abs(it.length - low.length) } ?: w
+        }
+    }
 
     /** Everyday phrasings in the words pages use ("come out": "release date", "how much": "price"). */
     fun rewrite(q: String): String = PHRASES.fold(q) { acc, (re, to) -> re.replace(acc, to) }
@@ -231,8 +276,42 @@ object WebSearch {
 
     private fun words(s: String) = s.lowercase(Locale.ROOT).split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
 
-    /** A word of a passage counts for a question's word when it is that word or starts with it ("release", "released"). */
-    private fun matches(word: String, term: String) = word == term || (term.length >= 4 && word.startsWith(term))
+    /**
+     * A word of a passage counts for a question's word when it is that word, starts with it
+     * ("release", "released"), or is it with a typo: one letter wrong, missing, extra or two
+     * swapped ("sparyground", "sprayground"), two in a word of eight letters or more.
+     */
+    private fun matches(word: String, term: String): Boolean {
+        if (word == term || (term.length >= 4 && word.startsWith(term))) return true
+        if (term.length < 5 || term.any { it.isDigit() } || kotlin.math.abs(word.length - term.length) > 2) return false
+        return typos(word, term, if (term.length >= 8) 2 else 1)
+    }
+
+    /** Whether [a] and [b] are at most [max] edits apart (Damerau: a swap of two neighbours is one). */
+    private fun typos(a: String, b: String, max: Int): Boolean {
+        val n = a.length
+        val m = b.length
+        var prev2 = IntArray(m + 1)
+        var prev = IntArray(m + 1) { it }
+        var cur = IntArray(m + 1)
+        for (i in 1..n) {
+            cur[0] = i
+            var best = cur[0]
+            for (j in 1..m) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                var v = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) v = minOf(v, prev2[j - 2] + 1)
+                cur[j] = v
+                best = minOf(best, v)
+            }
+            if (best > max) return false
+            val t = prev2
+            prev2 = prev
+            prev = cur
+            cur = t
+        }
+        return prev[m] <= max
+    }
 
     private fun similar(a: Set<String>, b: Set<String>): Boolean {
         if (a.isEmpty() || b.isEmpty()) return false
@@ -436,13 +515,13 @@ object WebSearch {
     // ------------------------------------------------------------------ pages
 
     /** A page as text (HTML or plain text only), up to [MAX_PAGE] bytes, with redirects followed. */
-    fun fetch(url: String, headers: Map<String, String> = emptyMap(), quick: Boolean = false): String {
+    fun fetch(url: String, headers: Map<String, String> = emptyMap(), quick: Boolean = false, timeoutMs: Int = 0): String {
         var u = URL(url)
         repeat(5) {
             val c = (u.openConnection() as HttpURLConnection).apply {
                 // quick: a page among several, or a second engine (the search waits for the others anyway)
-                connectTimeout = if (quick) 3500 else 6000
-                readTimeout = if (quick) 4000 else 6000
+                connectTimeout = if (timeoutMs > 0) timeoutMs else if (quick) 3500 else 6000
+                readTimeout = if (timeoutMs > 0) timeoutMs else if (quick) 4000 else 6000
                 instanceFollowRedirects = false
                 useCaches = false
                 setRequestProperty("User-Agent", UA)
@@ -459,7 +538,7 @@ object WebSearch {
                 }
                 if (code !in 200..299) throw java.io.IOException("HTTP $code")
                 val type = c.contentType?.lowercase(Locale.US) ?: ""
-                if (type.isNotEmpty() && !type.contains("html") && !type.contains("text") && !type.contains("json")) {
+                if (type.isNotEmpty() && !type.contains("html") && !type.contains("text") && !type.contains("json") && !type.contains("javascript")) {
                     throw java.io.IOException("not a page: $type")
                 }
                 val bytes = c.inputStream.use { input ->
