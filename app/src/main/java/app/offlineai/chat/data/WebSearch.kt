@@ -100,7 +100,7 @@ object WebSearch {
             }.take(3)
             if (top.isEmpty()) return WebResult(q, emptyList(), "", "The pages found did not say anything about it.")
             val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.US).format(Date())
-            val sb = StringBuilder("Web results ($date):")
+            val sb = StringBuilder("Web results (searched today, $date):")
             top.forEachIndexed { n, (_, h) ->
                 sb.append("\n[").append(n + 1).append("] ").append(h.source.domain).append(": ").append(h.title).append(". ").append(h.snippet)
             }
@@ -110,7 +110,7 @@ object WebSearch {
         // the sources the passages come from, numbered in the search's order
         val used = picked.map { it.hit }.distinct().sorted()
         val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.US).format(Date())
-        val sb = StringBuilder("Web results ($date):")
+        val sb = StringBuilder("Web results (searched today, $date):")
         used.forEachIndexed { n, i ->
             sb.append("\n[").append(n + 1).append("] ").append(hits[i].source.domain).append(": ")
             sb.append(picked.filter { it.hit == i }.sortedBy { it.order }.joinToString(" … ") { it.text })
@@ -120,8 +120,29 @@ object WebSearch {
 
     /** The text that goes before your message for the model, around the search's [context]. */
     fun prompt(context: String, message: String): String =
-        context.trim() + "\n\nAnswer with these results, citing them like [1]. Do not list the sources at the end " +
-            "(they are shown). If they do not cover it, say so in a few words.\n\n" + message
+        message + "\n\n" + context.trim() + "\n\nAnswer the message above from these web results. They are from " +
+            "today and newer than your training: where they differ from what you remember, they are right. Cite them " +
+            "like [1], do not list them at the end, and if they do not cover it, say so in a few words."
+
+    /**
+     * Whether a message needs a web search when search is on Auto: it asks about something that
+     * changes or that the model may have wrong (newest, price, release, news, a year, a name and
+     * a question), or doubts an answer that came from a search ("you sure?", "it's out already").
+     * Writing, coding and small talk do not.
+     */
+    fun needsSearch(text: String, afterSearch: Boolean): Boolean {
+        val t = text.trim().lowercase(Locale.ROOT)
+        if (t.length < 3) return false
+        val words = t.split(Regex("\\s+")).size
+        if (Regex("^(hi|hello|hey|thanks|thank you|ok|okay|lol|nice|cool|good|write|draft|translate|rewrite|summari[sz]e|fix|code|create|make|generate|tell me a (joke|story)|how are you|who are you)\\b").containsMatchIn(t)) return false
+        // a follow-up to a searched answer: "you sure", "gta 6", "it's already out"
+        if (afterSearch && (words <= 5 || Regex("\\b(sure|true|really|wrong|already|actually|still|now)\\b").containsMatchIn(t))) return true
+        val timely = Regex("\\b(latest|newest|newer|recent|current|currently|today|tonight|yesterday|tomorrow|this (week|month|year)|news|price|prices|cost|costs|release|released|releases|come out|came out|coming out|score|won|winner|weather|forecast|stock|update|version|ceo|president|election|schedule|hours|near me|buy|where can|best|top|vs|review|reviews|20[2-3]\\d)\\b").containsMatchIn(t)
+        val question = t.endsWith("?") || Regex("^(what|whats|what's|who|whos|who's|when|where|which|how|is|are|was|were|does|did|do|can|will)\\b").containsMatchIn(t)
+        val names = Regex("(^|\\s)[A-Z][A-Za-z0-9]{1,}").findAll(text.trim()).count() >= (if (Regex("^[A-Z]").containsMatchIn(text.trim())) 2 else 1)
+        val numbers = Regex("\\d").containsMatchIn(t)
+        return timely || (question && (names || numbers))
+    }
 
     private val FUNCTION_WORDS = setOf(
         "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been", "do", "does", "did", "doing",

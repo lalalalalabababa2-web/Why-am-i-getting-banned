@@ -301,6 +301,14 @@ class Settings(context: Context) {
     var webSearch: Boolean
         get() = bool("web_search", false) && !offlineOnly
         set(v) = put("web_search", v)
+    /** With web search on: search every message (true) or only those that need it (Auto, false). */
+    var webAlways: Boolean
+        get() = bool("web_always", false)
+        set(v) = put("web_always", v)
+    /** The game's icon and name the launcher was last shown (Disguise.refresh after an update). */
+    var gameIconShown: Int
+        get() = int("game_icon_shown", 0)
+        set(v) = put("game_icon_shown", v)
     /** What web search sends was explained and agreed to, once. */
     var webConsent: Boolean
         get() = bool("web_consent", false)

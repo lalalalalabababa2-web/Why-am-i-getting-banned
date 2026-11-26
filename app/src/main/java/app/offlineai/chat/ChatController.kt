@@ -226,8 +226,22 @@ class ChatController(private val app: App) {
         }
         app.settings.lastChatId = conversation.id
         save()
-        startReply(model, searchFor = mine.takeIf { app.settings.webSearch && it.content.isNotBlank() })
+        // search on: every message (Always) or the ones that need facts (Auto)
+        val s = app.settings
+        val afterSearch = conversation.messages.dropLast(1).lastOrNull { it.role == "user" }?.sources?.isNotEmpty() == true
+        val search = s.webSearch && mine.content.isNotBlank() && (s.webAlways || WebSearch.needsSearch(mine.content, afterSearch))
+        startReply(model, searchFor = mine.takeIf { search })
         return true
+    }
+
+    /** Something done on the phone from the message box (PhoneActions): your message and what was done, without the model. */
+    fun addLocal(text: String, done: String) {
+        if (generating) return
+        conversation.messages.add(ChatMessage(role = "user", content = text.trim()))
+        conversation.messages.add(ChatMessage(role = "assistant", content = done, model = "Nyx", greeting = true))
+        if (conversation.title.isBlank()) conversation.title = text.trim().take(60)
+        save()
+        changed()
     }
 
     /**

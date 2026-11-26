@@ -88,6 +88,11 @@ class App : Application() {
         // the launcher entry always matches the setting (after an update, a restore or cleared
         // data, a game entry left on with no code set would lock Nyx out for good)
         runCatching { Disguise.apply(this, settings.disguised && settings.disguiseCode.isNotEmpty()) }
+        // a new icon or name for the game since the launcher last showed it
+        if (settings.gameIconShown != Disguise.GAME_ICON) {
+            if (settings.disguised && settings.disguiseCode.isNotEmpty()) runCatching { Disguise.refresh(this) }
+            settings.gameIconShown = Disguise.GAME_ICON
+        }
         try {
             NativeEngine.init(applicationInfo.nativeLibraryDir)
         } catch (t: Throwable) {

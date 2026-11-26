@@ -7,9 +7,15 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 11
+    const val VERSION = 12
 
     private val ITEMS = listOf(
+        "Auto web search" to "The Search button under the message box goes Off, Auto and Always. On Auto, questions " +
+            "about facts, news, prices, dates or people are searched on the web first, and replies trust the results " +
+            "over what the model remembers.",
+        "Phone commands" to "Type \"open settings\", \"open wifi\", \"open YouTube\", \"flashlight on\", \"set an alarm " +
+            "for 7:30 am\", \"set a timer for 5 minutes\", \"call 555 1234\" or \"text 555 1234 on my way\": done right away.",
+        "New message box" to "What you type gets the full width; the paperclip, Search, Think and send sit underneath.",
         "Web search fixes" to "Misspelt names are corrected before searching (\"sparyground\" finds Sprayground), only " +
             "your latest message goes to the model with its results (older ones no longer cost tokens or confuse " +
             "replies), and when the pages say little, the search engines' own top results are used.",

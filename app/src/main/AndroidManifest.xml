@@ -25,9 +25,17 @@
 
     <!-- the phone's speech recognition, for speaking a message (Android 11 and later only show
          an app the services it says it uses) -->
+    <!-- "set an alarm for 7" from the message box (PhoneActions) -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <!-- "open <app>" from the message box: the apps in the launcher, by name -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
 

@@ -128,7 +128,7 @@ fun main() {
     check(WebSearch.searchable("search the web for lisbon hotels") == "lisbon hotels", "searchable: \"${WebSearch.searchable("search the web for lisbon hotels")}\"")
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")
-    check(prompt.startsWith("Web search results") && prompt.endsWith("What is x?") && prompt.contains("[1]"), "prompt: results, then the message")
+    check(prompt.startsWith("What is x?") && prompt.contains("Web search results") && prompt.contains("[1]"), "prompt: the message, then the results")
 
     println("== a real search and page, read")
     val live2 = runCatching { WebSearch.bing("grand theft auto 6 release date") }

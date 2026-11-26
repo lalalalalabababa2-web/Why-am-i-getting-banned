@@ -58,6 +58,20 @@ object Disguise {
         }
     }
 
+    /** Raised when the game's icon or name changes, so the launcher is made to show the new ones. */
+    const val GAME_ICON = 2
+
+    /**
+     * Launchers keep an entry's icon and name as they first saw them: after an update that changed
+     * the game's, its entry is taken away and put back, so they show the new ones.
+     */
+    fun refresh(context: Context) {
+        val pm = context.packageManager
+        val c = ComponentName(context.packageName, GAME)
+        pm.setComponentEnabledSetting(c, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
+        pm.setComponentEnabledSetting(c, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP)
+    }
+
     /** The name shown in the recent apps and notifications while hidden. */
     const val GAME_NAME = "Ping Pong Pro"
 }

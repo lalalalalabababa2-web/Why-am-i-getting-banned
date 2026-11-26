@@ -71,10 +71,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var voiceBar: LinearLayout
     private lateinit var voiceState: TextView
     private lateinit var attach: ImageButton
-    /** Shown while web search is on; tapping it turns it off. */
-    private lateinit var webButton: ImageButton
+    /** Web search: Off, Auto (questions that need facts) or Always; tap to change. */
+    private lateinit var webButton: TextView
     /** Thinking on or off for the next replies (lit when on), for models that can think. */
-    private lateinit var thinkButton: ImageButton
+    private lateinit var thinkButton: TextView
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
 
@@ -369,25 +369,27 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         dock.addView(voiceBar, lp(MATCH, WRAP).apply { setMargins(dp(10), 0, dp(10), dp(4)) })
 
         // composer
+        // the box: what you type on top, its full width; under it the paperclip, Search and Think,
+        // and the send button at the end
         val composer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            // one line: the buttons sit level with the text, whatever the font size; several
-            // lines: they stay at the bottom, next to the line being typed (see below)
-            gravity = Gravity.CENTER_VERTICAL
-            // 6 dp round a 44 dp button: the box is a 56 dp pill, and the send button's circle sits
-            // in its end with the same gap all round (see sendBackground)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(4), dp(6), dp(6))
             // translucent: what is behind shows through, blurred by the backdrop under it
             background = rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.surface1, if (Palette.dark) 0xB8 else 0xC4),
-                dp(28).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x90))
+                dp(26).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x90))
+        }
+        val tools = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
-        composer.addView(attach, lp(dp(44), dp(44)))
-        webButton = iconButton(R.drawable.ic_globe, "Web search is on. Tap to turn it off.", Palette.accent) { setWebSearch(false) }
-        webButton.visibility = if (app.settings.webSearch) View.VISIBLE else View.GONE
-        composer.addView(webButton, lp(dp(44), dp(44)))
-        thinkButton = iconButton(R.drawable.ic_think, "Thinking", Palette.text3) { toggleThinking() }
-        composer.addView(thinkButton, lp(dp(40), dp(44)))
+        tools.addView(attach, lp(dp(40), dp(40)))
+        webButton = chip(R.drawable.ic_globe, "Search") { cycleWebSearch() }
+        tools.addView(webButton, lp(WRAP, dp(34)).apply { marginStart = dp(2) })
+        thinkButton = chip(R.drawable.ic_think, "Think") { toggleThinking() }
+        tools.addView(thinkButton, lp(WRAP, dp(34)).apply { marginStart = dp(6) })
+        tools.addView(View(this), lp(0, 1, 1f))
+        updateWeb()
         updateThink()
         input = EditText(this).apply {
             hint = "Message"
@@ -395,8 +397,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             setTextColor(Palette.text)
             textSize = 15f * Palette.fontScale
             background = null
-            setPadding(dp(6), dp(11), dp(8), dp(11))
-            minHeight = dp(44)
+            setPadding(dp(10), dp(10), dp(10), dp(6))
+            minHeight = dp(42)
             maxLines = 6
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             // with "Enter sends" the keyboard shows a send key instead (see applyEnterKey)
@@ -421,7 +423,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
                 }
             })
         }
-        input.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+        input.gravity = Gravity.TOP or Gravity.START
         // Enter in an empty box (or before the first word) only made blank lines: the box grew
         // taller, its hint went, and the button turned into a microphone over nothing to send
         input.filters = arrayOf(android.text.InputFilter { source, start, end, dest, dstart, _ ->
@@ -429,15 +431,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             if ('\n' !in added || dest.subSequence(0, dstart).isNotBlank()) null
             else added.toString().trimStart('\n', '\r', ' ', '\t')
         })
-        composer.addView(input, lp(0, WRAP, 1f))
-        input.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            val want = if (input.lineCount > 1) Gravity.BOTTOM else Gravity.CENTER_VERTICAL
-            // only the vertical part: LinearLayout adds a horizontal gravity of its own, so
-            // comparing the whole value never matched and every layout asked for another one
-            if ((composer.gravity and Gravity.VERTICAL_GRAVITY_MASK) != want) {
-                composer.post { composer.gravity = want }
-            }
-        }
+        composer.addView(input, lp(MATCH, WRAP))
+        composer.addView(tools, lp(MATCH, WRAP))
         send = ImageButton(this).apply {
             scaleType = android.widget.ImageView.ScaleType.CENTER
             background = sendBackground(Palette.accent)
@@ -449,12 +444,12 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             }
         }
         send.pressable(0.86f)
-        composer.addView(send, lp(dp(44), dp(44)).apply { marginStart = dp(4) })
+        tools.addView(send, lp(dp(44), dp(44)))
         val capsule = FrameLayout(this).apply {
             elevation = dp(4).toFloat()
             outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) =
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(28).toFloat())
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(26).toFloat())
             }
             clipToOutline = true
         }
@@ -757,18 +752,57 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         app.models.poll()
         app.reloadIfNeeded()
         // (web search may have been turned on or off in Settings)
-        webButton.visibility = if (app.settings.webSearch) View.VISIBLE else View.GONE
+        updateWeb()
         refreshAll()
     }
 
     /** The thinking button: shown for a model that can think, lit while thinking is on. */
+    /** A small pill under the text: an icon and a word, lit while what it stands for is on. */
+    private fun chip(icon: Int, label: String, onClick: () -> Unit): TextView = text(label, 13f, Palette.text2, bold = true).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(10), 0, dp(12), 0)
+        compoundDrawablePadding = dp(5)
+        tag = icon
+        setOnClickListener { onClick() }
+        pressable()
+    }
+
+    private fun lightChip(c: TextView, on: Boolean, label: String) {
+        val color = if (on) Palette.accent else Palette.text3
+        c.text = label
+        c.setTextColor(color)
+        val d = ContextCompat.getDrawable(this, c.tag as Int)?.mutate()?.apply { setTint(color); setBounds(0, 0, dp(17), dp(17)) }
+        c.setCompoundDrawablesRelative(d, null, null, null)
+        c.background = if (on) rounded(androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.accent, 0x2E), dp(17).toFloat())
+        else rounded(0, dp(17).toFloat(), dp(1), androidx.core.graphics.ColorUtils.setAlphaComponent(Palette.borderStrong, 0x80))
+    }
+
+    private fun updateWeb() {
+        val s = app.settings
+        lightChip(webButton, s.webSearch, if (!s.webSearch) "Search" else if (s.webAlways) "Search: always" else "Search: auto")
+        webButton.contentDescription = when {
+            !s.webSearch -> "Web search is off. Tap to turn it on."
+            s.webAlways -> "Every message is searched on the web. Tap to turn web search off."
+            else -> "Messages that need facts are searched on the web. Tap to search every message."
+        }
+    }
+
+    /** Off, then Auto (only what needs facts), then Always, then off again. */
+    private fun cycleWebSearch() {
+        val s = app.settings
+        when {
+            !s.webSearch -> { s.webAlways = false; setWebSearch(true) }
+            !s.webAlways -> { s.webAlways = true; updateWeb(); toast("Search: always. Every message is searched on the web.") }
+            else -> { s.webAlways = false; setWebSearch(false) }
+        }
+    }
+
     private fun updateThink() {
         val loaded = app.engine.loaded
         val can = loaded != null && loaded.info.supportsThinking && app.models.find(loaded.key)?.catalog?.noThinking != true
         thinkButton.visibility = if (can) View.VISIBLE else View.GONE
         val on = app.settings.thinking
-        thinkButton.setColorFilter(if (on) Palette.accent else Palette.text3)
-        thinkButton.alpha = if (on) 1f else 0.7f
+        lightChip(thinkButton, on, "Think")
         thinkButton.contentDescription = if (on) "Thinking is on. Tap to answer straight away." else "Thinking is off. Tap to think before answering."
     }
 
@@ -811,8 +845,10 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             return
         }
         s.webSearch = on
-        webButton.visibility = if (on) View.VISIBLE else View.GONE
-        toast(if (on) "Web search on: your messages are searched on the web." else "Web search off: nothing leaves the phone.")
+        updateWeb()
+        toast(if (!on) "Web search off: nothing leaves the phone."
+            else if (s.webAlways) "Search: always. Every message is searched on the web."
+            else "Search: auto. Questions that need facts are searched on the web.")
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -876,6 +912,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         if (preparing > 0 || (text.isBlank() && app.chat.draftAttachments.isEmpty())) return false
         askForNotificationsOnce()
         scroller.follow()
+        // "open settings", "set a timer for 5 minutes"...: done on the phone, without the model
+        if (app.chat.draftAttachments.isEmpty() && !app.chat.generating) {
+            PhoneActions.run(this, text)?.let { done ->
+                app.chat.addLocal(text, done)
+                input.setText("")
+                return true
+            }
+        }
         if (!app.chat.send(text)) return false
         send.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
         input.setText("")
