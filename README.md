@@ -342,6 +342,21 @@ Q8_0 ones (20%). After the projector, the chat model still reads the picture's 1
 prompt: Ternary Bonsai 2 9B reads 17.6 tokens/s on the runner, about a minute more.
 `MTMD_CPU_REPACK=0`, `OA_FA8=0` and `OA_F16_GEMM=0` turn the three parts off.
 
+## Web search
+
+Off unless you turn it on: the globe in the message box (from the paperclip menu, or Settings, Web
+search), with a note the first time of what goes online. While it is on, each message you send is
+searched with DuckDuckGo's plain HTML page (or Brave Search with your own API key, or your own
+SearXNG server); if DuckDuckGo asks the network to prove a person is searching, its lite page and
+then Wikipedia are tried. The top three pages are downloaded and read on the phone
+(`data/WebSearch.kt`): scripts, menus, headers and footers left out, and of the rest the paragraphs
+that hold the question's words, up to about a quarter of the model's context. They go in front of
+your message, numbered, with a request to cite them; the pages are listed under your message (tap
+one to open it), and they stay with it, so writing the reply again does not search again. A short
+follow-up ("and tomorrow?") is searched together with the message before it. Offline only
+(Settings) keeps it off. `tools/host-test/web_search.sh` checks the parsing and reading on a
+computer (in CI too) and reads one real page when the network allows.
+
 ## Tests
 
 `tools/host-test/run.sh` builds llama.cpp for the computer it runs on, makes tiny random models

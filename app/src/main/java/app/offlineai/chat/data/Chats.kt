@@ -74,6 +74,12 @@ class ChatMessage(
      */
     val versions: MutableList<Version> = mutableListOf(),
     var shown: Int = 0,
+    /** Your message was searched on the web: what the search gave the model (in front of the message). */
+    var web: String = "",
+    /** The pages [web] came from, numbered [1], [2]... as the model cites them. */
+    var sources: List<WebSource> = emptyList(),
+    /** Why a web search for this message gave nothing (offline, blocked...), shown under it. */
+    var webError: String = "",
 ) {
     /** This reply as it stands now, as a version. */
     fun asVersion() = Version(content, reasoning, stats, model, team)
@@ -108,6 +114,11 @@ class ChatMessage(
             j.put("versions", JSONArray().apply { versions.forEach { put(it.toJson()) } }).put("shown", shown)
         }
         if (attachments.isNotEmpty()) j.put("attachments", JSONArray().apply { attachments.forEach { put(it.toJson()) } })
+        if (web.isNotEmpty()) j.put("web", web)
+        if (sources.isNotEmpty()) {
+            j.put("sources", JSONArray().apply { sources.forEach { put(JSONObject().put("title", it.title).put("url", it.url)) } })
+        }
+        if (webError.isNotEmpty()) j.put("web_error", webError)
         return j
     }
 
@@ -133,6 +144,11 @@ class ChatMessage(
                     (0 until a.length()).mapNotNull { runCatching { Version.fromJson(a.getJSONObject(it)) }.getOrNull() }.toMutableList()
                 } ?: mutableListOf(),
                 shown = j.optInt("shown"),
+                web = j.optString("web"),
+                sources = j.optJSONArray("sources")?.let { a ->
+                    (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { WebSource(it.optString("title"), it.optString("url")) } }
+                } ?: emptyList(),
+                webError = j.optString("web_error"),
             )
         }
     }

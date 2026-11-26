@@ -302,6 +302,11 @@ jobs:
       - name: Compile the Kotlin code
         run: ci/gradle.sh :app:compileReleaseKotlin
 
+      # web search (WebSearch.kt is plain Java and org.json): result pages parsed, pages read, passages
+      # picked, with the Kotlin compiler of the Gradle distribution just used
+      - name: Web search
+        run: tools/host-test/web_search.sh
+
       - name: Build the APK (llama.cpp for ARM included)
         env:
           USE_CCACHE: '1'

@@ -154,6 +154,14 @@ class MessageAdapter(
             maxWidth = (ctx.resources.displayMetrics.widthPixels * 0.82).toInt()
         }
         private var mediaShown: List<app.offlineai.chat.data.Attachment>? = null
+        // the pages a web search for this message found (tap one to open it), or why it found none
+        private val web = ctx.text("", 12f, Palette.text3).apply {
+            gravity = Gravity.END
+            setPadding(ctx.dp(4), ctx.dp(6), ctx.dp(4), 0)
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            highlightColor = 0
+            visibility = View.GONE
+        }
 
         init {
             row.orientation = LinearLayout.VERTICAL
@@ -162,6 +170,40 @@ class MessageAdapter(
             row.setPadding(ctx.dp(48), ctx.dp(12), ctx.dp(14), ctx.dp(4))
             row.addView(media, lp(WRAP, WRAP).apply { gravity = Gravity.END })
             row.addView(bubble, lp(WRAP, WRAP).apply { gravity = Gravity.END })
+            row.addView(web, lp(WRAP, WRAP).apply { gravity = Gravity.END })
+        }
+
+        private fun bindWeb(m: ChatMessage) {
+            val ctx = itemView.context
+            when {
+                m.sources.isNotEmpty() -> {
+                    val sb = android.text.SpannableStringBuilder("Searched the web: ")
+                    m.sources.forEachIndexed { i, src ->
+                        if (i > 0) sb.append("  ")
+                        val start = sb.length
+                        sb.append("[${i + 1}] ${src.domain}")
+                        sb.setSpan(object : android.text.style.ClickableSpan() {
+                            override fun onClick(widget: View) {
+                                runCatching {
+                                    ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(src.url)))
+                                }.onFailure { android.widget.Toast.makeText(ctx, "No app here can open web pages.", android.widget.Toast.LENGTH_SHORT).show() }
+                            }
+
+                            override fun updateDrawState(ds: android.text.TextPaint) {
+                                ds.color = Palette.accent
+                                ds.isUnderlineText = false
+                            }
+                        }, start, sb.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                    web.text = sb
+                    web.visibility = View.VISIBLE
+                }
+                m.webError.isNotEmpty() -> {
+                    web.text = "Not searched: ${m.webError}"
+                    web.visibility = View.VISIBLE
+                }
+                else -> web.visibility = View.GONE
+            }
         }
 
         fun bind(m: ChatMessage, isLastUser: Boolean) {
@@ -185,6 +227,7 @@ class MessageAdapter(
             }
             bubble.visibility = if (m.content.isBlank()) View.GONE else View.VISIBLE
             bubble.text = m.content
+            bindWeb(m)
             val menu = View.OnClickListener { v ->
                 val act = v.context as? android.app.Activity ?: return@OnClickListener
                 val sheet = Sheet(act)
@@ -399,10 +442,12 @@ class MessageAdapter(
 
             if (streaming && m.content.isBlank() && !hasThinking) {
                 val c = app.chat
-                val reading = c.promptTotal > 0 && c.promptDone < c.promptTotal
+                val web = c.webStatus
+                val reading = web != null || (c.promptTotal > 0 && c.promptDone < c.promptTotal)
                 waiting.visibility = if (reading) View.VISIBLE else View.GONE
                 dots.visibility = if (reading) View.GONE else View.VISIBLE
-                if (reading) waiting.text = "Reading… ${c.promptDone * 100 / c.promptTotal}%${c.promptEtaLabel()}"
+                if (web != null) waiting.text = web
+                else if (reading) waiting.text = "Reading… ${c.promptDone * 100 / c.promptTotal}%${c.promptEtaLabel()}"
             } else {
                 waiting.visibility = View.GONE
                 dots.visibility = View.GONE

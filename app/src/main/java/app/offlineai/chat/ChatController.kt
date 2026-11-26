@@ -11,9 +11,12 @@ import app.offlineai.chat.data.recommended
 import app.offlineai.chat.engine.ChatOutcome
 import app.offlineai.chat.engine.LoadedModel
 import app.offlineai.chat.engine.ReplyListener
+import app.offlineai.chat.data.WebResult
+import app.offlineai.chat.data.WebSearch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Pages read back from storage in one turn above which the model plainly does not fit in free memory. */
 private const val SLOW_MEMORY_FAULTS = 2000L
@@ -86,6 +89,13 @@ class ChatController(private val app: App) {
             else -> " · about ${(s + 30) / 60} min left"
         }
     }
+
+    /** What a web search for the reply is doing ("Searching the web…", "Reading 3 pages…"); null otherwise. */
+    var webStatus: String? = null
+        private set
+    /** Stops the web search under way (set while one runs). */
+    private var webCancel: AtomicBoolean? = null
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** Pictures being read: index of the current one (-1 while the picture part loads), and how many. */
     var mediaIndex = -2
@@ -207,7 +217,8 @@ class ChatController(private val app: App) {
         val model = app.engine.loaded ?: return false
         val attachments = draftAttachments.toList()
         if (generating || (text.isBlank() && attachments.isEmpty())) return false
-        conversation.messages.add(ChatMessage(role = "user", content = text.trim(), attachments = attachments))
+        val mine = ChatMessage(role = "user", content = text.trim(), attachments = attachments)
+        conversation.messages.add(mine)
         draftAttachments.clear()
         if (conversation.title.isBlank()) {
             conversation.title = text.trim().lineSequence().firstOrNull()?.take(60)?.ifBlank { null }
@@ -215,8 +226,80 @@ class ChatController(private val app: App) {
         }
         app.settings.lastChatId = conversation.id
         save()
-        startReply(model)
+        startReply(model, searchFor = mine.takeIf { app.settings.webSearch && it.content.isNotBlank() })
         return true
+    }
+
+    /**
+     * What to search the web for: your message, and the one before it when this one is short (a
+     * follow-up like "and tomorrow?" means little on its own).
+     */
+    private fun searchQuery(m: ChatMessage): String {
+        val words = m.content.split(Regex("\\s+")).count { it.isNotBlank() }
+        if (words >= 5) return m.content
+        val msgs = conversation.messages
+        val before = msgs.subList(0, msgs.indexOf(m).coerceAtLeast(0)).lastOrNull { it.role == "user" && !it.error }
+        return if (before == null) m.content else before.content.take(120) + " " + m.content
+    }
+
+    /**
+     * Searches the web for [user] (off the main thread), keeps what it found with the message, then
+     * [begin]s the reply. Stopping meanwhile drops the reply ([stop]).
+     */
+    private fun searchThen(model: LoadedModel, user: ChatMessage, begin: () -> Unit) {
+        val cancel = AtomicBoolean(false)
+        webCancel = cancel
+        webStatus = "Searching the web…"
+        status()
+        replyUpdated()
+        val query = searchQuery(user)
+        // about a quarter of the context for the pages (a character is about a quarter of a token)
+        val budget = model.nCtx.coerceIn(2048, 8192)
+        val engine = app.settings.webEngineNow()
+        Thread({
+            val r = runCatching {
+                WebSearch.run(query, budget, engine, cancel) { s ->
+                    main.post {
+                        if (webCancel === cancel) {
+                            webStatus = s
+                            status()
+                            replyUpdated()
+                        }
+                    }
+                }
+            }.getOrElse { WebResult(query, emptyList(), "", it.message ?: "the search failed") }
+            main.post {
+                if (webCancel !== cancel) return@post  // stopped meanwhile
+                webCancel = null
+                webStatus = null
+                if (r.context.isNotBlank()) {
+                    user.web = r.context
+                    user.sources = r.sources
+                    user.webError = ""
+                } else {
+                    user.webError = r.error ?: "The web search found nothing."
+                }
+                replyConversation?.let { app.chats.saveAsync(it) }
+                changed()
+                // another chat opened while it searched: the reply is for this one's model and memory
+                if (replyConversation !== conversation) {
+                    dropReply()
+                    return@post
+                }
+                begin()
+            }
+        }, "web-search").start()
+    }
+
+    /** Ends a reply that never reached the model (its web search was stopped). */
+    private fun dropReply() {
+        val reply = streaming ?: return
+        streaming = null
+        replyConversation?.messages?.remove(reply)
+        replyConversation = null
+        GenerationService.stop(app)
+        changed()
+        status()
     }
 
     /** The open conversation, for files that belong to it (pictures, sounds, video frames). */
@@ -278,6 +361,15 @@ class ChatController(private val app: App) {
     }
 
     fun stop() {
+        val searching = webCancel
+        if (searching != null) {
+            // still searching the web: nothing has gone to the model yet
+            searching.set(true)
+            webCancel = null
+            webStatus = null
+            dropReply()
+            return
+        }
         if (generating) app.engine.stop()
     }
 
@@ -321,7 +413,8 @@ class ChatController(private val app: App) {
         return if (content.startsWith(before)) content else before + content
     }
 
-    private fun startReply(model: LoadedModel, continuing: ChatMessage? = null, earlier: List<Version> = emptyList()) {
+    private fun startReply(model: LoadedModel, continuing: ChatMessage? = null, earlier: List<Version> = emptyList(),
+                           searchFor: ChatMessage? = null) {
         val team = if (continuing != null) 0 else teamSize()
         val partner = app.engine.partner?.takeIf { team > 0 && it.key == app.settings.teamPartner && it.key != model.key }
         val reply = continuing?.apply { partial = true } ?: ChatMessage(
@@ -333,14 +426,7 @@ class ChatController(private val app: App) {
             reply.versions.addAll(earlier)
             reply.shown = earlier.size  // where the reply written now goes
         }
-        val request = buildRequest(model)
-        if (continuing != null) {
-            request.put("continue", true)
-            request.remove("team")
-            request.remove("partner")
-        } else {
-            conversation.messages.add(reply)
-        }
+        if (continuing == null) conversation.messages.add(reply)
         streaming = reply
         replyConversation = conversation
         lastPartialSave = SystemClock.uptimeMillis()
@@ -355,9 +441,24 @@ class ChatController(private val app: App) {
         mediaTotal = 0
         changed()
         status()
-
-        app.engine.setThreads(app.threadsNow())
         if (app.settings.backgroundWriting) GenerationService.start(app)
+        if (searchFor != null) {
+            searchThen(model, searchFor) { ask(model, reply) }
+        } else {
+            ask(model, reply)
+        }
+    }
+
+    /** Hands the conversation to the model, the reply [reply] streaming into it. */
+    private fun ask(model: LoadedModel, reply: ChatMessage) {
+        // (the reply has no words yet, unless it is being carried on: an empty reply is left out)
+        val request = buildRequest(model)
+        if (continuedFrom != null) {
+            request.put("continue", true)
+            request.remove("team")
+            request.remove("partner")
+        }
+        app.engine.setThreads(app.threadsNow())
 
         app.engine.reply(request, object : ReplyListener {
             override fun onPromptProgress(done: Int, total: Int) {
@@ -517,14 +618,17 @@ class ChatController(private val app: App) {
             val media = if (m.role == "user") mediaJson(m.attachments) else null
             val prev = last
             if (prev != null && prev.getString("role") == m.role) {
-                prev.put("content", prev.getString("content") + "\n\n" + m.content)
+                prev.put("content", prev.getString("content") + "\n\n" +
+                    (if (m.role == "user" && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content))
                 if (media != null) {
                     val into = prev.optJSONArray("media") ?: JSONArray().also { prev.put("media", it) }
                     for (k in 0 until media.length()) into.put(media.get(k))
                 }
                 continue
             }
-            val j = JSONObject().put("role", m.role).put("content", m.content)
+            // a message searched on the web goes to the model with what the search found in front of it
+            val text = if (m.role == "user" && m.web.isNotBlank()) WebSearch.prompt(m.web, m.content) else m.content
+            val j = JSONObject().put("role", m.role).put("content", text)
             // a team reply's separate answers stay out of the conversation; only its reply goes back
             if (m.role == "assistant" && m.reasoning.isNotBlank() && m.team == 0) j.put("reasoning", m.reasoning)
             if (media != null) j.put("media", media)

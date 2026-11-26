@@ -307,11 +307,54 @@ class SettingsActivity : AppCompatActivity() {
         }
         switch("Keep the screen on while it writes", null, s.keepScreenOn) { s.keepScreenOn = it }
 
+        section("Web search")
+        switch("Search the web",
+            if (s.offlineOnly) "Off while Offline only is on (below)."
+            else "Your messages go to the search engine below as searches, and the top pages it finds are read here on the " +
+                "phone; the model answers from them and lists them under your message. Off: nothing leaves the phone. " +
+                "Also the globe in the message box.", s.webSearch) { on ->
+            if (on && s.offlineOnly) {
+                Toast.makeText(this, "Offline only is on, so Nyx does not go online.", Toast.LENGTH_SHORT).show()
+            } else {
+                s.webSearch = on
+                if (on) s.webConsent = true
+            }
+            rebuild()
+        }
+        val engines = listOf("ddg", "brave", "searx")
+        choice("Search engine",
+            when (s.webEngine) {
+                "brave" -> "Brave Search, with your own API key (free for 2,000 searches a month at brave.com/search/api)."
+                "searx" -> "Your own SearXNG server (with its JSON results turned on)."
+                else -> "No account or key. If it asks the phone's network for a check, Wikipedia is searched instead."
+            },
+            listOf("DuckDuckGo", "Brave Search (your API key)", "Your SearXNG server"),
+            engines.indexOf(s.webEngine).coerceAtLeast(0)) { which ->
+            s.webEngine = engines[which]
+            when {
+                which == 1 && s.braveKey.isBlank() -> editText("Brave Search API key", "", multiLine = false) { s.braveKey = it; rebuild() }
+                which == 2 && s.searxUrl.isBlank() -> editText("SearXNG server address", "https://", multiLine = false) { s.searxUrl = it; rebuild() }
+            }
+        }
+        if (s.webEngine == "brave") {
+            row("Brave Search API key", if (s.braveKey.isBlank()) "Not set: DuckDuckGo is used until it is." else "Set (ending ${s.braveKey.takeLast(4)}).") {
+                editText("Brave Search API key", s.braveKey, multiLine = false) { s.braveKey = it; rebuild() }
+            }
+        }
+        if (s.webEngine == "searx") {
+            row("SearXNG server", s.searxUrl.ifBlank { "Not set: DuckDuckGo is used until it is." }) {
+                editText("SearXNG server address", s.searxUrl.ifBlank { "https://" }, multiLine = false) { s.searxUrl = it; rebuild() }
+            }
+        }
+
         section("Privacy and data")
-        group.addView(note("Chats and models never leave this phone. Chats, Memory, characters and paired phones are " +
+        group.addView(note("Chats and models never leave this phone (with web search on, the searches and page downloads go online, nothing else). Chats, Memory, characters and paired phones are " +
             "encrypted by the app (AES-256) with a key kept in this phone's Keystore, on top of Android's own encryption" +
             (if (app.crypto.enabled) "." else ": this phone's Keystore could not be used, so they are kept as before.")))
-        switch("Offline only", "Turns off model downloads too, so the app never goes online.", s.offlineOnly) { s.offlineOnly = it }
+        switch("Offline only", "Turns off model downloads and web search too, so the app never goes online.", s.offlineOnly) {
+            s.offlineOnly = it
+            rebuild()
+        }
         row("Chats", "Search, rename, export, import or delete chats.") {
             startActivity(Intent(this, ChatsActivity::class.java))
         }

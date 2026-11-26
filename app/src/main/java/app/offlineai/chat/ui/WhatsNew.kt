@@ -7,9 +7,13 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 7
+    const val VERSION = 8
 
     private val ITEMS = listOf(
+        "Web search" to "Nyx can now look things up: tap the paperclip, then Search the web. Each message you send " +
+            "is searched (DuckDuckGo, or Brave Search or your own SearXNG server in Settings), the top pages are read " +
+            "here on the phone, and the answer cites them, with the pages listed under your message. It is off " +
+            "until you turn it on; the globe in the message box turns it off again, and then nothing leaves the phone.",
         "Pictures read up to 16 times faster" to "Reading a picture on Detailed took minutes; on our ARM test " +
             "machine Gemma 4 E2B now reads one in 6 seconds instead of 95, Qwen3.5 in 4 instead of 65, and " +
             "Ternary Bonsai 2 9B and LFM2.5-VL in 23 instead of about 185. The picture part now uses the " +

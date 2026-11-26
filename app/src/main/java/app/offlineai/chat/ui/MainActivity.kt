@@ -71,6 +71,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var voiceBar: LinearLayout
     private lateinit var voiceState: TextView
     private lateinit var attach: ImageButton
+    /** Shown while web search is on; tapping it turns it off. */
+    private lateinit var webButton: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
 
@@ -379,6 +381,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         attach = iconButton(R.drawable.ic_attach, "Attach a picture, video or sound", Palette.text2) { showAttachMenu(attach) }
         composer.addView(attach, lp(dp(44), dp(44)))
+        webButton = iconButton(R.drawable.ic_globe, "Web search is on. Tap to turn it off.", Palette.accent) { setWebSearch(false) }
+        webButton.visibility = if (app.settings.webSearch) View.VISIBLE else View.GONE
+        composer.addView(webButton, lp(dp(44), dp(44)))
         input = EditText(this).apply {
             hint = "Message"
             setHintTextColor(Palette.text3)
@@ -584,6 +589,11 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         val sees = loaded.info.vision
         val hears = loaded.info.audio
         val sheet = Sheet(this, "Add to your message")
+        if (app.settings.webSearch) {
+            sheet.item("Web search is on", R.drawable.ic_globe, "Tap to turn it off: then nothing leaves the phone") { setWebSearch(false) }
+        } else {
+            sheet.item("Search the web", R.drawable.ic_globe, "Answers from pages found online, listed under your message") { setWebSearch(true) }
+        }
         sheet.item("Make a picture", R.drawable.ic_spark, "From what you have typed, here on the phone") { openPictures() }
         val mic = {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -741,10 +751,45 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         }
         app.models.poll()
         app.reloadIfNeeded()
+        // (web search may have been turned on or off in Settings)
+        webButton.visibility = if (app.settings.webSearch) View.VISIBLE else View.GONE
         refreshAll()
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
+    /**
+     * Turns web search on or off for the messages you send. The first time, it says what goes
+     * online and asks; Offline only (Settings) keeps it off.
+     */
+    private fun setWebSearch(on: Boolean) {
+        val s = app.settings
+        if (on && s.offlineOnly) {
+            toast("Offline only is on (Settings, Privacy and data), so Nyx does not go online.")
+            return
+        }
+        if (on && !s.webConsent) {
+            val engine = when (s.webEngineNow()) {
+                is app.offlineai.chat.data.WebSearch.Engine.Brave -> "Brave Search"
+                is app.offlineai.chat.data.WebSearch.Engine.SearXNG -> "your SearXNG server"
+                else -> "DuckDuckGo"
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Search the web?")
+                .setMessage("While web search is on, each message you send goes to $engine as a search, and the top pages " +
+                    "it finds are downloaded and read here on the phone. The model answers from them, and the pages are " +
+                    "listed under your message.\n\nNo account and no history: only the search and the page downloads go " +
+                    "online. Your chats stay on the phone. Tap the globe in the message box to turn it off.")
+                .setPositiveButton("Turn on") { _, _ ->
+                    s.webConsent = true
+                    setWebSearch(true)
+                }
+                .setNegativeButton("Not now", null)
+                .show()
+            return
+        }
+        s.webSearch = on
+        webButton.visibility = if (on) View.VISIBLE else View.GONE
+        toast(if (on) "Web search on: your messages are searched on the web." else "Web search off: nothing leaves the phone.")
+    }
         super.onConfigurationChanged(newConfig)
         // only the theme can need a rebuild; rotation and keyboards are handled in place
         Palette.apply(this, app.settings)
@@ -1193,6 +1238,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             app.nativeError != null -> "Engine unavailable"
             e.phase == EngineController.Phase.LOADING -> "Loading… ${(e.loadProgress * 100).toInt()}%"
             e.phase == EngineController.Phase.WARMING -> "Getting ready…"
+            c.generating && c.webStatus != null -> c.webStatus!!
             c.generating && c.mediaIndex == -1 -> "Loading the picture part…"
             c.generating && c.mediaIndex >= 0 && c.mediaTotal > 0 && (c.promptTotal == 0 || c.promptDone < c.promptTotal) ->
                 "Looking at attachment ${c.mediaIndex + 1} of ${c.mediaTotal}…$hot"

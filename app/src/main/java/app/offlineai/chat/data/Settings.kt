@@ -297,6 +297,32 @@ class Settings(context: Context) {
         get() = bool("offline_only", false)
         set(v) = put("offline_only", v)
 
+    /** Web search for the messages you send (the globe in the message box); off: nothing leaves the phone. */
+    var webSearch: Boolean
+        get() = bool("web_search", false) && !offlineOnly
+        set(v) = put("web_search", v)
+    /** What web search sends was explained and agreed to, once. */
+    var webConsent: Boolean
+        get() = bool("web_consent", false)
+        set(v) = put("web_consent", v)
+    /** "ddg" (DuckDuckGo), "brave" (Brave Search with [braveKey]) or "searx" (the SearXNG server at [searxUrl]). */
+    var webEngine: String
+        get() = str("web_engine", "ddg")
+        set(v) = put("web_engine", v)
+    var braveKey: String
+        get() = str("brave_key", "")
+        set(v) = put("brave_key", v.trim())
+    var searxUrl: String
+        get() = str("searx_url", "")
+        set(v) = put("searx_url", v.trim())
+
+    /** The search engine as set (DuckDuckGo when Brave has no key or SearXNG no address). */
+    fun webEngineNow(): WebSearch.Engine = when {
+        webEngine == "brave" && braveKey.isNotBlank() -> WebSearch.Engine.Brave(braveKey)
+        webEngine == "searx" && searxUrl.startsWith("http") -> WebSearch.Engine.SearXNG(searxUrl)
+        else -> WebSearch.Engine.DuckDuckGo
+    }
+
     // ---- other
     // ---- phones working together
     var poolMode: PoolMode
