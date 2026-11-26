@@ -6,7 +6,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${HOST_TEST_OUT:-$ROOT/build/host-test}/web-search"
 mkdir -p "$OUT"
-LIB="${GRADLE_LIB:-$(ls -d "$HOME"/.gradle/wrapper/dists/gradle-*/*/gradle-*/lib /opt/gradle*/lib 2>/dev/null | head -1)}"
+LIB="${GRADLE_LIB:-}"
+if [ -z "$LIB" ]; then
+  # the first Gradle distribution with a Kotlin compiler (the wrapper's, or one installed)
+  for d in "$HOME"/.gradle/wrapper/dists/gradle-*/*/gradle-*/lib /opt/gradle*/lib; do
+    if compgen -G "$d/kotlin-compiler-embeddable-*.jar" > /dev/null; then LIB="$d"; break; fi
+  done
+fi
+[ -n "$LIB" ] || { echo "no Gradle distribution with a Kotlin compiler found (run ./gradlew once)" >&2; exit 1; }
 KC="$(ls "$LIB"/kotlin-compiler-embeddable-*.jar | head -1)"
 STD="$(ls "$LIB"/kotlin-stdlib-[0-9]*.jar | head -1)"
 CP="$KC:$STD:$(ls "$LIB"/kotlin-script-runtime-*.jar | head -1):$(ls "$LIB"/kotlin-reflect-*.jar | head -1):$(ls "$LIB"/kotlin-daemon-embeddable-*.jar | head -1):$(ls "$LIB"/kotlinx-coroutines-core-jvm-*.jar | head -1):$(ls "$LIB"/annotations-*.jar | head -1)"
