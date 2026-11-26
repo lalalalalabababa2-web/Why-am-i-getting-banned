@@ -256,6 +256,7 @@ object Markdown {
                     tr.addView(ctx.text(style(cell), 14f, Palette.text, bold = r == 0).apply {
                         setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
                         maxWidth = maxCell
+                        setOnTouchListener(linkTouch)
                     })
                 }
                 table.addView(tr)
@@ -270,6 +271,7 @@ object Markdown {
         // whenever its text changes. "Select text" on a message opens it where it can be selected.
         setTextIsSelectable(false)
         isFocusable = false
+        setOnTouchListener(linkTouch)
     }
 
     private fun safeParagraph(ctx: Context, src: String): CharSequence = try {
@@ -350,10 +352,97 @@ object Markdown {
         sb.setSpan(LeadingMarginSpan.Standard(lead, lead + labelWidth), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
+    /** A link in a reply: opens in the phone's browser. */
+    class LinkSpan(val url: String) : android.text.style.ClickableSpan() {
+        override fun onClick(widget: View) = open(widget, url)
+        override fun updateDrawState(ds: android.text.TextPaint) {
+            ds.color = Palette.accent
+            ds.isUnderlineText = false
+        }
+    }
+
+    /**
+     * [2] in a reply to a message searched on the web: opens that page. The pages are on a view
+     * around it (the reply's row, tag_sources); without them it is plain text.
+     */
+    class CitationSpan(val n: Int) : android.text.style.ClickableSpan() {
+        override fun onClick(widget: View) {
+            var v: View? = widget
+            while (v != null) {
+                val list = v.getTag(app.offlineai.chat.R.id.tag_sources) as? List<*>
+                if (list != null) {
+                    (list.getOrNull(n - 1) as? app.offlineai.chat.data.WebSource)?.let { open(widget, it.url) }
+                    return
+                }
+                v = v.parent as? View
+            }
+        }
+
+        override fun updateDrawState(ds: android.text.TextPaint) {
+            ds.color = Palette.accent
+            ds.isUnderlineText = false
+        }
+    }
+
+    private fun open(v: View, url: String) {
+        runCatching {
+            v.context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        }.onFailure {
+            android.widget.Toast.makeText(v.context, "No app here can open web pages.", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * Taps on a link or citation in a text view open it; any other touch goes on to the view's
+     * other handlers (a long press still opens the message's menu). A link movement method would
+     * make the view focusable and scroll the chat.
+     */
+    val linkTouch = View.OnTouchListener { v, e ->
+        val tv = v as? TextView ?: return@OnTouchListener false
+        val text = tv.text as? Spanned ?: return@OnTouchListener false
+        if (e.action != android.view.MotionEvent.ACTION_DOWN && e.action != android.view.MotionEvent.ACTION_UP) return@OnTouchListener false
+        val layout = tv.layout ?: return@OnTouchListener false
+        val x = e.x - tv.totalPaddingLeft + tv.scrollX
+        val y = (e.y - tv.totalPaddingTop + tv.scrollY).toInt()
+        val line = layout.getLineForVertical(y)
+        if (x < layout.getLineLeft(line) || x > layout.getLineRight(line)) return@OnTouchListener false
+        val off = layout.getOffsetForHorizontal(line, x)
+        val span = text.getSpans(off, off, android.text.style.ClickableSpan::class.java).firstOrNull() ?: return@OnTouchListener false
+        if (e.action == android.view.MotionEvent.ACTION_UP) span.onClick(tv)
+        true
+    }
+
+    private val CITATION = Regex("""^\[(\d{1,2})\](?!\()""")
+    private val URL_END = Regex("""[\s<>"'`]""")
+
     private fun inline(sb: SpannableStringBuilder, s: String) {
         var i = 0
         while (i < s.length) {
             val c = s[i]
+            // [2]: a source of a web search, tappable
+            if (c == '[') {
+                val m = CITATION.find(s.substring(i, minOf(s.length, i + 6)))
+                if (m != null) {
+                    val st = sb.length
+                    sb.append(m.value)
+                    sb.setSpan(CitationSpan(m.groupValues[1].toInt()), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    i += m.value.length
+                    continue
+                }
+            }
+            // a bare web address, tappable (trailing punctuation left out)
+            if ((c == 'h') && (s.startsWith("https://", i) || s.startsWith("http://", i))) {
+                var end = URL_END.find(s, i)?.range?.first ?: s.length
+                while (end > i && s[end - 1] in ".,;:!?)]}*_") end--
+                val url = s.substring(i, end)
+                if (url.length > 10) {
+                    val st = sb.length
+                    sb.append(url)
+                    sb.setSpan(LinkSpan(url), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    i = end
+                    continue
+                }
+            }
             if (c == '`') {
                 val end = s.indexOf('`', i + 1)
                 if (end > i) {
@@ -397,19 +486,18 @@ object Markdown {
                     continue
                 }
             }
-            // [text](link): keep the text, show where it points
+            // [text](link): the text, tappable (a web address opens in the browser)
             if (c == '[') {
                 val close = s.indexOf("](", i + 1)
                 val paren = if (close > 0) s.indexOf(')', close + 2) else -1
                 if (close > i && paren > close) {
                     val st = sb.length
                     sb.append(s, i + 1, close)
-                    sb.setSpan(ForegroundColorSpan(Palette.accent), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    val url = s.substring(close + 2, paren)
-                    if (url.isNotBlank() && url != s.substring(i + 1, close)) {
-                        val us = sb.length
-                        sb.append(" (").append(url).append(")")
-                        sb.setSpan(ForegroundColorSpan(Palette.text3), us, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    val url = s.substring(close + 2, paren).trim()
+                    if (url.startsWith("http://") || url.startsWith("https://")) {
+                        sb.setSpan(LinkSpan(url), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    } else {
+                        sb.setSpan(ForegroundColorSpan(Palette.accent), st, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     }
                     i = paren + 1
                     continue

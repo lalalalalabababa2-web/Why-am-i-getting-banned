@@ -37,25 +37,27 @@ object WebSearch {
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
     // what Wikipedia asks API clients to say they are (no person's details)
     private const val APP_UA = "NyxOfflineAI/1.0 (Android app; on-device assistant)"
-    private const val PAGES = 3          // pages read in full
-    private const val RESULTS = 6        // results listed (their snippets)
+    private const val PAGES = 6          // pages read
+    private const val RESULTS = 10       // results looked at (their snippets count too)
     private const val MAX_PAGE = 1_500_000
 
     /**
-     * Searches for [query] and reads the top pages, keeping about [budget] characters for the model.
-     * [status] hears what it is doing ("Searching the web…", "Reading 3 pages…"); [cancelled]
-     * stops it early (the result is then empty).
+     * Searches for [query], reads the top pages and keeps, across all of them and the results'
+     * snippets, the passages that best answer it, up to about [budget] characters (a few hundred
+     * tokens: the model reads all of it before it writes). [status] hears what it is doing;
+     * [cancelled] stops it early (the result is then empty).
      */
     fun run(query: String, budget: Int, engine: Engine, cancelled: AtomicBoolean, status: (String) -> Unit): WebResult {
         val q = query.replace(Regex("\\s+"), " ").trim().take(300)
         if (q.isEmpty()) return WebResult(q, emptyList(), "", "Nothing to search for.")
         status("Searching the web…")
         var why: String? = null
-        var hits = runCatching { engine.search(q) }.getOrElse { why = it.message; emptyList() }
+        val sq = searchable(q)
+        var hits = runCatching { engine.search(sq) }.getOrElse { why = it.message; emptyList() }
         // DuckDuckGo sometimes asks a busy network to prove it is a person: its lite page, then
         // Wikipedia, before giving up
-        if (hits.isEmpty() && engine is Engine.DuckDuckGo && !cancelled.get()) hits = runCatching { duckDuckGoLite(q) }.getOrDefault(emptyList())
-        if (hits.isEmpty() && !cancelled.get()) hits = runCatching { wikipedia(q) }.getOrDefault(emptyList())
+        if (hits.isEmpty() && engine is Engine.DuckDuckGo && !cancelled.get()) hits = runCatching { duckDuckGoLite(sq) }.getOrDefault(emptyList())
+        if (hits.isEmpty() && !cancelled.get()) hits = runCatching { wikipedia(sq) }.getOrDefault(emptyList())
         if (cancelled.get()) return WebResult(q, emptyList(), "")
         if (hits.isEmpty()) {
             return WebResult(q, emptyList(), "", "The web search found nothing" + (why?.let { " ($it)" } ?: "") + ". Is the phone online?")
@@ -64,12 +66,10 @@ object WebSearch {
 
         val reading = hits.take(PAGES)
         status("Reading ${reading.size} page${if (reading.size == 1) "" else "s"}…")
-        val terms = terms(q)
-        val perPage = (budget * 0.8 / reading.size).toInt().coerceAtLeast(400)
         val pool = Executors.newFixedThreadPool(reading.size)
         val texts: List<String> = try {
-            val futures = reading.map { h -> pool.submit(Callable { runCatching { passages(pageText(fetch(h.url)), terms, perPage) }.getOrDefault("") }) }
-            val deadline = System.currentTimeMillis() + 12_000
+            val futures = reading.map { h -> pool.submit(Callable { runCatching { pageText(fetch(h.url)) }.getOrDefault("") }) }
+            val deadline = System.currentTimeMillis() + 10_000
             futures.map { f ->
                 val left = deadline - System.currentTimeMillis()
                 if (cancelled.get() || left <= 0) "" else runCatching { f.get(left, TimeUnit.MILLISECONDS) }.getOrDefault("")
@@ -79,20 +79,125 @@ object WebSearch {
         }
         if (cancelled.get()) return WebResult(q, emptyList(), "")
 
-        val date = DateFormat.getDateInstance(DateFormat.LONG, Locale.US).format(Date())
-        val sb = StringBuilder("Web search results for \"$q\" (searched $date):\n")
-        hits.forEachIndexed { i, h ->
-            sb.append("\n[").append(i + 1).append("] ").append(h.title).append(" (").append(h.source.domain).append(")\n")
-            val body = texts.getOrNull(i)?.takeIf { it.isNotBlank() } ?: h.snippet
-            if (body.isNotBlank()) sb.append(body.trim()).append('\n')
+        // every snippet and every short passage of every page, ranked together
+        val cands = ArrayList<Passage>()
+        hits.forEachIndexed { i, h -> if (h.snippet.length >= 30) cands += Passage(i, h.snippet, snippet = true) }
+        texts.forEachIndexed { i, t -> chunks(t).forEach { cands += Passage(i, it) } }
+        val picked = rank(cands, terms(q), budget, q)
+        if (picked.isEmpty()) return WebResult(q, emptyList(), "", "The pages found did not say anything about it.")
+
+        // the sources the passages come from, numbered in the search's order
+        val used = picked.map { it.hit }.distinct().sorted()
+        val date = DateFormat.getDateInstance(DateFormat.MEDIUM, Locale.US).format(Date())
+        val sb = StringBuilder("Web results ($date):")
+        used.forEachIndexed { n, i ->
+            sb.append("\n[").append(n + 1).append("] ").append(hits[i].source.domain).append(": ")
+            sb.append(picked.filter { it.hit == i }.sortedBy { it.order }.joinToString(" … ") { it.text })
         }
-        return WebResult(q, hits.map { it.source }, sb.toString().take(budget + 2000))
+        return WebResult(q, used.map { hits[it].source }, sb.toString())
     }
 
     /** The text that goes before your message for the model, around the search's [context]. */
     fun prompt(context: String, message: String): String =
-        context.trim() + "\n\nAnswer the message below. Use the web results above where they help and cite them " +
-            "by number, like [1]. If they do not answer it, say so and answer from what you know.\n\n" + message
+        context.trim() + "\n\nAnswer with these results, citing them like [1]. Do not list the sources at the end " +
+            "(they are shown). If they do not cover it, say so in a few words.\n\n" + message
+
+    /** A question as a search: the asking words ("can you tell me", "search for") left out. */
+    fun searchable(q: String): String {
+        val t = q.replace(Regex("(?i)^(please\\s+)?(can|could|would) you\\s+(please\\s+)?|^(please\\s+)?(tell me|search( the web)?( for)?|look up|find( out)?|google)\\s+"), "")
+        return t.trim().trimEnd('?', '.', '!').ifBlank { q }
+    }
+
+    /** A passage that could go to the model: from result [hit] (its page or its snippet). */
+    class Passage(val hit: Int, val text: String, val snippet: Boolean = false) {
+        var order = 0
+        var score = 0.0
+    }
+
+    /**
+     * A page's text cut into short passages: sentences joined up to about 240 characters, within
+     * a paragraph; lines that are menus, cookie notices and the like left out.
+     */
+    fun chunks(text: String): List<String> {
+        val out = ArrayList<String>()
+        for (para in text.lines()) {
+            val p = para.trim()
+            if (p.length < 40 || boilerplate(p)) continue
+            val sentences = p.split(Regex("(?<=[.!?])\\s+(?=[\"“(\\p{Lu}\\p{N}])"))
+            val cur = StringBuilder()
+            for (s in sentences) {
+                if (cur.isNotEmpty() && cur.length + s.length > 240) {
+                    out += cur.toString()
+                    cur.setLength(0)
+                }
+                if (cur.isNotEmpty()) cur.append(' ')
+                cur.append(if (s.length > 320) s.take(320).substringBeforeLast(' ') + "…" else s)
+            }
+            if (cur.length >= 40) out += cur.toString()
+        }
+        return out
+    }
+
+    /**
+     * The passages that best answer a question with [terms], up to [budget] characters: BM25
+     * scores (a word rare among the passages counts more, a long passage less), more for holding
+     * more of the question's words, a little more for the search's own snippets; no two that say
+     * nearly the same, at most three from one page. In page order within a source.
+     */
+    fun rank(cands: List<Passage>, terms: Set<String>, budget: Int, query: String = ""): List<Passage> {
+        if (cands.isEmpty()) return emptyList()
+        cands.forEachIndexed { i, c -> c.order = i }
+        val words = cands.map { words(it.text) }
+        if (terms.isEmpty()) return cands.filter { it.snippet }.take(3)
+        val df = terms.associateWith { t -> words.count { w -> w.any { matches(it, t) } } }
+        val n = cands.size.toDouble()
+        val avg = words.sumOf { it.size }.toDouble() / cands.size
+        val wantsNumbers = Regex("(?i)\\b(when|date|year|how (much|many|long|old|big|far)|price|cost|release|score|time)\\b")
+            .containsMatchIn(query)
+        for ((i, c) in cands.withIndex()) {
+            val w = words[i]
+            var sc = 0.0
+            var held = 0
+            for (t in terms) {
+                val tf = w.count { matches(it, t) }
+                if (tf == 0) continue
+                held++
+                val idf = Math.log(1.0 + (n - df.getValue(t) + 0.5) / (df.getValue(t) + 0.5))
+                sc += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * w.size / avg))
+            }
+            sc *= 1.0 + held.toDouble() / terms.size
+            if (c.snippet) sc *= 1.15
+            if (wantsNumbers && c.text.any { it.isDigit() }) sc *= 1.2
+            c.score = sc
+        }
+        // a passage that only shares a common word with the question (the place, the name) is left
+        // out: it must score at least a third of the best one
+        val floor = (cands.maxOf { it.score }) * 0.35
+        val chosen = ArrayList<Passage>()
+        val perHit = HashMap<Int, Int>()
+        var used = 0
+        for (c in cands.filter { it.score > 0 && it.score >= floor }.sortedByDescending { it.score }) {
+            if (used + c.text.length > budget) continue
+            if ((perHit[c.hit] ?: 0) >= 3) continue
+            val cw = words(c.text).toSet()
+            if (chosen.any { similar(cw, words(it.text).toSet()) }) continue
+            chosen += c
+            perHit[c.hit] = (perHit[c.hit] ?: 0) + 1
+            used += c.text.length + 8
+        }
+        return chosen
+    }
+
+    private fun words(s: String) = s.lowercase(Locale.ROOT).split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+
+    /** A word of a passage counts for a question's word when it is that word or starts with it ("release", "released"). */
+    private fun matches(word: String, term: String) = word == term || (term.length >= 4 && word.startsWith(term))
+
+    private fun similar(a: Set<String>, b: Set<String>): Boolean {
+        if (a.isEmpty() || b.isEmpty()) return false
+        val inter = a.count { it in b }
+        return inter.toDouble() / (a.size + b.size - inter) > 0.5
+    }
 
     // ------------------------------------------------------------------ search engines
 
@@ -266,32 +371,6 @@ object WebSearch {
             .map { it.replace(Regex("[ \\t\\u00A0\\r]+"), " ").trim() }
             .filter { it.isNotEmpty() }
             .joinToString("\n")
-    }
-
-    /**
-     * The passages of [text] that match the question, in page order, up to [budget] characters:
-     * paragraphs of 40 characters or more, scored by how many of the question's words they hold.
-     */
-    fun passages(text: String, terms: Set<String>, budget: Int): String {
-        val paras = text.lines().map { it.trim() }.filter { it.length >= 40 && !boilerplate(it) }
-        if (paras.isEmpty()) return ""
-        val hits = paras.map { p -> p.lowercase(Locale.ROOT).let { low -> terms.count { low.contains(it) } } }
-        // paragraphs holding the question's words, the opening ones first among equals (they say
-        // what the page is about); a page with none of them gives its opening paragraphs
-        val anyHit = hits.any { it > 0 }
-        val scored = paras.mapIndexed { i, p -> Triple(i, p, if (anyHit) hits[i] * 10 + (if (i < 3) 3 else 0) - i / 50 else -i) }
-            .filter { !anyHit || hits[it.first] > 0 }
-        val chosen = HashMap<Int, String>()
-        var used = 0
-        for ((i, p, _) in scored.sortedByDescending { it.third }) {
-            val room = budget - used
-            if (room < 40) break
-            val take = if (p.length > room) p.take(room).substringBeforeLast(' ') + "…" else p
-            if (take.length < 40) continue
-            chosen[i] = take
-            used += take.length + 1
-        }
-        return chosen.keys.sorted().joinToString("\n") { chosen.getValue(it) }
     }
 
     private fun boilerplate(p: String): Boolean {

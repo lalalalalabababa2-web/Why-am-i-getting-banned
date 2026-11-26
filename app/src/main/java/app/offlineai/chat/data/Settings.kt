@@ -316,6 +316,14 @@ class Settings(context: Context) {
         get() = str("searx_url", "")
         set(v) = put("searx_url", v.trim())
 
+    /** How much of what web search found goes in front of your message: 0 short, 1 normal, 2 long. */
+    var webSize: Int
+        get() = int("web_size", 1)
+        set(v) = put("web_size", v)
+
+    /** [webSize] in characters (about a quarter as many tokens, which the model reads before it writes). */
+    fun webBudget(): Int = WEB_BUDGETS[webSize.coerceIn(0, WEB_BUDGETS.size - 1)]
+
     /** The search engine as set (DuckDuckGo when Brave has no key or SearXNG no address). */
     fun webEngineNow(): WebSearch.Engine = when {
         webEngine == "brave" && braveKey.isNotBlank() -> WebSearch.Engine.Brave(braveKey)
@@ -380,6 +388,7 @@ class Settings(context: Context) {
     companion object {
         val CONTEXT_SIZES = intArrayOf(2048, 4096, 8192, 16384, 32768)
         val MAX_TOKENS = intArrayOf(512, 1024, 2048, 4096, 8192, 16384)
+        val WEB_BUDGETS = intArrayOf(800, 1500, 3000)
         val THINKING_BUDGETS = intArrayOf(-1, 256, 512, 1024, 2048, 4096)
 
         /** Ready-made system prompts: a name and the prompt (the first is none). */

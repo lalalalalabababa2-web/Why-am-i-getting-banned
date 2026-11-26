@@ -253,8 +253,8 @@ class ChatController(private val app: App) {
         status()
         replyUpdated()
         val query = searchQuery(user)
-        // about a quarter of the context for the pages (a character is about a quarter of a token)
-        val budget = model.nCtx.coerceIn(2048, 8192)
+        // a few hundred tokens (Settings, Web search): the model reads all of it before it writes
+        val budget = app.settings.webBudget().coerceAtMost(model.nCtx)
         val engine = app.settings.webEngineNow()
         Thread({
             val r = runCatching {

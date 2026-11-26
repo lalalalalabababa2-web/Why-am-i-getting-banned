@@ -73,6 +73,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
     private lateinit var attach: ImageButton
     /** Shown while web search is on; tapping it turns it off. */
     private lateinit var webButton: ImageButton
+    /** Thinking on or off for the next replies (lit when on), for models that can think. */
+    private lateinit var thinkButton: ImageButton
     private lateinit var draftScroll: HorizontalScrollView
     private lateinit var draftRow: LinearLayout
 
@@ -384,6 +386,9 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         webButton = iconButton(R.drawable.ic_globe, "Web search is on. Tap to turn it off.", Palette.accent) { setWebSearch(false) }
         webButton.visibility = if (app.settings.webSearch) View.VISIBLE else View.GONE
         composer.addView(webButton, lp(dp(44), dp(44)))
+        thinkButton = iconButton(R.drawable.ic_think, "Thinking", Palette.text3) { toggleThinking() }
+        composer.addView(thinkButton, lp(dp(40), dp(44)))
+        updateThink()
         input = EditText(this).apply {
             hint = "Message"
             setHintTextColor(Palette.text3)
@@ -756,6 +761,25 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         refreshAll()
     }
 
+    /** The thinking button: shown for a model that can think, lit while thinking is on. */
+    private fun updateThink() {
+        val loaded = app.engine.loaded
+        val can = loaded != null && loaded.info.supportsThinking && app.models.find(loaded.key)?.catalog?.noThinking != true
+        thinkButton.visibility = if (can) View.VISIBLE else View.GONE
+        val on = app.settings.thinking
+        thinkButton.setColorFilter(if (on) Palette.accent else Palette.text3)
+        thinkButton.alpha = if (on) 1f else 0.7f
+        thinkButton.contentDescription = if (on) "Thinking is on. Tap to answer straight away." else "Thinking is off. Tap to think before answering."
+    }
+
+    private fun toggleThinking() {
+        val s = app.settings
+        s.thinking = !s.thinking
+        updateThink()
+        toast(if (s.thinking) "Thinking on: it thinks first (up to ${s.thinkingBudget} tokens), better on hard questions."
+            else "Thinking off: it answers straight away, with fewer tokens.")
+    }
+
     /**
      * Turns web search on or off for the messages you send. The first time, it says what goes
      * online and asks; Offline only (Settings) keeps it off.
@@ -1060,6 +1084,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         refreshEmpty()
         updateSend()
         updateJump()
+        updateThink()
         val keepOn = voice.on || (app.settings.keepScreenOn && (app.chat.generating || app.engine.isLoading))
         if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

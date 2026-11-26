@@ -7,9 +7,14 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 8
+    const val VERSION = 9
 
     private val ITEMS = listOf(
+        "Better web search, fewer tokens" to "It reads up to six pages and keeps only the passages that answer you " +
+            "(about 400 tokens instead of up to 1,000; Settings, Web search, How much it reads), and links and the " +
+            "[1], [2] in a reply open the page.",
+        "Thinking button" to "The light bulb in the message box turns thinking on or off for the next replies: on, " +
+            "the model thinks first (better on hard questions); off, it answers straight away with fewer tokens.",
         "Web search" to "Nyx can now look things up: tap the paperclip, then Search the web. Each message you send " +
             "is searched (DuckDuckGo, or Brave Search or your own SearXNG server in Settings), the top pages are read " +
             "here on the phone, and the answer cites them, with the pages listed under your message. It is off " +

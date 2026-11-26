@@ -78,11 +78,26 @@ fun main() {
     check(text.contains("highs are usually around 18 °C"), "page text: paragraphs kept, entities decoded")
     val terms = WebSearch.terms("What is the weather like in Lisbon in November? Will it rain?")
     check(terms.containsAll(listOf("weather", "lisbon", "november", "rain")) && "what" !in terms && "the" !in terms, "terms: $terms")
-    val ps = WebSearch.passages(text, terms, 400)
-    check(ps.contains("mild") && ps.contains("rain on roughly nine days"), "passages: the matching paragraphs")
-    check(!ps.contains("umbrellas"), "passages: the unrelated one left out within the budget")
-    check(ps.indexOf("mild") < ps.indexOf("nine days"), "passages: in page order")
-    check(ps.length <= 420, "passages: within the budget (${ps.length})")
+    val pieces = WebSearch.chunks(text)
+    check(pieces.all { it.length <= 330 } && pieces.any { it.contains("mild") }, "chunks: short passages (${pieces.size})")
+    // two pages and two snippets, ranked together
+    val other = "Lisbon has many museums and old trams that climb its hills, and it is known for its tiles and pastries."
+    val cands = ArrayList<WebSearch.Passage>()
+    cands += WebSearch.Passage(0, "Lisbon in November: around 18 °C by day with some rain.", snippet = true)
+    cands += WebSearch.Passage(1, "Buy Lisbon souvenirs online with free shipping on every order.", snippet = true)
+    pieces.forEach { cands += WebSearch.Passage(0, it) }
+    WebSearch.chunks(other).forEach { cands += WebSearch.Passage(1, it) }
+    val q = "What is the weather like in Lisbon in November? Will it rain?"
+    val picked = WebSearch.rank(cands, terms, 420, q)
+    val ptext = picked.joinToString(" | ") { it.text }
+    check(picked.isNotEmpty() && picked.sumOf { it.text.length } <= 420, "rank: within the budget (${picked.sumOf { it.text.length }})")
+    check(ptext.contains("rain on roughly nine days") || ptext.contains("18 °C by day"), "rank: the passages that answer it ($ptext)")
+    check(!ptext.contains("umbrellas") && !ptext.contains("souvenirs") && !ptext.contains("pastries"), "rank: unrelated passages left out ($ptext)")
+    check(picked.groupBy { it.hit }.values.all { it.size <= 3 }, "rank: at most three from one page")
+    check(WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "tell me when GTA 6 comes out" ||
+        WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "when GTA 6 comes out",
+        "searchable: \"${WebSearch.searchable("Can you tell me when GTA 6 comes out?")}\"")
+    check(WebSearch.searchable("search the web for lisbon hotels") == "lisbon hotels", "searchable: \"${WebSearch.searchable("search the web for lisbon hotels")}\"")
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")
     check(prompt.startsWith("Web search results") && prompt.endsWith("What is x?") && prompt.contains("[1]"), "prompt: results, then the message")

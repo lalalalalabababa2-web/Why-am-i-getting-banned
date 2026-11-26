@@ -321,6 +321,9 @@ class SettingsActivity : AppCompatActivity() {
             }
             rebuild()
         }
+        choice("How much it reads into the chat", "What the pages say, cut down to the passages that answer you. " +
+            "Less is quicker: the model reads it all before it writes.",
+            listOf("Short (about 200 tokens)", "Normal (about 400 tokens)", "Long (about 800 tokens)"), s.webSize) { s.webSize = it }
         val engines = listOf("ddg", "brave", "searx")
         choice("Search engine",
             when (s.webEngine) {

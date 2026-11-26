@@ -380,6 +380,10 @@ class MessageAdapter(
         }
 
         fun bind(m: ChatMessage, isLast: Boolean) {
+            // the pages a web search for the message before it found, for its [1], [2] (Markdown.CitationSpan)
+            val msgs = app.chat.conversation.messages
+            val at = msgs.indexOf(m)
+            itemView.setTag(R.id.tag_sources, if (at > 0) msgs.subList(0, at).lastOrNull { it.role == "user" }?.sources ?: emptyList<Any>() else emptyList<Any>())
             if (message !== m) {
                 // a different message in this view: start its text views from scratch
                 message = m

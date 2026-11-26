@@ -348,11 +348,15 @@ Off unless you turn it on: the globe in the message box (from the paperclip menu
 search), with a note the first time of what goes online. While it is on, each message you send is
 searched with DuckDuckGo's plain HTML page (or Brave Search with your own API key, or your own
 SearXNG server); if DuckDuckGo asks the network to prove a person is searching, its lite page and
-then Wikipedia are tried. The top three pages are downloaded and read on the phone
-(`data/WebSearch.kt`): scripts, menus, headers and footers left out, and of the rest the paragraphs
-that hold the question's words, up to about a quarter of the model's context. They go in front of
-your message, numbered, with a request to cite them; the pages are listed under your message (tap
-one to open it), and they stay with it, so writing the reply again does not search again. A short
+then Wikipedia are tried. The top six pages are downloaded and read on the phone
+(`data/WebSearch.kt`), scripts, menus, headers and footers left out, and cut into short passages;
+those and the results' snippets are ranked together (BM25, more for holding more of the question's
+words, near-duplicates and more than three from one page left out, nothing scoring under a third of
+the best), and the best go in, up to about 200, 400 or 800 tokens (Settings, Web search; 400 by
+default): the model reads all of it before it writes. They go in front of your message, numbered
+by source, with a request to cite them and not to list them; the pages are listed under your
+message, and links and [1], [2] in the reply open them. They stay with the message, so writing the
+reply again does not search again. The light bulb in the message box turns thinking on or off. A short
 follow-up ("and tomorrow?") is searched together with the message before it. Offline only
 (Settings) keeps it off. `tools/host-test/web_search.sh` checks the parsing and reading on a
 computer (in CI too) and reads one real page when the network allows.
