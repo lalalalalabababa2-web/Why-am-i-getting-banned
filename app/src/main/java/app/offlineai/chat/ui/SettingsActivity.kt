@@ -329,9 +329,9 @@ class SettingsActivity : AppCompatActivity() {
             when (s.webEngine) {
                 "brave" -> "Brave Search, with your own API key (free for 2,000 searches a month at brave.com/search/api)."
                 "searx" -> "Your own SearXNG server (with its JSON results turned on)."
-                else -> "No account or key. If it asks the phone's network for a check, Wikipedia is searched instead."
+                else -> "Both at once, no account or key: more sites, and one still answers when the other is busy. Wikipedia when neither does."
             },
-            listOf("DuckDuckGo", "Brave Search (your API key)", "Your SearXNG server"),
+            listOf("DuckDuckGo and Bing", "Brave Search (your API key)", "Your SearXNG server"),
             engines.indexOf(s.webEngine).coerceAtLeast(0)) { which ->
             s.webEngine = engines[which]
             when {
@@ -361,7 +361,7 @@ class SettingsActivity : AppCompatActivity() {
         row("Chats", "Search, rename, export, import or delete chats.") {
             startActivity(Intent(this, ChatsActivity::class.java))
         }
-        row("Hide as a game", if (s.disguised) "On: the launcher shows Ping Pong. Your code, typed as the player name in its settings, opens Nyx."
+        row("Hide as a game", if (s.disguised) "On: the launcher shows Ping Pong Pro. Your code, typed as the player name in its settings, opens Nyx."
             else "The launcher shows a ping pong game instead of Nyx; a secret code you choose opens it.") { hideAsGame() }
         row("Delete all downloaded models", ModelStore.formatBytes(app.models.local().sumOf { it.sizeBytes }) + " on this phone") {
             AlertDialog.Builder(this)
@@ -646,7 +646,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun hideAsGame() {
         val s = app.settings
         if (s.disguised) {
-            Sheet(this, "Hidden as a game", "The launcher shows Ping Pong. In the game, tap the gear and type your code as the player name, then Save.")
+            Sheet(this, "Hidden as a game", "The launcher shows Ping Pong Pro. In the game, tap the gear and type your code as the player name, then Save.")
                 .button("Show Nyx again", primary = false) {
                     Disguise.disable(this, s)
                     Toast.makeText(this, "Nyx is back in the launcher (it can take a few seconds).", Toast.LENGTH_LONG).show()
@@ -666,10 +666,10 @@ class SettingsActivity : AppCompatActivity() {
             isSingleLine = true
         }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        box.addView(text("Nyx leaves the launcher and a ping pong game called Ping Pong takes its place. It is a real " +
+        box.addView(text("Nyx leaves the launcher and a ping pong game called Ping Pong Pro takes its place. It is a real " +
             "game. To open Nyx: in the game, tap the gear, type your code as the player name, then Save.\n\n" +
             "Nyx locks again a minute after you leave it, or when the screen turns off. Replies being written carry on. " +
-            "Notifications and the recent apps say Ping Pong. Write the code down somewhere safe: without it, the " +
+            "Notifications and the recent apps say Ping Pong Pro. Write the code down somewhere safe: without it, the " +
             "only way back in is to reinstall, which deletes your chats and models.", 14f, Palette.text2))
         box.addView(code, lp(MATCH, WRAP).apply { topMargin = dp(16) })
         Sheet(this, "Hide as a game")
@@ -681,7 +681,7 @@ class SettingsActivity : AppCompatActivity() {
                     return@button
                 }
                 Disguise.enable(this, s, c)
-                Toast.makeText(this, "Hidden. Ping Pong is in the launcher now (it can take a few seconds).", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Hidden. Ping Pong Pro is in the launcher now (it can take a few seconds).", Toast.LENGTH_LONG).show()
                 rebuild()
             }
             .show()

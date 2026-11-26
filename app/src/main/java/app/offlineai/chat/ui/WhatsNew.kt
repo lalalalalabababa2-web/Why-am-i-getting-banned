@@ -7,9 +7,15 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 9
+    const val VERSION = 10
 
     private val ITEMS = listOf(
+        "Web search: more sites, quicker" to "It now asks DuckDuckGo and Bing at once, so answers come from many sites, " +
+            "not just Wikipedia, and no longer waits for one that is slow (about 3 seconds instead of 8). Questions are " +
+            "searched as keywords (\"come out\" becomes \"release date\"), and pages that only share a word with your " +
+            "question are left out instead of filling the reply's memory.",
+        "Ping Pong Pro" to "A new icon and name for the game, and your racket reaches wide balls: it moves further than " +
+            "your finger, so the edge of the table is no longer off the screen.",
         "Better web search, fewer tokens" to "It reads up to six pages and keeps only the passages that answer you " +
             "(about 400 tokens instead of up to 1,000; Settings, Web search, How much it reads), and links and the " +
             "[1], [2] in a reply open the page.",

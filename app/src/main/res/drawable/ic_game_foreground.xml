@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A table-tennis paddle and a ball. -->
+<!-- A red table-tennis bat with a wooden handle, and an orange ball. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <group android:rotation="-35" android:pivotX="54" android:pivotY="54">
-        <!-- handle -->
-        <path android:fillColor="#7A3B12" android:pathData="M50,62 h8 v18 a4,4 0 0 1 -4,4 a4,4 0 0 1 -4,-4 z" />
-        <!-- blade -->
-        <path android:fillColor="#FFFFFF" android:pathData="M54,30 m-17,0 a17,17 0 1,0 34,0 a17,17 0 1,0 -34,0" />
-        <path android:fillColor="#1E1E28" android:pathData="M54,30 m-14,0 a14,14 0 1,0 28,0 a14,14 0 1,0 -28,0" />
+    <group android:rotation="-38" android:pivotX="54" android:pivotY="56">
+        <!-- handle: wood, joined to the blade -->
+        <path android:fillColor="#B9783F" android:pathData="M49.5,61 L58.5,61 L58.5,82 Q58.5,86 54,86 Q49.5,86 49.5,82 Z" />
+        <path android:fillColor="#9A5F2C" android:pathData="M52.6,63 L54.2,63 L54.2,84.5 L52.6,84.5 Z" />
+        <!-- blade edge (wood), then the red rubber -->
+        <path android:fillColor="#7A3A1C" android:pathData="M54,44 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0" />
+        <path android:fillColor="#D32F2F" android:pathData="M54,44 m-18.2,0 a18.2,18.2 0 1,0 36.4,0 a18.2,18.2 0 1,0 -36.4,0" />
+        <path android:fillColor="#E85A52" android:pathData="M47,33 a13,13 0 0 1 14,-3 a16,16 0 0 0 -17,10 a13,13 0 0 1 3,-7 Z" />
     </group>
-    <path android:fillColor="#FFFFFF" android:pathData="M74,72 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+    <!-- the ball, lit from the top left -->
+    <path android:fillColor="#E67A00" android:pathData="M77,33 m-7.5,0 a7.5,7.5 0 1,0 15,0 a7.5,7.5 0 1,0 -15,0" />
+    <path android:fillColor="#FFA726" android:pathData="M76,32 m-5.8,0 a5.8,5.8 0 1,0 11.6,0 a5.8,5.8 0 1,0 -11.6,0" />
+    <path android:fillColor="#FFE0B2" android:pathData="M73.6,29.6 m-1.9,0 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0" />
 </vector>

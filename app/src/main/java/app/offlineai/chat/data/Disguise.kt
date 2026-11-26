@@ -59,5 +59,5 @@ object Disguise {
     }
 
     /** The name shown in the recent apps and notifications while hidden. */
-    const val GAME_NAME = "Ping Pong"
+    const val GAME_NAME = "Ping Pong Pro"
 }

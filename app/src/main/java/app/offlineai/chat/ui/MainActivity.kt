@@ -794,7 +794,7 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             val engine = when (s.webEngineNow()) {
                 is app.offlineai.chat.data.WebSearch.Engine.Brave -> "Brave Search"
                 is app.offlineai.chat.data.WebSearch.Engine.SearXNG -> "your SearXNG server"
-                else -> "DuckDuckGo"
+                else -> "DuckDuckGo and Bing"
             }
             AlertDialog.Builder(this)
                 .setTitle("Search the web?")

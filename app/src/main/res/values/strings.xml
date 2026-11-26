@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Nyx</string>
     <!-- the name the app goes by while it is hidden as a game -->
-    <string name="game_name">Ping Pong</string>
+    <string name="game_name">Ping Pong Pro</string>
     <!-- the app's shortcuts (long-press its icon) -->
     <string name="shortcut_talk">Talk</string>
     <string name="shortcut_talk_long">Talk with your voice</string>

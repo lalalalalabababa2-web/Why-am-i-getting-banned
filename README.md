@@ -346,9 +346,13 @@ prompt: Ternary Bonsai 2 9B reads 17.6 tokens/s on the runner, about a minute mo
 
 Off unless you turn it on: the globe in the message box (from the paperclip menu, or Settings, Web
 search), with a note the first time of what goes online. While it is on, each message you send is
-searched with DuckDuckGo's plain HTML page (or Brave Search with your own API key, or your own
-SearXNG server); if DuckDuckGo asks the network to prove a person is searching, its lite page and
-then Wikipedia are tried. The top six pages are downloaded and read on the phone
+searched with DuckDuckGo's plain HTML page and Bing at once, as keywords ("When did GTA 6 come out
+and how much does it cost?" goes as "GTA 6 release date price": whole questions confuse them, Bing
+read "When did" as DID), their results merged and each page counted once; once one answers the other
+gets 1.5 s more (on the test machine 3 s a search instead of 8). Brave Search with your own API key
+or your own SearXNG server can be set instead; DuckDuckGo's lite page and then Wikipedia are tried
+when nothing answers. A passage must hold at least half of the search's words: one that only shares
+"phone" with "best budget phone" is an advert, and nothing beats that. The top six pages are downloaded and read on the phone
 (`data/WebSearch.kt`), scripts, menus, headers and footers left out, and cut into short passages;
 those and the results' snippets are ranked together (BM25, more for holding more of the question's
 words, near-duplicates and more than three from one page left out, nothing scoring under a third of

@@ -581,7 +581,7 @@ class PongView(context: Context, private var player: String, private var level: 
 
     /** Your racket meets the ball. */
     private fun hitMine() {
-        val reach = REACH
+        val reach = MY_REACH
         val off = ((ball.x - myX) / reach).coerceIn(-1f, 1f)
         // how fast your finger was going forward (up the screen) sets how hard; sideways adds spin
         val power = (fingerVy / 3.2f).coerceIn(0f, 1f)
@@ -674,7 +674,7 @@ class PongView(context: Context, private var player: String, private var level: 
             if (state != State.PLAY) break
             // your return: the ball has bounced on your side and comes to the racket
             if (hitter == Side.CPU && bouncedReceiver && ball.vy < 0.5f &&
-                abs(ball.y - myY) < 0.14f && abs(ball.x - myX) < REACH && ball.z in -0.12f..0.62f
+                abs(ball.y - myY) < 0.16f && abs(ball.x - myX) < MY_REACH && ball.z in -0.12f..0.66f
             ) hitMine()
             // theirs
             if (hitter == Side.ME && bouncedReceiver && ball.vy > -0.5f &&
@@ -743,7 +743,9 @@ class PongView(context: Context, private var player: String, private var level: 
         val nearEdge = py
         val frac = ((sy - nearEdge) / max(1f, h - nearEdge)).coerceIn(0f, 1f)
         wantY = 0.05f - 0.55f * frac
-        wantX = unprojectX(sx, wantY, 0.2f).coerceIn(-HALF_W - 0.45f, HALF_W + 0.45f)
+        // sideways the racket goes 1.4 times as far as the finger from the middle: the table's near
+        // edge is at the screen's edges, so a wide ball needed a finger off the screen to reach it
+        wantX = (unprojectX(sx, wantY, 0.2f) * 1.4f).coerceIn(-HALF_W - 0.6f, HALF_W + 0.6f)
     }
 
     // ---------------------------------------------------------------- drawing
@@ -1087,6 +1089,8 @@ class PongView(context: Context, private var player: String, private var level: 
         private const val R = 0.02f
         private const val BLADE = 0.085f
         private const val REACH = 0.17f
+        // yours, a little more forgiving than the computer's at its lowest level
+        private const val MY_REACH = 0.21f
 
         // the camera: behind your end, above the table
         private const val CAM_BACK = 1.25f

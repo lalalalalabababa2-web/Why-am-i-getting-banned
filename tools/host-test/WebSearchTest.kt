@@ -51,6 +51,21 @@ fun main() {
     check(lh.size == 2 && lh[0].url == "https://www.visitlisboa.com/en" && lh[0].snippet == "The official tourism site." &&
         lh[1].url == "https://example.org/a?b=1", "DuckDuckGo lite: links and snippets (${lh.map { it.url + " | " + it.snippet }})")
 
+    val bingHtml = """
+        <ol id="b_results"><li class="b_algo" data-id iid=SERP.1><div class="b_tpcn"><a class="tilk" href="https://en.wikipedia.org/wiki/Grand_Theft_Auto_VI">x</a></div>
+        <div class="b_algoheader"><a href="https://en.wikipedia.org/wiki/Grand_Theft_Auto_VI" h="ID=SERP,1"><h2>Grand Theft Auto VI - <strong>Wikipedia</strong></h2></a></div>
+        <div class="b_caption"><p class="b_lineclamp3">Nov 6, 2025&nbsp;&#0183;&#32;It was released on 19 November 2026.</p></div></li>
+        <li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly93d3cuaWduLmNvbS9hcnRpY2xlcy9ndGEtNg&amp;ntb=1">GTA 6 release date | IGN</a></h2>
+        <div class="b_caption"><p>4 days ago&nbsp;&#0183;&#32;Everything we know.</p></div></li></ol>
+    """.trimIndent()
+    val bh0 = WebSearch.parseBing(bingHtml)
+    check(bh0.size == 2 && bh0[0].url == "https://en.wikipedia.org/wiki/Grand_Theft_Auto_VI" && bh0[0].title == "Grand Theft Auto VI - Wikipedia" &&
+        bh0[0].snippet == "It was released on 19 November 2026.", "Bing: a result, its date left out (${bh0.map { it.url + " | " + it.title + " | " + it.snippet }})")
+    check(bh0.getOrNull(1)?.url == "https://www.ign.com/articles/gta-6", "Bing: a /ck/a link unwrapped (${bh0.getOrNull(1)?.url})")
+    val merged = WebSearch.merge(listOf(hits, bh0, listOf(WebSearch.Hit("dup", "http://en.wikipedia.org/wiki/Lisbon/", ""))))
+    check(merged.size == 4 && merged[0].url.contains("Lisbon") && merged[1].url.contains("Grand_Theft"), "merge: in turns, each page once (${merged.map { it.url }})")
+    check(!WebSearch.readable("https://www.youtube.com/watch?v=1") && WebSearch.readable("https://www.ign.com/a"), "readable: videos left out")
+
     val brave = """{"web":{"results":[{"title":"Lisbon <strong>travel</strong>","url":"https://a.example/x","description":"Tips &amp; tricks"},{"title":"Bad","url":"ftp://x"}]}}"""
     val bh = WebSearch.parseBrave(brave)
     check(bh.size == 1 && bh[0].title == "Lisbon travel" && bh[0].snippet == "Tips & tricks", "Brave: results (${bh.map { it.title + " | " + it.snippet }})")
@@ -97,12 +112,34 @@ fun main() {
     check(WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "tell me when GTA 6 comes out" ||
         WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "when GTA 6 comes out",
         "searchable: \"${WebSearch.searchable("Can you tell me when GTA 6 comes out?")}\"")
+    check(WebSearch.keywords("When did GTA 6 come out and how much does it cost?") == "GTA 6 release date price",
+        "keywords: \"${WebSearch.keywords("When did GTA 6 come out and how much does it cost?")}\"")
+    check(WebSearch.terms("GTA 6 price").contains("6"), "terms: numbers kept")
     check(WebSearch.searchable("search the web for lisbon hotels") == "lisbon hotels", "searchable: \"${WebSearch.searchable("search the web for lisbon hotels")}\"")
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")
     check(prompt.startsWith("Web search results") && prompt.endsWith("What is x?") && prompt.contains("[1]"), "prompt: results, then the message")
 
-    println("== a real page, read")
+    println("== a real search and page, read")
+    val live2 = runCatching { WebSearch.bing("grand theft auto 6 release date") }
+    if (live2.isSuccess && live2.getOrThrow().isNotEmpty()) {
+        val r = live2.getOrThrow()
+        check(r.size >= 3 && r.all { it.url.startsWith("http") && it.title.isNotBlank() }, "Bing, live: ${r.size} results (${r.take(3).joinToString { it.source.domain }})")
+    } else {
+        println("  (Bing not reachable here: ${live2.exceptionOrNull()?.message ?: "no results"})")
+    }
+    // the whole search as the app runs it: engines, pages, passages
+    val t0 = System.currentTimeMillis()
+    val full = WebSearch.run("When did GTA 6 come out and how much does it cost?", 1500, WebSearch.Engine.DuckDuckGo,
+        java.util.concurrent.atomic.AtomicBoolean(false)) { }
+    val secs = (System.currentTimeMillis() - t0) / 1000.0
+    if (full.sources.isNotEmpty()) {
+        check(full.context.length <= 1500 + 400 && full.sources.size >= 2,
+            "search, live: ${full.sources.size} sites (${full.sources.joinToString { it.domain }}), ${full.context.length} characters, %.1f s".format(secs))
+        println(full.context.lines().joinToString("\n") { "      " + it.take(160) })
+    } else {
+        println("  (the whole search found nothing here: ${full.error})")
+    }
     val live = runCatching { WebSearch.pageText(WebSearch.fetch("https://example.com/")) }
     if (live.isSuccess) {
         val t = live.getOrThrow()
