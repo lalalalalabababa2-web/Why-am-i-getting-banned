@@ -143,7 +143,9 @@ class ScrollTest {
         onMain { list.getLocationOnScreen(loc) }
         val h = onMainGet { list.height }
         val x = loc[0] + onMainGet { list.width } / 2f
-        val y0 = loc[1] + if (dy > 0) h * 0.25f else h * 0.8f
+        // pushing up starts well above the message box and the jump button over the list's end
+        val shown = h - onMainGet { list.paddingBottom }
+        val y0 = loc[1] + if (dy > 0) h * 0.25f else shown * 0.7f
         val t0 = SystemClock.uptimeMillis()
         val steps = if (slow) 20 else 6
         touchDown(MotionEvent.obtain(t0, t0, MotionEvent.ACTION_DOWN, x, y0, 0))
