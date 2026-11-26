@@ -790,6 +790,8 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
         webButton.visibility = if (on) View.VISIBLE else View.GONE
         toast(if (on) "Web search on: your messages are searched on the web." else "Web search off: nothing leaves the phone.")
     }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         // only the theme can need a rebuild; rotation and keyboards are handled in place
         Palette.apply(this, app.settings)
