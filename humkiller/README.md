@@ -1,15 +1,16 @@
 # HumKiller
 
-A macOS app that cancels steady hum (fridge, AC, fan whine, mains buzz) in headphones that don't
-have ANC, such as the Skullcandy Hesh Evo and Crusher Evo. It plays phase-inverted tones at the
-hum's frequency and its overtones, and keeps them lined up with the hum.
+An app for Mac and Android that cancels steady hum (fridge, AC, fan whine, mains buzz) in
+headphones that don't have ANC, such as the Skullcandy Hesh Evo and Crusher Evo. It plays
+phase-inverted tones at the hum's frequency and its overtones, and keeps them lined up with the
+hum. Both apps run the same C++ DSP core.
 
-| | |
-|---|---|
-| Platform | macOS 13+, Apple Silicon or Intel (built for an M3 MacBook Air) |
-| Languages | Swift 5 / SwiftUI (UI), C++17 (DSP and audio) |
-| Audio | [miniaudio](https://miniaud.io) 0.11.22 on CoreAudio, vendored in `core/miniaudio` |
-| Needs | Xcode Command Line Tools (`xcode-select --install`); Xcode itself isn't needed |
+| | Mac | Android |
+|---|---|---|
+| Platform | macOS 13+, Apple Silicon or Intel (built for an M3 MacBook Air) | Android 11+, 64-bit ARM (built for a Galaxy S24 FE) |
+| UI | Swift 5 / SwiftUI | Kotlin, plain Android views, no libraries |
+| Audio | [miniaudio](https://miniaud.io) 0.11.22 on CoreAudio | AAudio, low latency; the mic uses the unprocessed preset |
+| Build | Xcode Command Line Tools (`./build.sh`) | Android SDK, NDK 29, CMake 3.31 (`./gradlew -p humkiller/android :app:assembleRelease`) |
 
 ## What it can and can't do
 
@@ -23,8 +24,9 @@ A Mac adds 3–5 ms over a wired connection and 150–300 ms over Bluetooth.
 
 ## Headphone setup (Hesh Evo / Crusher Evo)
 
-1. **Use the aux cable** in the Mac's headphone jack. The app warns you if the output is
-   Bluetooth, because Bluetooth delay drifts too much for the tones to stay lined up.
+1. **Use the aux cable**: into the Mac's headphone jack, or on the phone into a USB-C to 3.5 mm
+   adapter (the S24 FE has no jack). The app warns you if the output is Bluetooth, because
+   Bluetooth delay drifts too much for the tones to stay lined up.
 2. Crusher Evo: put the **Sensory Bass slider all the way down**. The haptic driver adds its own
    low end, and the cancelling ends up fighting it.
 3. Set the Mac's volume where you'd normally listen, before tuning.
@@ -38,6 +40,26 @@ cd humkiller
 
 This builds `build/HumKiller.app` and opens it. The first build compiles miniaudio (~20 s).
 macOS asks for microphone access the first time. Without it, only Manual mode works.
+
+## Android
+
+The **HumKiller** workflow (`.github/workflows/humkiller.yml`) builds the APK on every push that
+touches `humkiller/`. Download it from the run's **HumKiller-android** artifact, open it on the
+phone and allow the install. It's signed with the repository's fixed key (`ci/README.md`), so
+each new build installs over the last one.
+
+- **Output**: pick your **USB-C** adapter (it's picked for you when plugged in). The app reopens
+  the audio when you plug or unplug something.
+- **Lock**: uses the phone's mic. Lay the phone still on the desk near you.
+- **Auto ANC**: plug a TRRS headset splitter into the USB-C adapter, with the headphones on one
+  side and a lav mic tucked in an earcup on the other. Pick the **USB-C** mic. The adapter's
+  converter runs the headphones and the mic on one clock.
+- **Screen off**: once you press Start it keeps cancelling with the screen off or another app
+  open. There's a notification with a Stop button. When it isn't running, the app lets go of the
+  mic as soon as you leave it.
+- The mic is opened **unprocessed**. The usual voice mic runs noise suppression, which removes
+  exactly the steady hum the app needs to hear. Phones without an unprocessed mic fall back to
+  the voice-recognition mic, and the app says so.
 
 ## Modes
 
@@ -106,6 +128,7 @@ Current results:
 ## Files
 
 ```
+android/              Android app (Kotlin UI, AAudio + JNI in app/src/main/cpp)
 app/HumKiller.swift   SwiftUI app
 app/Info.plist        bundle info, mic usage text
 core/hk_core.h        C API shared by everything

@@ -21,7 +21,8 @@ class HumService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            Engine.setArmed(this, false)
+            Engine.start(this)
+            Engine.setArmed(false)
             stopSelf()
             return START_NOT_STICKY
         }

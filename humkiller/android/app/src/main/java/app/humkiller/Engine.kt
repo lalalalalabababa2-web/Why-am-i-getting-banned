@@ -60,7 +60,11 @@ object Engine {
     var finding = false; private set
     var findMessage: String? = null; private set
 
+    /** The activity is on screen. When it isn't and nothing is playing, the audio is closed. */
+    var uiVisible = false
+
     private var started = false
+    private lateinit var appCtx: Context
     private lateinit var prefs: SharedPreferences
     private lateinit var am: AudioManager
     private val main = Handler(Looper.getMainLooper())
@@ -95,6 +99,7 @@ object Engine {
         if (started) return
         started = true
         val app = ctx.applicationContext
+        appCtx = app
         prefs = app.getSharedPreferences("humkiller", Context.MODE_PRIVATE)
         am = app.getSystemService(AudioManager::class.java)
         Native.init()
@@ -148,9 +153,15 @@ object Engine {
         return changed
     }
 
-    /** Something was plugged in or out. */
-    fun devicesChanged() {
-        if (refreshDevices() && isOpen) open()
+    /** Something was plugged in or out, or a stream lost its device. */
+    fun devicesChanged(reopen: Boolean = false) {
+        val before = outId
+        val hadWired = outputs.any { it.type in WIRED_OUT }
+        val changed = refreshDevices()
+        val hasWired = outputs.any { it.type in WIRED_OUT }
+        // Headphones unplugged mid-cancel: stop, rather than move the tones to the phone speaker.
+        if (armed && (outId != before || (hadWired && !hasWired))) setArmed(false)
+        if ((changed || reopen) && isOpen) open()
     }
 
     fun output() = outputs.firstOrNull { it.id == outId }
@@ -186,13 +197,18 @@ object Engine {
         save()
     }
 
-    fun setArmed(ctx: Context, a: Boolean) {
+    fun setArmed(a: Boolean) {
         if (a == armed) return
         armed = a
         Native.setArmed(a)
-        val svc = Intent(ctx, HumService::class.java)
+        val svc = Intent(appCtx, HumService::class.java)
         // The foreground service is what lets the mic keep listening with the screen off.
-        if (a) ctx.startForegroundService(svc) else ctx.stopService(svc)
+        if (a) {
+            appCtx.startForegroundService(svc)
+        } else {
+            appCtx.stopService(svc)
+            if (!uiVisible) close()   // stopped from the notification: let go of the mic too
+        }
     }
 
     fun setFundamental(hz: Double) {
@@ -261,10 +277,7 @@ object Engine {
     // ---- polling (the activity calls this ~15 times a second)
 
     fun poll() {
-        if (Native.needsReopen() && isOpen) {
-            refreshDevices()
-            open()
-        }
+        if (Native.needsReopen() && isOpen) devicesChanged(reopen = true)
         Native.status(sBuf)
         status.mode = sBuf[0].toInt()
         status.armed = sBuf[1] != 0.0

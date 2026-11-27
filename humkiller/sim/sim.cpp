@@ -265,18 +265,13 @@ static void scenario_lock(const char* title, Config c, int mode, double hold_s, 
     check(expect_pass ? last <= -need_db : last > -need_db, msg);
 }
 
-static void scenario_find(const char* title, std::vector<std::pair<double, double>> tones, double noise, double expect_f0,
-                          double tol) {
-    std::printf("\n== %s\n", title);
-    Config c;
-    c.mic_in_cup = false;
-    c.room_noise = noise;
-    c.wander = 0;
-    for (int k = 0; k < K; k++) c.hum_amp[k] = 0;
-    World w(c);
-    setup(w, HK_MODE_LOCK, 60, 1);
-    // drive the mic with arbitrary tones instead of the hum model
-    std::mt19937 rng(7);
+// One finder run on 1.4 s of tones + noise; returns the result.
+static hk_find_result find_once(const std::vector<std::pair<double, double>>& tones, double noise, unsigned seed) {
+    hk_init();
+    hk_set_input_rate(48000);
+    hk_set_input_active(1);
+    hk_set_mode(HK_MODE_LOCK);
+    std::mt19937 rng(seed);
     std::normal_distribution<double> g(0, 1);
     hk_find_start();
     std::vector<float> buf(512);
@@ -286,7 +281,7 @@ static void scenario_find(const char* title, std::vector<std::pair<double, doubl
     do {
         for (auto& x : buf) {
             double v = 0;
-            for (auto& t : tones) v += t.second * std::cos(TAU * t.first * n / c.fs + 0.4 * t.first);
+            for (auto& t : tones) v += t.second * std::cos(TAU * t.first * n / 48000.0 + 0.4 * t.first + seed);
             lp += 0.06 * (g(rng) - lp);
             x = (float)(v + noise * 4 * lp + 3e-4 * g(rng));
             n++;
@@ -296,16 +291,37 @@ static void scenario_find(const char* title, std::vector<std::pair<double, doubl
     } while (st.find_state != HK_FIND_READY && n < 48000 * 5);
     hk_find_result r;
     hk_find_compute(&r);
-    std::printf("  ok=%d f0=%.4f  prominence:", r.ok, r.f0);
-    for (int k = 0; k < K; k++) std::printf(" %.1f", r.prominence_db[k]);
-    std::printf(" dB\n");
-    char msg[200];
-    if (expect_f0 > 0) {
-        std::snprintf(msg, sizeof msg, "found %.3f Hz, want %.3f +- %.3f", r.f0, expect_f0, tol);
-        check(r.ok && std::fabs(r.f0 - expect_f0) <= tol, msg);
-    } else {
-        check(!r.ok, "reports nothing found");
+    return r;
+}
+
+// The same case over many noise patterns: one lucky (or unlucky) noise draw proves nothing, and
+// the C++ libraries on Linux and macOS draw different noise from the same seed.
+static void scenario_find(const char* title, std::vector<std::pair<double, double>> tones, double noise, double expect_f0,
+                          double tol) {
+    std::printf("\n== %s\n", title);
+    const int runs = 40;
+    int good = 0;
+    double worst = 0;
+    hk_find_result bad{};
+    bool have_bad = false;
+    for (int i = 0; i < runs; i++) {
+        hk_find_result r = find_once(tones, noise, 1000 + i);
+        const bool ok = expect_f0 > 0 ? (r.ok && std::fabs(r.f0 - expect_f0) <= tol) : !r.ok;
+        if (ok) {
+            good++;
+            if (r.ok) worst = std::max(worst, std::fabs(r.f0 - expect_f0));
+        } else if (!have_bad) {
+            bad = r;
+            have_bad = true;
+        }
     }
+    if (have_bad) std::printf("  e.g. a miss: ok=%d f0=%.4f\n", bad.ok, bad.f0);
+    char msg[200];
+    if (expect_f0 > 0)
+        std::snprintf(msg, sizeof msg, "%d/%d noise patterns found %.3f Hz (+- %.3f), worst error %.3f Hz", good, runs, expect_f0, tol, worst);
+    else
+        std::snprintf(msg, sizeof msg, "%d/%d noise patterns report nothing found", good, runs);
+    check(good == runs, msg);
 }
 
 static void scenario_no_path() {

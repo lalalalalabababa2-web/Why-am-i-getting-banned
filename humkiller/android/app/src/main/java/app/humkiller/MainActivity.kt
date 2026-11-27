@@ -93,6 +93,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        Engine.uiVisible = true
         if (!Engine.isOpen) Engine.open()
         polling = true
         main.post(tick)
@@ -100,6 +101,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
+        Engine.uiVisible = false
         polling = false
         // Not cancelling: let go of the mic and headphones (and the mic-in-use dot) while we're away.
         if (!Engine.armed) Engine.close()
@@ -180,6 +182,8 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(24))
+            // Takes focus first, so the frequency box isn't focused (and frozen) at start.
+            isFocusableInTouchMode = true
         }
         col.addView(label("HumKiller", 26f, bold = true))
         col.addView(label("Cancels steady hum in your headphones.", 14f, secondary = true))
@@ -293,7 +297,7 @@ class MainActivity : Activity() {
                     requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
                 }
                 if (on && !Engine.isOpen) Engine.open()
-                Engine.setArmed(this@MainActivity, on)
+                Engine.setArmed(on)
                 refresh()
             }
         }

@@ -685,13 +685,14 @@ void hk_find_compute(hk_find_result* r) {
         prom[i] = db[i] - win[R];
     }
 
-    auto P = [&](double f) -> double {   // prominence near f, 0 if it doesn't stick out
+    auto near = [&](double f) -> double {   // how far the spectrum near f sticks out of the noise
         const int c = (int)std::lround(f / bin);
         double best = 0;
         for (int i = c - 2; i <= c + 2; i++)
             if (i > 0 && i < half) best = std::max(best, prom[i]);
-        return best >= 10.0 ? best : 0.0;
+        return best;
     };
+    auto P = [&](double f) -> double { const double p = near(f); return p >= 10.0 ? p : 0.0; };
 
     std::vector<std::pair<double, int>> peaks;
     for (int i = lo; i <= hi; i++)
@@ -705,6 +706,9 @@ void hk_find_compute(hk_find_result* r) {
         for (int d = 1; d <= 4; d++) {
             const double f0 = pk.second * bin / d;
             if (f0 < 30.0) break;
+            // A fundamental below the peak has to be a real peak itself. Otherwise a noise bump
+            // halfway down wins on the strength of the peak's own harmonics (an octave error).
+            if (d > 1 && near(f0) < 15.0) continue;
             double sc = 0;
             for (int k = 1; k <= K; k++) sc += P(k * f0) * (k == 1 ? 1.2 : 1.0);
             if (sc > best_score + 1e-9) { best_score = sc; best_f0 = f0; }
