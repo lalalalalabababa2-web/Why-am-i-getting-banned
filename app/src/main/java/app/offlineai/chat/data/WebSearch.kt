@@ -180,14 +180,37 @@ object WebSearch {
         }
     }
 
-    /** The text that goes before your message for the model, around the search's [context]. */
-    fun prompt(context: String, message: String): String =
-        message + "\n\n" + context.trim() + "\n\nUsing these web results, answer the message above in your own words. " +
-            "Start with the direct answer, then explain the key facts in a few short sentences or bullet points; if the " +
-            "message is just a name or a topic, explain what it is. Do not copy or list the results: write the answer, " +
-            "with [1]-style citations after the facts they support. They are from today and newer than your training: " +
-            "where they differ from what you remember, they are right. Give only links that appear in them, and if they " +
-            "do not cover it, say so in a few words."
+    /**
+     * Your message for the model with the search's [context]: the results first and your message
+     * last, which small models follow best. A request to make something (a game, code, a poem)
+     * gets it made, the results only as reference: "Start with the direct answer" had a 1.6B model
+     * reply "The direct answer is \"Snake Game.\"" to "make a snake game".
+     */
+    fun prompt(context: String, message: String): String {
+        val results = context.trim()
+        return if (isTask(message)) {
+            results + "\n\nThese web results are only reference. Do what the message below asks, in full, yourself: " +
+                "write the whole thing it wants (all of the code, text or plan), not a description of it or of the " +
+                "results. Use them only where they make it better.\n\n" + message
+        } else {
+            results + "\n\nUsing these web results, answer the message below in your own words, the way you would " +
+                "reply without them: the answer itself first, then the details that matter in a few short sentences " +
+                "or bullet points, with no headings or labels. If it is just a name or a topic, explain what it is. " +
+                "Do not copy or list the results; put [1]-style citations after the facts they support. They are " +
+                "from today and newer than your training: where they differ from what you remember, they are right. " +
+                "Give only links that appear in them, and if they do not cover it, say so in a few words.\n\n" + message
+        }
+    }
+
+    /** A request to make or change something ("make a snake game", "can you write a poem"), not a question. */
+    fun isTask(text: String): Boolean = TASK.containsMatchIn(text.trim())
+
+    private val TASK = Regex(
+        "(?i)^(hey |hi |ok |okay |yo |nyx,? )*(please |pls |can you |could you |would you |will you |i want you to |" +
+            "i need you to |help me |now |also )*(please )?(write|draft|make|create|build|code|program|generate|design|" +
+            "draw|compose|translate|rewrite|summari[sz]e|fix|improve|edit|convert|implement|refactor|debug|" +
+            "give me (a|an|some|the) (code|script|program|poem|story|essay|list|plan|example|recipe))\\b",
+    )
 
     /**
      * Whether a message needs a web search when search is on Auto: it asks about something that
@@ -213,7 +236,7 @@ object WebSearch {
         val t = text.trim().lowercase(Locale.ROOT)
         if (t.length < 3) return false
         val words = t.split(Regex("\\s+")).size
-        if (Regex("^(hi|hello|hey|thanks|thank you|ok|okay|lol|nice|cool|good|write|draft|translate|rewrite|summari[sz]e|fix|code|create|make|generate|tell me a (joke|story)|how are you|who are you)\\b").containsMatchIn(t)) return false
+        if (isTask(t) || Regex("^(hi|hello|hey|thanks|thank you|ok|okay|lol|nice|cool|good|tell me a (joke|story)|how are you|who are you)\\b").containsMatchIn(t)) return false
         // a follow-up to a searched answer: "you sure", "gta 6", "it's already out"
         if (afterSearch && (words <= 5 || Regex("\\b(sure|true|really|wrong|already|actually|still|now)\\b").containsMatchIn(t))) return true
         val timely = Regex("\\b(latest|newest|newer|recent|current|currently|today|tonight|yesterday|tomorrow|this (week|month|year)|news|price|prices|cost|costs|release|released|releases|come out|came out|coming out|score|won|winner|weather|forecast|stock|update|version|ceo|president|election|schedule|hours|near me|buy|where can|best|top|vs|review|reviews|20[2-3]\\d)\\b").containsMatchIn(t)

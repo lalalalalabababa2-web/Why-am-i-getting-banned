@@ -7,9 +7,12 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 14
+    const val VERSION = 15
 
     private val ITEMS = listOf(
+        "Search helps, not hijacks" to "With Search on, asking it to make something (\"make a snake game\", \"write " +
+            "a poem\") gets the thing made, using the websites only as reference, instead of a summary of them. " +
+            "Questions get a plain answer first, no \"The direct answer is\" or headings.",
         "Web search reads up to 100 websites" to "Long-press Search (or Settings, Web search) to pick 2 to 100. " +
             "Google's results (through Startpage) join DuckDuckGo and Bing, all the websites are read at once, and " +
             "only the best passages go to the model, so more sites cost no more tokens.",

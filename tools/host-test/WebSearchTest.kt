@@ -136,7 +136,12 @@ fun main() {
     check(WebSearch.searchable("search the web for lisbon hotels") == "lisbon hotels", "searchable: \"${WebSearch.searchable("search the web for lisbon hotels")}\"")
     check(WebSearch.decodeEntities("&lt;b&gt; &#x27;q&#39; &amp;amp; &unknown;") == "<b> 'q' &amp; &unknown;", "entities")
     val prompt = WebSearch.prompt("Web search results for \"x\":\n[1] A (a.example)\ntext", "What is x?")
-    check(prompt.startsWith("What is x?") && prompt.contains("Web search results") && prompt.contains("[1]"), "prompt: the message, then the results")
+    check(prompt.startsWith("Web search results") && prompt.endsWith("What is x?") && prompt.contains("[1]"), "prompt: the results, then the message")
+    val task = WebSearch.prompt("Web results:\n[1] a.example: snake tutorial", "Make a html game snake game where it eats apples to grow")
+    check(task.contains("Do what the message below asks") && !task.contains("[1]-style") && !task.contains("answer itself first"),
+        "prompt: a request to make something gets it made")
+    check(WebSearch.isTask("can you make me a snake game") && WebSearch.isTask("Write a poem") && !WebSearch.isTask("What is a snake game?") &&
+        !WebSearch.isTask("how do i make bread"), "isTask")
     check(WebSearch.unsure("As of my last update in 2024, GTA 6 was set for late 2025."), "unsure: knowledge cut-off")
     check(WebSearch.unsure("I don't have real-time information about prices."), "unsure: no live data")
     check(!WebSearch.unsure("Paris is the capital of France."), "unsure: a plain answer")
@@ -185,7 +190,7 @@ fun main() {
     val ms = System.currentTimeMillis() - t2
     check(pickedBig.isNotEmpty() && ms < 4000, "rank: 20,000 passages in $ms ms")
     val p2 = WebSearch.prompt("Web results:\n[1] a.example: text", "The amazing world gum ball")
-    check(p2.contains("in your own words") && p2.contains("Do not copy or list"), "prompt: asks for an explanation, not a list")
+    check(p2.contains("in your own words") && p2.contains("Do not copy or list") && !p2.contains("direct answer"), "prompt: asks for an explanation, not a list")
     val live = runCatching { WebSearch.pageText(WebSearch.fetch("https://example.com/")) }
     if (live.isSuccess) {
         val t = live.getOrThrow()
