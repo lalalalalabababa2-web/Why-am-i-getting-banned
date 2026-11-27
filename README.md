@@ -351,6 +351,17 @@ to a few pixels is read at twice the size or more, for 3 to 5 times the reading 
 
 ## Web search
 
+Search under the message box goes Off, Auto (messages that need facts, and replies that say they
+are not sure) and Always; a long press sets how many websites are read, 2 to 100 (also in
+Settings). Up to 10, the search goes to DuckDuckGo, Startpage (Google's results) and Bing at once;
+past 10, the same search put other ways ("… history", "… review"…) goes to Startpage and Bing in
+turns, with Wikipedia, so there are enough different sites (Bing shows ten a page, and no second
+page without cookies). They are read 12 at a time, up to `7 + (n - 8) / 8` seconds, and every
+passage of every page is ranked together, so the model still reads only the best few hundred
+tokens however many sites were read. Small words between the search's words stay: Bing read
+"amazing world gumball" as the word "amazing" and "amazing world of gumball" as the show. The
+model is asked to explain in its own words with [1] citations, not to list the results.
+
 Off unless you turn it on: the globe in the message box (from the paperclip menu, or Settings, Web
 search), with a note the first time of what goes online. While it is on, each message you send is
 searched with DuckDuckGo's plain HTML page and Bing at once, as keywords ("When did GTA 6 come out

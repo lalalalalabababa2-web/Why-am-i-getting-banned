@@ -307,6 +307,10 @@ class Settings(context: Context) {
     var webAlways: Boolean
         get() = bool("web_always", false)
         set(v) = put("web_always", v)
+    /** Websites read for each search, 2 to 100: more find more, and take longer (not more tokens). */
+    var webSites: Int
+        get() = int("web_sites", 8).coerceIn(WebSearch.MIN_SITES, WebSearch.MAX_SITES)
+        set(v) = put("web_sites", v.coerceIn(WebSearch.MIN_SITES, WebSearch.MAX_SITES))
     /** The game's icon and name the launcher was last shown (Disguise.refresh after an update). */
     var gameIconShown: Int
         get() = int("game_icon_shown", 0)

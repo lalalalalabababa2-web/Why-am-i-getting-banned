@@ -7,9 +7,16 @@ import android.app.Activity
  * none of it is new). Raise [VERSION] whenever [ITEMS] changes.
  */
 object WhatsNew {
-    const val VERSION = 13
+    const val VERSION = 14
 
     private val ITEMS = listOf(
+        "Web search reads up to 100 websites" to "Long-press Search (or Settings, Web search) to pick 2 to 100. " +
+            "Google's results (through Startpage) join DuckDuckGo and Bing, all the websites are read at once, and " +
+            "only the best passages go to the model, so more sites cost no more tokens.",
+        "Answers, not links" to "Replies explain what was found in their own words, with [1] citations, instead of " +
+            "listing the results. Under your message: how many websites were read and which were used.",
+        "Search fixes" to "Names keep their small words (\"world of gumball\"), so the engines find the right thing; " +
+            "the list of sites under your message now shows as soon as the search ends.",
         "Finest picture detail" to "Settings, Picture detail, Finest: the model sees the whole picture and close-ups of " +
             "its parts, so small text and fine details are read. Tap a picture's close-ups with Next close-up.",
         "Searches when unsure" to "On Auto, a reply that says it is not sure or only knows up to its training is " +

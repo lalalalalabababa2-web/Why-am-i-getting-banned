@@ -58,6 +58,13 @@ fun main() {
         <li class="b_algo"><h2><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly93d3cuaWduLmNvbS9hcnRpY2xlcy9ndGEtNg&amp;ntb=1">GTA 6 release date | IGN</a></h2>
         <div class="b_caption"><p>4 days ago&nbsp;&#0183;&#32;Everything we know.</p></div></li></ol>
     """.trimIndent()
+    val spHtml = """
+        <a class="result-title result-link css-1" href="/clev?event=ad&amp;sc=x" target="_self"><h2 class="c">Buy GTA</h2></a><p class="c">An ad.</p>
+        <a class="result-title result-link css-1j9evrk" href="https://en.m.wikipedia.org/wiki/Grand_Theft_Auto_VI" target="_self" rel="noreferrer" tabindex="0" data-testid="bg-title-link"><h2 class="css-1q6uzbx">Grand Theft Auto VI - Wikipedia</h2></a><p class="css-frl4rl">Upon <b>release</b>, it sold 32.5 million copies.</p>
+    """.trimIndent()
+    val sp = WebSearch.parseStartpage(spHtml)
+    check(sp.size == 1 && sp[0].url == "https://en.m.wikipedia.org/wiki/Grand_Theft_Auto_VI" && sp[0].snippet == "Upon release, it sold 32.5 million copies.",
+        "Startpage: a result read, its ad left out (${sp.map { it.url }})")
     val bh0 = WebSearch.parseBing(bingHtml)
     check(bh0.size == 2 && bh0[0].url == "https://en.wikipedia.org/wiki/Grand_Theft_Auto_VI" && bh0[0].title == "Grand Theft Auto VI - Wikipedia" &&
         bh0[0].snippet == "It was released on 19 November 2026.", "Bing: a result, its date left out (${bh0.map { it.url + " | " + it.title + " | " + it.snippet }})")
@@ -113,7 +120,8 @@ fun main() {
         WebSearch.searchable("Can you tell me when GTA 6 comes out?") == "when GTA 6 comes out",
         "searchable: \"${WebSearch.searchable("Can you tell me when GTA 6 comes out?")}\"")
     check(WebSearch.keywords("Were can i buy sparyground bags") == "sparyground bags", "keywords: \"${WebSearch.keywords("Were can i buy sparyground bags")}\"")
-    check(WebSearch.keywords("When did GTA 6 come out and how much does it cost?") == "GTA 6 release date price",
+    check(WebSearch.keywords("the amazing world of gumball") == "amazing world of gumball", "keywords: a title keeps its \"of\"")
+    check(WebSearch.keywords("When did GTA 6 come out and how much does it cost?") == "GTA 6 release date and price",
         "keywords: \"${WebSearch.keywords("When did GTA 6 come out and how much does it cost?")}\"")
     check(WebSearch.terms("GTA 6 price").contains("6"), "terms: numbers kept")
     // a misspelt name still finds its passages (the engines correct it, the pages spell it right)
@@ -156,6 +164,28 @@ fun main() {
     } else {
         println("  (the whole search found nothing here: ${full.error})")
     }
+    // many websites: other ways of putting it bring more sites, all read and ranked in time
+    val t1 = System.currentTimeMillis()
+    val steps = ArrayList<String>()
+    val many = WebSearch.run("the amazing world of gumball", 1500, WebSearch.Engine.DuckDuckGo,
+        java.util.concurrent.atomic.AtomicBoolean(false), 40) { steps += it }
+    val secs2 = (System.currentTimeMillis() - t1) / 1000.0
+    if (many.sources.isNotEmpty()) {
+        check(many.read >= 12 && secs2 < WebSearch.seconds(40) + 14,
+            "40 websites, live: read ${many.read}, used ${many.sources.size} (${many.sources.joinToString { it.domain }}), %.1f s".format(secs2))
+        println("      " + steps.distinct().takeLast(3).joinToString(" | "))
+    } else {
+        println("  (the many-site search found nothing here: ${many.error})")
+    }
+    // ranking tens of thousands of passages stays quick
+    val big = (0 until 20_000).map { WebSearch.Passage(it % 100, "Passage $it about cartoons, the gumball machine, the amazing world and Elmore's characters, season ${it % 7}.") }
+    val t2 = System.currentTimeMillis()
+    val pickedBig = WebSearch.rank(big, WebSearch.terms("amazing world of gumball"), 1500, "amazing world of gumball",
+        core = WebSearch.terms("amazing world gumball"))
+    val ms = System.currentTimeMillis() - t2
+    check(pickedBig.isNotEmpty() && ms < 4000, "rank: 20,000 passages in $ms ms")
+    val p2 = WebSearch.prompt("Web results:\n[1] a.example: text", "The amazing world gum ball")
+    check(p2.contains("in your own words") && p2.contains("Do not copy or list"), "prompt: asks for an explanation, not a list")
     val live = runCatching { WebSearch.pageText(WebSearch.fetch("https://example.com/")) }
     if (live.isSuccess) {
         val t = live.getOrThrow()

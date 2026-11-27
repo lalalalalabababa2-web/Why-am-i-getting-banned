@@ -23,7 +23,7 @@ data class WebSource(val title: String, val url: String) {
  * What a web search gave the model: the [query], the pages it came from, and [context], the text
  * that goes in front of your message (the pages' passages that match it, numbered like [sources]).
  */
-class WebResult(val query: String, val sources: List<WebSource>, val context: String, val error: String? = null)
+class WebResult(val query: String, val sources: List<WebSource>, val context: String, val error: String? = null, val read: Int = 0)
 
 /**
  * Web search for a message, only when you turn it on (the globe in the message box). The query
@@ -36,10 +36,18 @@ class WebResult(val query: String, val sources: List<WebSource>, val context: St
 object WebSearch {
     private const val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
     // what Wikipedia asks API clients to say they are (no person's details)
+    private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     private const val APP_UA = "NyxOfflineAI/1.0 (Android app; on-device assistant)"
-    private const val PAGES = 6          // pages read
-    private const val RESULTS = 10       // results looked at (their snippets count too)
     private const val MAX_PAGE = 800_000  // most pages have their text well before this
+    private const val PAGE_TEXT = 40_000  // characters of one page's text kept for ranking
+    private const val PAGE_CHUNKS = 120   // passages of one page ranked
+
+    /** Websites read for one message (Settings, Web search): 2 to 100. */
+    const val MIN_SITES = 2
+    const val MAX_SITES = 100
+
+    /** Seconds reading [sites] websites may take at most (they are read 12 at a time). */
+    fun seconds(sites: Int): Int = 7 + (sites.coerceIn(MIN_SITES, MAX_SITES) - 8).coerceAtLeast(0) / 8
 
     /**
      * Searches for [query], reads the top pages and keeps, across all of them and the results'
@@ -47,14 +55,15 @@ object WebSearch {
      * tokens: the model reads all of it before it writes). [status] hears what it is doing;
      * [cancelled] stops it early (the result is then empty).
      */
-    fun run(query: String, budget: Int, engine: Engine, cancelled: AtomicBoolean, status: (String) -> Unit): WebResult {
+    fun run(query: String, budget: Int, engine: Engine, cancelled: AtomicBoolean, sites: Int = 8, status: (String) -> Unit): WebResult {
+        val want = sites.coerceIn(MIN_SITES, MAX_SITES)
         val q = query.replace(Regex("\\s+"), " ").trim().take(300)
         if (q.isEmpty()) return WebResult(q, emptyList(), "", "Nothing to search for.")
         status("Searching the web…")
         var why: String? = null
         val sq = corrected(keywords(q))
         // the free engines together (DuckDuckGo and Bing at once, merged); else the one set
-        var hits = runCatching { if (engine is Engine.DuckDuckGo) both(sq) else engine.search(sq) }.getOrElse { why = it.message; emptyList() }
+        var hits = runCatching { if (engine is Engine.DuckDuckGo) wide(sq, want, cancelled) else engine.search(sq) }.getOrElse { why = it.message; emptyList() }
         // DuckDuckGo sometimes asks a busy network to prove it is a person: its lite page, then
         // Wikipedia, before giving up
         if (hits.isEmpty() && !cancelled.get()) hits = runCatching { duckDuckGoLite(sq) }.getOrDefault(emptyList())
@@ -63,31 +72,51 @@ object WebSearch {
         if (hits.isEmpty()) {
             return WebResult(q, emptyList(), "", "The web search found nothing" + (why?.let { " ($it)" } ?: "") + ". Is the phone online?")
         }
-        hits = hits.take(RESULTS)
+        hits = hits.take(maxOf(10, want * 2))
 
-        // pages from different sites (one each), leaving out ones with no text to read (videos, social)
-        val seen = HashSet<String>()
-        val reading = hits.withIndex().filter { (_, h) -> readable(h.url) && seen.add(h.source.domain) }.take(PAGES)
-        status("Reading ${reading.size} page${if (reading.size == 1) "" else "s"}…")
-        val pool = Executors.newFixedThreadPool(maxOf(1, reading.size))
+        // pages from different sites (one each, or two when many are read), leaving out ones with
+        // no text to read (videos, social)
+        val perSite = if (want > 30) 2 else 1
+        val bySite = HashMap<String, Int>()
+        val reading = hits.withIndex().filter { (_, h) ->
+            // (en.m.wikipedia.org is en.wikipedia.org)
+            val site = h.source.domain.removePrefix("m.").replace(".m.", ".")
+            readable(h.url) && (bySite[site] ?: 0) < perSite && true.also { bySite.merge(site, 1, Int::plus) }
+        }.take(want)
+        status("Reading ${reading.size} website${if (reading.size == 1) "" else "s"}…")
+        val pool = Executors.newFixedThreadPool(reading.size.coerceIn(1, 12))
+        var read = 0
         val texts: List<String> = try {
-            val futures = reading.map { (_, h) -> pool.submit(Callable { runCatching { pageText(fetch(h.url, quick = true)) }.getOrDefault("") }) }
+            val futures = reading.map { (_, h) ->
+                pool.submit(Callable {
+                    if (cancelled.get()) "" else runCatching { pageText(fetch(h.url, quick = true)).take(PAGE_TEXT) }.getOrDefault("")
+                })
+            }
             val byHit = HashMap<Int, String>()
-            val deadline = System.currentTimeMillis() + 7_000
+            val deadline = System.currentTimeMillis() + seconds(want) * 1000L
+            var shown = 0L
             futures.forEachIndexed { k, f ->
                 val left = deadline - System.currentTimeMillis()
-                byHit[reading[k].index] = if (cancelled.get() || left <= 0) "" else runCatching { f.get(left, TimeUnit.MILLISECONDS) }.getOrDefault("")
+                val t = if (cancelled.get() || left <= 0) "" else runCatching { f.get(left, TimeUnit.MILLISECONDS) }.getOrDefault("")
+                byHit[reading[k].index] = t
+                if (t.isNotEmpty()) read++
+                val now = System.currentTimeMillis()
+                if (reading.size > 6 && now - shown > 400) {
+                    shown = now
+                    status("Reading websites: ${k + 1} of ${reading.size}…")
+                }
             }
             hits.indices.map { byHit[it] ?: "" }
         } finally {
             pool.shutdownNow()
         }
         if (cancelled.get()) return WebResult(q, emptyList(), "")
+        if (reading.size > 6) status("Picking the best of $read website${if (read == 1) "" else "s"}…")
 
         // every snippet and every short passage of every page, ranked together
         val cands = ArrayList<Passage>()
         hits.forEachIndexed { i, h -> if (h.snippet.length >= 30) cands += Passage(i, h.snippet, snippet = true) }
-        texts.forEachIndexed { i, t -> chunks(t).forEach { cands += Passage(i, it) } }
+        texts.forEachIndexed { i, t -> chunks(t).take(PAGE_CHUNKS).forEach { cands += Passage(i, it) } }
         val picked = rank(cands, terms(q + " " + sq), budget, q, core = terms(sq))
         if (picked.isEmpty()) {
             // nothing in the pages held enough of the question's words (a misspelt name the engines
@@ -104,7 +133,7 @@ object WebSearch {
             top.forEachIndexed { n, (_, h) ->
                 sb.append("\n[").append(n + 1).append("] ").append(h.source.domain).append(": ").append(h.title).append(". ").append(h.snippet)
             }
-            return WebResult(q, top.map { it.value.source }, sb.toString().take(budget + 200))
+            return WebResult(q, top.map { it.value.source }, sb.toString().take(budget + 200), read = read)
         }
 
         // the sources the passages come from, numbered in the search's order
@@ -115,15 +144,50 @@ object WebSearch {
             sb.append("\n[").append(n + 1).append("] ").append(hits[i].source.domain).append(": ")
             sb.append(picked.filter { it.hit == i }.sortedBy { it.order }.joinToString(" … ") { it.text })
         }
-        return WebResult(q, used.map { hits[it].source }, sb.toString())
+        return WebResult(q, used.map { hits[it].source }, sb.toString(), read = read)
+    }
+
+    /** Other ways to put a search, for reading many websites: each finds pages the others miss. */
+    private val ANGLES = listOf("", "wiki", "explained", "news", "facts", "guide", "review", "history", "latest",
+        "faq", "overview", "details", "analysis", "official", "forum")
+
+    /**
+     * Results for reading [want] websites: DuckDuckGo and Bing for the search itself, and with more
+     * than 10 wanted, Bing and Wikipedia for the search put other ways too (Bing shows ten a page
+     * and no second page without cookies), all at once, merged with each page once.
+     */
+    fun wide(q: String, want: Int, cancelled: AtomicBoolean): List<Hit> {
+        if (want <= 10) return both(q)
+        val extra = ANGLES.drop(1).take(((want - 10) / 7 + 1).coerceIn(1, ANGLES.size - 1)).map { "$q $it" }
+        val pool = Executors.newFixedThreadPool(6)
+        try {
+            val first = pool.submit(Callable { both(q) })
+            val wiki = pool.submit(Callable { runCatching { wikipedia(q) }.getOrDefault(emptyList()) })
+            // the other ways of putting it go to Startpage and Bing in turns (Bing alone read some as
+            // a dictionary word), one each, so neither is asked many times at once
+            val more = extra.mapIndexed { k, v ->
+                pool.submit(Callable { runCatching { if (k % 2 == 0) startpage(v) else bing(v) }.getOrDefault(emptyList()) })
+            }
+            val deadline = System.currentTimeMillis() + 8_000
+            fun <T> take(f: java.util.concurrent.Future<List<T>>): List<T> {
+                val left = deadline - System.currentTimeMillis()
+                return if (cancelled.get() || left <= 0) emptyList() else runCatching { f.get(left, TimeUnit.MILLISECONDS) }.getOrDefault(emptyList())
+            }
+            val main = take(first)
+            return merge(listOf(main) + listOf(take(wiki)) + more.map { take(it) })
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     /** The text that goes before your message for the model, around the search's [context]. */
     fun prompt(context: String, message: String): String =
-        message + "\n\n" + context.trim() + "\n\nAnswer the message above from these web results. They are from " +
-            "today and newer than your training: where they differ from what you remember, they are right. Cite them " +
-            "like [1], do not list them at the end, give only links that appear in them, and if they do not cover " +
-            "it, say so in a few words."
+        message + "\n\n" + context.trim() + "\n\nUsing these web results, answer the message above in your own words. " +
+            "Start with the direct answer, then explain the key facts in a few short sentences or bullet points; if the " +
+            "message is just a name or a topic, explain what it is. Do not copy or list the results: write the answer, " +
+            "with [1]-style citations after the facts they support. They are from today and newer than your training: " +
+            "where they differ from what you remember, they are right. Give only links that appear in them, and if they " +
+            "do not cover it, say so in a few words."
 
     /**
      * Whether a message needs a web search when search is on Auto: it asks about something that
@@ -176,10 +240,22 @@ object WebSearch {
      * them: Bing read "When did" as DID, the disorder.
      */
     fun keywords(q: String): String {
-        val words = rewrite(searchable(q)).split(Regex("\\s+")).map { it.trim(',', '.', '?', '!', ';', ':', '"', '“', '”', '(', ')') }
-            .filter { it.isNotEmpty() && it.lowercase(Locale.ROOT) !in FUNCTION_WORDS }
-        return if (words.size >= 2) words.joinToString(" ") else searchable(q)
+        val raw = rewrite(searchable(q)).split(Regex("\\s+")).map { it.trim(',', '.', '?', '!', ';', ':', '"', '“', '”', '(', ')') }
+            .filter { it.isNotEmpty() }
+        val low = raw.map { it.lowercase(Locale.ROOT) }
+        val kept = low.map { it !in FUNCTION_WORDS }
+        // "of", "and", "in"... between two kept words stay: names and titles need them (Bing read
+        // "amazing world gumball" as the word "amazing", "amazing world of gumball" as the show)
+        fun keptNear(from: Int, step: Int): Boolean {
+            var j = from
+            while (j in low.indices && low[j] in CONNECTORS) j += step
+            return j in low.indices && kept[j]
+        }
+        val words = raw.filterIndexed { i, _ -> kept[i] || (low[i] in CONNECTORS && keptNear(i - 1, -1) && keptNear(i + 1, 1)) }
+        return if (words.count { it.lowercase(Locale.ROOT) !in CONNECTORS } >= 2) words.joinToString(" ") else searchable(q)
     }
+
+    private val CONNECTORS = setOf("of", "the", "and", "in", "on", "for", "to", "at", "from", "with", "a", "an", "&")
 
     private val PHRASES = listOf(
         Regex("(?i)\\b(come|came|comes|coming) out\\b") to "release date",
@@ -270,7 +346,25 @@ object WebSearch {
         cands.forEachIndexed { i, c -> c.order = i }
         val words = cands.map { words(it.text) }
         if (terms.isEmpty()) return cands.filter { it.snippet }.take(3)
-        val df = terms.associateWith { t -> words.count { w -> w.any { matches(it, t) } } }
+        // each different word is matched against the question's once (typo matching is the slow
+        // part, and a hundred websites hold tens of thousands of passages)
+        val all = (terms + core).toList().take(64)
+        val memo = HashMap<String, Long>()
+        val tfs = words.map { ws ->
+            val tf = IntArray(all.size)
+            for (w in ws) {
+                val m = memo.getOrPut(w) {
+                    var bits = 0L
+                    all.forEachIndexed { k, t -> if (matches(w, t)) bits = bits or (1L shl k) }
+                    bits
+                }
+                if (m != 0L) for (k in all.indices) if (m and (1L shl k) != 0L) tf[k]++
+            }
+            tf
+        }
+        val termIdx = terms.map { all.indexOf(it) }.filter { it >= 0 }
+        val coreIdx = core.map { all.indexOf(it) }.filter { it >= 0 }
+        val df = IntArray(all.size) { k -> tfs.count { it[k] > 0 } }
         val n = cands.size.toDouble()
         val avg = words.sumOf { it.size }.toDouble() / cands.size
         val wantsNumbers = Regex("(?i)\\b(when|date|year|how (much|many|long|old|big|far)|price|cost|release|score|time)\\b")
@@ -279,15 +373,15 @@ object WebSearch {
             val w = words[i]
             var sc = 0.0
             var held = 0
-            for (t in terms) {
-                val tf = w.count { matches(it, t) }
-                if (tf == 0) continue
+            val tf = tfs[i]
+            for (k in termIdx) {
+                if (tf[k] == 0) continue
                 held++
-                val idf = Math.log(1.0 + (n - df.getValue(t) + 0.5) / (df.getValue(t) + 0.5))
-                sc += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * w.size / avg))
+                val idf = Math.log(1.0 + (n - df[k] + 0.5) / (df[k] + 0.5))
+                sc += idf * tf[k] * 2.2 / (tf[k] + 1.2 * (0.25 + 0.75 * w.size / avg))
             }
             sc *= 1.0 + held.toDouble() / terms.size
-            if (core.count { t -> w.any { matches(it, t) } } < need) sc = 0.0
+            if (coreIdx.count { tf[it] > 0 } < need) sc = 0.0
             if (c.snippet) sc *= 1.15
             if (wantsNumbers && c.text.any { it.isDigit() }) sc *= 1.2
             c.score = sc
@@ -373,7 +467,7 @@ object WebSearch {
         /** Brave Search's API with your own key (free for 2,000 searches a month). */
         class Brave(private val key: String) : Engine() {
             override fun search(q: String): List<Hit> {
-                val json = fetch("https://api.search.brave.com/res/v1/web/search?count=$RESULTS&q=" + URLEncoder.encode(q, "UTF-8"),
+                val json = fetch("https://api.search.brave.com/res/v1/web/search?count=20&q=" + URLEncoder.encode(q, "UTF-8"),
                     mapOf("X-Subscription-Token" to key, "Accept" to "application/json"))
                 return parseBrave(json)
             }
@@ -401,15 +495,16 @@ object WebSearch {
     }
 
     /**
-     * DuckDuckGo and Bing at once, their results merged (first of each, then the second of each...)
+     * DuckDuckGo, Startpage (Google's results) and Bing at once, their results merged (first of each, then the second of each...)
      * with the same page counted once: more sites than either alone, and one still answers when
      * the other asks the network to prove a person is searching.
      */
     fun both(q: String): List<Hit> {
-        val pool = Executors.newFixedThreadPool(2)
+        val pool = Executors.newFixedThreadPool(3)
         try {
             val jobs = listOf(
                 pool.submit(Callable { runCatching { duckDuckGo(q) }.getOrDefault(emptyList()) }),
+                pool.submit(Callable { runCatching { startpage(q) }.getOrDefault(emptyList()) }),
                 pool.submit(Callable { runCatching { bing(q) }.getOrDefault(emptyList()) }),
             )
             // once one has results, the other gets 1.5 s more (a network that holds one back
@@ -452,9 +547,31 @@ object WebSearch {
             "pinterest.", "linkedin.com", ".pdf", ".mp4", ".jpg", ".png").none { u.contains(it) }
     }
 
+    /** Startpage: Google's results without an account or tracking. Its ads (links through it) are left out. */
+    fun startpage(q: String): List<Hit> =
+        parseStartpage(fetch("https://www.startpage.com/sp/search?query=" + URLEncoder.encode(q, "UTF-8"),
+            mapOf("Accept-Language" to "en-US,en;q=0.9"), quick = true))
+
+    fun parseStartpage(html: String): List<Hit> {
+        val out = ArrayList<Hit>()
+        // each result's title link, then its title and snippet (with style blocks around them at times)
+        for (m in Regex("""<a class="result-title result-link[^"]*" href="(https?://[^"]+)"""").findAll(html)) {
+            val url = decodeEntities(m.groupValues[1])
+            if (url.contains("startpage.com/")) continue
+            val rest = html.substring(m.range.last, minOf(html.length, m.range.last + 4000))
+            val h2 = Regex("""(?s)<h2[^>]*>(.*?)</h2>""").find(rest) ?: continue
+            val after = rest.substring(h2.range.last).replace(Regex("""(?s)<style[^>]*>.*?</style>"""), "")
+            val p = Regex("""(?s)^\s*</a>\s*<p[^>]*>(.*?)</p>""").find(after.substring(1))?.groupValues?.get(1) ?: ""
+            val title = clean(h2.groupValues[1])
+            if (title.isNotEmpty() && out.none { it.url == url }) out += Hit(title, url, clean(p))
+        }
+        return out
+    }
+
     /** Bing's results page: title, address and snippet of each result (ads are not among them). */
     fun bing(q: String): List<Hit> =
-        parseBing(fetch("https://www.bing.com/search?setlang=en&cc=us&q=" + URLEncoder.encode(q, "UTF-8"), quick = true))
+        // as a desktop browser: ten results a page instead of five
+        parseBing(fetch("https://www.bing.com/search?setlang=en&cc=us&q=" + URLEncoder.encode(q, "UTF-8"), mapOf("User-Agent" to DESKTOP_UA), quick = true))
 
     fun parseBing(html: String): List<Hit> {
         val out = ArrayList<Hit>()

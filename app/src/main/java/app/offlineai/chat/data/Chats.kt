@@ -80,6 +80,8 @@ class ChatMessage(
     var sources: List<WebSource> = emptyList(),
     /** Why a web search for this message gave nothing (offline, blocked...), shown under it. */
     var webError: String = "",
+    /** How many websites the search read for this message (0: not known, an older chat). */
+    var webRead: Int = 0,
 ) {
     /** This reply as it stands now, as a version. */
     fun asVersion() = Version(content, reasoning, stats, model, team)
@@ -119,6 +121,7 @@ class ChatMessage(
             j.put("sources", JSONArray().apply { sources.forEach { put(JSONObject().put("title", it.title).put("url", it.url)) } })
         }
         if (webError.isNotEmpty()) j.put("web_error", webError)
+        if (webRead > 0) j.put("web_read", webRead)
         return j
     }
 
@@ -149,6 +152,7 @@ class ChatMessage(
                     (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { WebSource(it.optString("title"), it.optString("url")) } }
                 } ?: emptyList(),
                 webError = j.optString("web_error"),
+                webRead = j.optInt("web_read"),
             )
         }
     }

@@ -81,7 +81,7 @@ class MessageAdapter(
     override fun getItemId(position: Int): Long = ids.getOrPut(messages[position].id) { nextId++ }
 
     private fun fingerprint(m: ChatMessage) =
-        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}|${m.attachments.size}|${m.shown}/${m.versions.size}"
+        "${m.content.length}|${m.content.hashCode()}|${m.reasoning.length}|${m.stats}|${m.error}|${app.chat.streaming === m}|${m.attachments.size}|${m.shown}/${m.versions.size}|${m.sources.size}|${m.webError.length}|${m.webRead}"
 
     /** Shows the conversation as it is now, changing only what changed. */
     fun submit() {
@@ -177,7 +177,8 @@ class MessageAdapter(
             val ctx = itemView.context
             when {
                 m.sources.isNotEmpty() -> {
-                    val sb = android.text.SpannableStringBuilder("Searched the web: ")
+                    val sb = android.text.SpannableStringBuilder(
+                        if (m.webRead > 0) "Read ${m.webRead} website${if (m.webRead == 1) "" else "s"}, used: " else "Searched the web: ")
                     m.sources.forEachIndexed { i, src ->
                         if (i > 0) sb.append("  ")
                         val start = sb.length

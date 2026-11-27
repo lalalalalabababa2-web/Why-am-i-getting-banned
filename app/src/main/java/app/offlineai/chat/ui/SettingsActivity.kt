@@ -321,6 +321,7 @@ class SettingsActivity : AppCompatActivity() {
             }
             rebuild()
         }
+        sitesSlider()
         choice("How much it reads into the chat", "What the pages say, cut down to the passages that answer you. " +
             "Less is quicker: the model reads it all before it writes.",
             listOf("Short (about 200 tokens)", "Normal (about 400 tokens)", "Long (about 800 tokens)"), s.webSize) { s.webSize = it }
@@ -685,6 +686,11 @@ class SettingsActivity : AppCompatActivity() {
                 rebuild()
             }
             .show()
+    }
+
+    /** Websites read for each search, 2 to 100, on a slider. */
+    private fun sitesSlider() {
+        group.addView(websitesSlider(app.settings).apply { setPadding(dp(20), dp(12), dp(20), dp(12)) }, lp(MATCH, WRAP))
     }
 
     private fun row(title: String, value: String, onClick: () -> Unit) {

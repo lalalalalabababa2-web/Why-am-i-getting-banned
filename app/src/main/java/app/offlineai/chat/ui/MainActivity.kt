@@ -391,6 +391,14 @@ class MainActivity : AppCompatActivity(), ChatController.Listener, EngineControl
             gravity = Gravity.CENTER_VERTICAL
         }
         webButton = chip(R.drawable.ic_globe, "Search") { cycleWebSearch() }
+        // a long press: how many websites it reads
+        webButton.setOnLongClickListener {
+            Sheet(this, "Web search", "Tap Search to go Off, Auto (questions that need facts) or Always.")
+                .view(websitesSlider(app.settings))
+                .button("Done") {}
+                .show()
+            true
+        }
         chips.addView(webButton, lp(WRAP, dp(34)).apply { marginStart = dp(2) })
         thinkButton = chip(R.drawable.ic_think, "Think") { toggleThinking() }
         chips.addView(thinkButton, lp(WRAP, dp(34)).apply { marginStart = dp(6) })

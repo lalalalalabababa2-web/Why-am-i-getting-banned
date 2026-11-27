@@ -270,9 +270,10 @@ class ChatController(private val app: App) {
         // a few hundred tokens (Settings, Web search): the model reads all of it before it writes
         val budget = app.settings.webBudget().coerceAtMost(model.nCtx)
         val engine = app.settings.webEngineNow()
+        val sites = app.settings.webSites
         Thread({
             val r = runCatching {
-                WebSearch.run(query, budget, engine, cancel) { s ->
+                WebSearch.run(query, budget, engine, cancel, sites) { s ->
                     main.post {
                         if (webCancel === cancel) {
                             webStatus = s
@@ -290,6 +291,7 @@ class ChatController(private val app: App) {
                     user.web = r.context
                     user.sources = r.sources
                     user.webError = ""
+                    user.webRead = r.read
                 } else {
                     user.webError = r.error ?: "The web search found nothing."
                 }

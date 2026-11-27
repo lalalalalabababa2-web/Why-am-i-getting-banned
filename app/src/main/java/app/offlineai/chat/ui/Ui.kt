@@ -28,6 +28,7 @@ import androidx.core.view.WindowInsetsCompat
 import app.offlineai.chat.R
 import app.offlineai.chat.data.Accent
 import app.offlineai.chat.data.Settings
+import app.offlineai.chat.data.WebSearch
 import app.offlineai.chat.data.ThemeMode
 
 /**
@@ -356,4 +357,35 @@ class FlowLayout(context: Context, gapDp: Int = 8) : ViewGroup(context) {
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         flow(r - l, true)
     }
+}
+
+/** Websites read for each web search, 2 to 100, on a slider: saved when let go. */
+fun Context.websitesSlider(s: Settings): LinearLayout {
+    val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val title = text("", 15f)
+    val help = text("", 13f, Palette.text2)
+    fun show(n: Int) {
+        title.text = "Websites to read: $n"
+        help.text = "More websites find more and catch a mistake one site makes; up to about ${WebSearch.seconds(n)} s " +
+            "and more data. The model still reads only the best passages, so it costs no more tokens."
+    }
+    val bar = android.widget.SeekBar(this).apply {
+        max = WebSearch.MAX_SITES - WebSearch.MIN_SITES
+        progress = s.webSites - WebSearch.MIN_SITES
+        progressTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
+        thumbTintList = android.content.res.ColorStateList.valueOf(Palette.accent)
+        contentDescription = "Websites to read"
+        setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar, v: Int, fromUser: Boolean) = show(v + WebSearch.MIN_SITES)
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar) {
+                s.webSites = sb.progress + WebSearch.MIN_SITES
+            }
+        })
+    }
+    show(s.webSites)
+    box.addView(title)
+    box.addView(bar, lp(MATCH, WRAP).apply { setMargins(-dp(12), dp(8), -dp(12), dp(4)) })
+    box.addView(help)
+    return box
 }
